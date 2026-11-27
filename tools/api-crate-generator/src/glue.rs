@@ -235,6 +235,11 @@ pub(super) struct Writer<'g, 'a> {
     /// For the recorder and the hostile implementation: a value of each structure they can make, by its path (a
     /// decoder of zero bytes, or `Default`).
     struct_values: RefCell<BTreeMap<String, String>>,
+    /// For the recorder: a known answer of each structure it can decode, by its path (a decoder of known bytes, whose
+    /// first byte is the text `@SALT@` replaced).
+    known_structs: RefCell<BTreeMap<String, String>>,
+    /// The structures and enumerations of one public integer field, by path.
+    newtypes: RefCell<BTreeSet<String>>,
     /// Whether the codecs also write, per crate, a test of each mirror's offsets and size against the generator's own
     /// (the mirror-check build, never the crates the repository keeps).
     pub(super) mirror_check: std::cell::Cell<bool>,
@@ -256,6 +261,8 @@ impl<'g, 'a> Writer<'g, 'a> {
             current: std::cell::Cell::new(NOWHERE),
             hostile: std::cell::Cell::new(false),
             struct_values: RefCell::new(BTreeMap::new()),
+            known_structs: RefCell::new(BTreeMap::new()),
+            newtypes: RefCell::new(BTreeSet::new()),
             mirror_check: std::cell::Cell::new(std::env::var_os("MIRROR_CHECK").is_some()),
             mirror_checks: RefCell::new(String::new()),
         }
@@ -771,18 +778,7 @@ impl<'g, 'a> Writer<'g, 'a> {
                 self.uint64s(place, &param.name, &param.ty, &mut seen, &mut found);
             }
             self.uint64s(place, "return", &method.return_type, &mut seen, &mut found);
-            let refused: Vec<String> = found
-                .into_iter()
-                .filter_map(|(owner, field)| match crate::api::UINT64_JUDGED.iter().find(|(o, f, _)| *o == owner && *f == field) {
-                    Some((_, _, crate::api::Uint64::Number)) => None,
-                    Some((_, _, crate::api::Uint64::GpuAddress)) => Some(format!("{owner}.{field}: a GPU virtual address, carried only as (resource, offset) checked against the resource's recorded size, a line not yet written")),
-                    Some((_, _, crate::api::Uint64::DescriptorAddress)) => Some(format!("{owner}.{field}: an address of a descriptor heap's memory, carried only as (heap, index) checked against the heap's recorded description, a line not yet written")),
-                    None => {
-                        eprintln!("UNJUDGED UINT64 {owner}.{field}");
-                        Some(format!("{owner}.{field}: a UINT64 src/api.rs has not judged an address or a number"))
-                    }
-                })
-                .collect();
+            let refused = uint64_refusals(found, crate::api::UINT64_JUDGED);
             if !refused.is_empty() {
                 return Err(refused.join("; "));
             }
@@ -1218,3 +1214,62 @@ pub(super) use c_caller::write_c_caller;
 pub(super) use hostile::{write_hostile, write_suite};
 pub(super) use record::write_recorder;
 pub(super) use write::write_direct;
+
+/// The refusals of the UINT64s and SIZE_Ts a Direct3D 12 method reaches, as (method or structure, field), by `judged`
+/// (src/api.rs `UINT64_JUDGED`): a number passes; an address, or one no line judges, refuses the method (default deny).
+fn uint64_refusals(found: Vec<(String, String)>, judged: &[(&str, &str, crate::api::Uint64)]) -> Vec<String> {
+    found
+        .into_iter()
+        .filter_map(|(owner, field)| match judged.iter().find(|(o, f, _)| *o == owner && *f == field) {
+            Some((_, _, crate::api::Uint64::Number)) => None,
+            Some((_, _, crate::api::Uint64::GpuAddress)) => Some(format!("{owner}.{field}: a GPU virtual address, carried only as (resource, offset) checked against the resource's recorded size, a line not yet written")),
+            Some((_, _, crate::api::Uint64::DescriptorAddress)) => Some(format!("{owner}.{field}: an address of a descriptor heap's memory, carried only as (heap, index) checked against the heap's recorded description, a line not yet written")),
+            None => {
+                eprintln!("UNJUDGED UINT64 {owner}.{field}");
+                Some(format!("{owner}.{field}: a UINT64 src/api.rs has not judged an address or a number"))
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod uint64_tests {
+    use super::uint64_refusals;
+    use crate::api::{UINT64_JUDGED, Uint64};
+
+    fn found(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(owner, field)| (owner.to_string(), field.to_string())).collect()
+    }
+
+    #[test]
+    fn a_judged_number_passes() {
+        assert_eq!(uint64_refusals(found(&[("ID3D12Fence::Signal", "Value"), ("D3D12_RESOURCE_DESC", "Width")]), UINT64_JUDGED), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_unjudged_uint64_refuses_the_method() {
+        // Planted: a UINT64 no line judges (the fence's value with its line taken out of the table).
+        let without: Vec<(&str, &str, Uint64)> = UINT64_JUDGED.iter().copied().filter(|(owner, field, _)| !(*owner == "ID3D12Fence::Signal" && *field == "Value")).collect();
+        assert_eq!(without.len(), UINT64_JUDGED.len() - 1);
+        assert_eq!(
+            uint64_refusals(found(&[("ID3D12Fence::Signal", "Value")]), &without),
+            vec!["ID3D12Fence::Signal.Value: a UINT64 src/api.rs has not judged an address or a number".to_string()]
+        );
+        // And one the table never held.
+        assert_eq!(
+            uint64_refusals(found(&[("ID3D12Planted::Method", "Planted")]), UINT64_JUDGED),
+            vec!["ID3D12Planted::Method.Planted: a UINT64 src/api.rs has not judged an address or a number".to_string()]
+        );
+    }
+
+    #[test]
+    fn addresses_refuse_the_method_by_their_kind() {
+        assert_eq!(
+            uint64_refusals(found(&[("ID3D12Resource::GetGPUVirtualAddress", "return"), ("D3D12_CPU_DESCRIPTOR_HANDLE", "ptr"), ("D3D12_RANGE", "End")]), UINT64_JUDGED),
+            vec![
+                "ID3D12Resource::GetGPUVirtualAddress.return: a GPU virtual address, carried only as (resource, offset) checked against the resource's recorded size, a line not yet written".to_string(),
+                "D3D12_CPU_DESCRIPTOR_HANDLE.ptr: an address of a descriptor heap's memory, carried only as (heap, index) checked against the heap's recorded description, a line not yet written".to_string(),
+            ]
+        );
+    }
+}

@@ -65,6 +65,37 @@ pub fn live() -> i64 {
     LIVE.load(Ordering::SeqCst)
 }
 
+/// A known answer's bytes are each one of `KNOWN_SPAN` values from 1: never zero, and never with the top bit set, so no
+/// float read from them is NaN or infinite and every float compares equal to itself.
+const KNOWN_SPAN: usize = 126;
+/// What a known byte moves by from one byte to the next, so that neighboring fields differ.
+const KNOWN_STRIDE: usize = 29;
+/// The most bytes the recorder writes into the caller's bytes.
+const KNOWN_MOST: usize = 1 << 16;
+
+/// The known byte at `at` of an answer of salt `salt`.
+fn known_byte(salt: usize, at: usize) -> u8 {
+    u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
+}
+
+/// The known bytes a structure of the recorder's answers is decoded from.
+#[allow(dead_code, reason = "a recorder answering no structure decodes none")]
+fn known_bytes<const N: usize>(salt: usize) -> [u8; N] {
+    core::array::from_fn(|at| known_byte(salt, at))
+}
+
+/// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
+/// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
+/// directly.
+#[allow(dead_code, reason = "a recorder writing no caller's bytes writes none")]
+fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(bytes: &Bytes, salt: usize) {
+    let length = usize::try_from(bytes.len())
+        .unwrap_or(KNOWN_MOST)
+        .min(KNOWN_MOST);
+    let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
+    let _ = bytes.write(&known);
+}
+
 /// One object alive, counted until its last clone drops.
 #[derive(Debug)]
 struct Live(u64);
@@ -2803,7 +2834,7 @@ pub trait Recorded:
 impl<A: Recorded> direct3d_11::AuthenticatedChannel for RecordedAuthenticatedChannel<A> {
     fn get_certificate_size(&self) -> Result<u32, component_object_model::structures::HResult> {
         record("ID3D11AuthenticatedChannel::GetCertificateSize()".to_string());
-        Ok(Default::default())
+        Ok(4_u32)
     }
     fn get_certificate(
         &self,
@@ -2811,11 +2842,12 @@ impl<A: Recorded> direct3d_11::AuthenticatedChannel for RecordedAuthenticatedCha
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &certificate;
         record("ID3D11AuthenticatedChannel::GetCertificate()".to_string());
+        known_fill(certificate, 590010);
         Ok(())
     }
     fn get_channel_handle(&self) -> component_object_model::structures::Handle {
         record("ID3D11AuthenticatedChannel::GetChannelHandle()".to_string());
-        Default::default()
+        component_object_model::structures::Handle(7)
     }
 }
 
@@ -2886,7 +2918,7 @@ impl<A: Recorded> direct3d_11::BlendState1 for RecordedBlendState<A> {
     fn get_desc1(&self) -> direct3d_11::structures::BlendDesc1 {
         record("ID3D11BlendState1::GetDesc1()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_blend_desc1(
-            &[u8::MIN; 328],
+            &known_bytes::<328>(448872),
         )
     }
 }
@@ -2895,7 +2927,7 @@ impl<A: Recorded> direct3d_11::BlendState for RecordedBlendState<A> {
     fn get_desc(&self) -> direct3d_11::structures::BlendDesc {
         record("ID3D11BlendState::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_blend_desc(
-            &[u8::MIN; 264],
+            &known_bytes::<264>(132215),
         )
     }
 }
@@ -2967,7 +2999,7 @@ impl<A: Recorded> direct3d_11::Buffer for RecordedBuffer<A> {
     fn get_desc(&self) -> direct3d_11::structures::BufferDesc {
         record("ID3D11Buffer::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_buffer_desc(
-            &[u8::MIN; 24],
+            &known_bytes::<24>(982931),
         )
     }
 }
@@ -2975,7 +3007,7 @@ impl<A: Recorded> direct3d_11::Buffer for RecordedBuffer<A> {
 impl<A: Recorded> direct3d_11::Resource for RecordedBuffer<A> {
     fn get_type(&self) -> direct3d_11::enumerations::ResourceDimension {
         record("ID3D11Resource::GetType()".to_string());
-        Default::default()
+        direct3d_11::enumerations::ResourceDimension(72)
     }
     fn set_eviction_priority(&self, eviction_priority: u32) {
         let _ = &eviction_priority;
@@ -2986,7 +3018,7 @@ impl<A: Recorded> direct3d_11::Resource for RecordedBuffer<A> {
     }
     fn get_eviction_priority(&self) -> u32 {
         record("ID3D11Resource::GetEvictionPriority()".to_string());
-        Default::default()
+        122_u32
     }
 }
 
@@ -3421,7 +3453,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedBuffer<A
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetSharedHandle()".to_string());
-        Ok(Default::default())
+        Ok(component_object_model::structures::Handle(54))
     }
     fn get_usage(
         &self,
@@ -3430,7 +3462,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedBuffer<A
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetUsage()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::Usage(113))
     }
     fn set_eviction_priority(
         &self,
@@ -3450,7 +3482,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedBuffer<A
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetEvictionPriority()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::ResourcePriority(94))
     }
 }
 
@@ -3518,7 +3550,7 @@ impl<A: Recorded> direct3d_11::ClassInstance for RecordedClassInstance<A> {
     fn get_desc(&self) -> direct3d_11::structures::ClassInstanceDesc {
         record("ID3D11ClassInstance::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_class_instance_desc(
-            &[u8::MIN; 32],
+            &known_bytes::<32>(238923),
         )
     }
     fn get_instance_name(&self, instance_name: Option<&std::ffi::CStr>) {
@@ -3701,7 +3733,7 @@ impl<A: Recorded> direct3d_common::DestructionNotifier for RecordedClassLinkage<
 impl<A: Recorded> direct3d_11::CommandList for RecordedCommandList<A> {
     fn get_context_flags(&self) -> u32 {
         record("ID3D11CommandList::GetContextFlags()".to_string());
-        Default::default()
+        36_u32
     }
 }
 
@@ -3837,7 +3869,7 @@ impl<A: Recorded> direct3d_11::Counter for RecordedCounter<A> {
     fn get_desc(&self) -> direct3d_11::structures::CounterDesc {
         record("ID3D11Counter::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_counter_desc(
-            &[u8::MIN; 8],
+            &known_bytes::<8>(513758),
         )
     }
 }
@@ -3845,7 +3877,7 @@ impl<A: Recorded> direct3d_11::Counter for RecordedCounter<A> {
 impl<A: Recorded> direct3d_11::Asynchronous for RecordedCounter<A> {
     fn get_data_size(&self) -> u32 {
         record("ID3D11Asynchronous::GetDataSize()".to_string());
-        Default::default()
+        38_u32
     }
 }
 
@@ -3923,7 +3955,7 @@ impl<A: Recorded> direct3d_11::CryptoSession for RecordedCryptoSession<A> {
     }
     fn get_certificate_size(&self) -> Result<u32, component_object_model::structures::HResult> {
         record("ID3D11CryptoSession::GetCertificateSize()".to_string());
-        Ok(Default::default())
+        Ok(3_u32)
     }
     fn get_certificate(
         &self,
@@ -3931,11 +3963,12 @@ impl<A: Recorded> direct3d_11::CryptoSession for RecordedCryptoSession<A> {
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &certificate;
         record("ID3D11CryptoSession::GetCertificate()".to_string());
+        known_fill(certificate, 967703);
         Ok(())
     }
     fn get_crypto_session_handle(&self) -> component_object_model::structures::Handle {
         record("ID3D11CryptoSession::GetCryptoSessionHandle()".to_string());
-        Default::default()
+        component_object_model::structures::Handle(2)
     }
 }
 
@@ -4015,7 +4048,7 @@ impl<A: Recorded> direct3d_11::Debug for RecordedDebug<A> {
     }
     fn get_feature_mask(&self) -> u32 {
         record("ID3D11Debug::GetFeatureMask()".to_string());
-        Default::default()
+        31_u32
     }
     fn set_present_per_render_op_delay(
         &self,
@@ -4030,7 +4063,7 @@ impl<A: Recorded> direct3d_11::Debug for RecordedDebug<A> {
     }
     fn get_present_per_render_op_delay(&self) -> u32 {
         record("ID3D11Debug::GetPresentPerRenderOpDelay()".to_string());
-        Default::default()
+        34_u32
     }
     fn set_swap_chain(
         &self,
@@ -4103,7 +4136,7 @@ impl<A: Recorded> direct3d_11::DepthStencilState for RecordedDepthStencilState<A
     fn get_desc(&self) -> direct3d_11::structures::DepthStencilDesc {
         record("ID3D11DepthStencilState::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_depth_stencil_desc(
-            &[u8::MIN; 52],
+            &known_bytes::<52>(319670),
         )
     }
 }
@@ -4175,7 +4208,7 @@ impl<A: Recorded> direct3d_11::DepthStencilView for RecordedDepthStencilView<A> 
     fn get_desc(&self) -> direct3d_11::structures::DepthStencilViewDesc {
         record("ID3D11DepthStencilView::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_depth_stencil_view_desc(
-            &[u8::MIN; 24],
+            &known_bytes::<24>(78701),
         )
     }
 }
@@ -5013,7 +5046,7 @@ impl<A: Recorded> direct3d_11::Device4 for RecordedDevice<A> {
             "ID3D11Device4::RegisterDeviceRemovedEvent(h_event={:?})",
             h_event
         ));
-        Ok(Default::default())
+        Ok(74_u32)
     }
     fn unregister_device_removed(&self, dw_cookie: u32) {
         let _ = &dw_cookie;
@@ -5226,7 +5259,7 @@ impl<A: Recorded> direct3d_11::Device2 for RecordedDevice<A> {
             "ID3D11Device2::CheckMultisampleQualityLevels1(format={:?}, sample_count={:?}, flags={:?})",
             format, sample_count, flags
         ));
-        Ok(Default::default())
+        Ok(88_u32)
     }
 }
 
@@ -5294,7 +5327,10 @@ impl<A: Recorded> direct3d_11::Device1 for RecordedDevice<A> {
             "ID3D11Device1::CreateDeviceContextState(flags={:?}, sdk_version={:?})",
             flags, sdk_version
         ));
-        Ok((Default::default(), Some(RecordedDeviceContextState::new())))
+        Ok((
+            direct3d_common::enumerations::FeatureLevel(70),
+            Some(RecordedDeviceContextState::new()),
+        ))
     }
     fn open_shared_resource1(
         &self,
@@ -6749,7 +6785,7 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
             "ID3D11Device::CheckFormatSupport(format={:?})",
             format
         ));
-        Ok(Default::default())
+        Ok(40_u32)
     }
     fn check_multisample_quality_levels(
         &self,
@@ -6762,12 +6798,12 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
             "ID3D11Device::CheckMultisampleQualityLevels(format={:?}, sample_count={:?})",
             format, sample_count
         ));
-        Ok(Default::default())
+        Ok(34_u32)
     }
     fn check_counter_info(&self) -> direct3d_11::structures::CounterInfo {
         record("ID3D11Device::CheckCounterInfo()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_counter_info(
-            &[u8::MIN; 12],
+            &known_bytes::<12>(856953),
         )
     }
     fn check_counter(
@@ -6798,6 +6834,7 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
             "ID3D11Device::CheckFeatureSupport(feature={:?})",
             feature
         ));
+        known_fill(feature_support_data, 855195);
         Ok(())
     }
     fn get_private_data(
@@ -6832,11 +6869,11 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
     }
     fn get_feature_level(&self) -> direct3d_common::enumerations::FeatureLevel {
         record("ID3D11Device::GetFeatureLevel()".to_string());
-        Default::default()
+        direct3d_common::enumerations::FeatureLevel(124)
     }
     fn get_creation_flags(&self) -> u32 {
         record("ID3D11Device::GetCreationFlags()".to_string());
-        Default::default()
+        51_u32
     }
     fn get_device_removed_reason(&self) -> Result<(), component_object_model::structures::HResult> {
         record("ID3D11Device::GetDeviceRemovedReason()".to_string());
@@ -6861,7 +6898,7 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
     }
     fn get_exception_mode(&self) -> u32 {
         record("ID3D11Device::GetExceptionMode()".to_string());
-        Default::default()
+        35_u32
     }
 }
 
@@ -7120,7 +7157,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
     }
     fn get_gpu_thread_priority(&self) -> Result<i32, component_object_model::structures::HResult> {
         record("IDXGIDevice::GetGPUThreadPriority()".to_string());
-        Ok(Default::default())
+        Ok(34_i32)
     }
 }
 
@@ -7140,7 +7177,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Device1 for RecordedDevice<A>
         &self,
     ) -> Result<u32, component_object_model::structures::HResult> {
         record("IDXGIDevice1::GetMaximumFrameLatency()".to_string());
-        Ok(Default::default())
+        Ok(38_u32)
     }
 }
 
@@ -7164,7 +7201,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
     ) -> Result<Vec<bool>, component_object_model::structures::HResult> {
         let _ = &resources;
         record("IDXGIDevice2::ReclaimResources()".to_string());
-        Ok((0..2_u32).map(|_| Default::default()).collect())
+        Ok((0..2_u32).map(|_| true).collect())
     }
     fn enqueue_set_event(
         &self,
@@ -7210,7 +7247,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
     > {
         let _ = &resources;
         record("IDXGIDevice4::ReclaimResources1()".to_string());
-        Ok((0..2_u32).map(|_| Default::default()).collect())
+        Ok((0..2_u32)
+            .map(|_| directx_graphics_infrastructure::enumerations::ReclaimResourceResults(53))
+            .collect())
     }
 }
 
@@ -7227,11 +7266,11 @@ impl<A: Recorded> direct3d_11::Multithread for RecordedDevice<A> {
             "ID3D11Multithread::SetMultithreadProtected(b_mt_protect={:?})",
             b_mt_protect
         ));
-        Default::default()
+        true
     }
     fn get_multithread_protected(&self) -> bool {
         record("ID3D11Multithread::GetMultithreadProtected()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -7304,7 +7343,7 @@ impl<A: Recorded> direct3d_11::DeviceContext3 for RecordedDeviceContext<A> {
     }
     fn get_hardware_protection_state(&self) -> bool {
         record("ID3D11DeviceContext3::GetHardwareProtectionState()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -7418,7 +7457,7 @@ impl<A: Recorded> direct3d_11::DeviceContext2 for RecordedDeviceContext<A> {
     }
     fn is_annotation_enabled(&self) -> bool {
         record("ID3D11DeviceContext2::IsAnnotationEnabled()".to_string());
-        Default::default()
+        true
     }
     fn set_marker_int(&self, label: &[u16], data: i32) {
         let _ = &label;
@@ -7613,12 +7652,8 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             (0..num_buffers.min(4))
                 .map(|_| Some(RecordedBuffer::new()))
                 .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
+            (0..num_buffers.min(4)).map(|_| 52_u32).collect(),
+            (0..num_buffers.min(4)).map(|_| 59_u32).collect(),
         )
     }
     fn hs_get_constant_buffers1(
@@ -7640,12 +7675,8 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             (0..num_buffers.min(4))
                 .map(|_| Some(RecordedBuffer::new()))
                 .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
+            (0..num_buffers.min(4)).map(|_| 36_u32).collect(),
+            (0..num_buffers.min(4)).map(|_| 43_u32).collect(),
         )
     }
     fn ds_get_constant_buffers1(
@@ -7667,12 +7698,8 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             (0..num_buffers.min(4))
                 .map(|_| Some(RecordedBuffer::new()))
                 .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
+            (0..num_buffers.min(4)).map(|_| 116_u32).collect(),
+            (0..num_buffers.min(4)).map(|_| 123_u32).collect(),
         )
     }
     fn gs_get_constant_buffers1(
@@ -7694,12 +7721,8 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             (0..num_buffers.min(4))
                 .map(|_| Some(RecordedBuffer::new()))
                 .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
+            (0..num_buffers.min(4)).map(|_| 125_u32).collect(),
+            (0..num_buffers.min(4)).map(|_| 6_u32).collect(),
         )
     }
     fn ps_get_constant_buffers1(
@@ -7721,12 +7744,8 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             (0..num_buffers.min(4))
                 .map(|_| Some(RecordedBuffer::new()))
                 .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
+            (0..num_buffers.min(4)).map(|_| 65_u32).collect(),
+            (0..num_buffers.min(4)).map(|_| 72_u32).collect(),
         )
     }
     fn cs_get_constant_buffers1(
@@ -7748,12 +7767,8 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             (0..num_buffers.min(4))
                 .map(|_| Some(RecordedBuffer::new()))
                 .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
+            (0..num_buffers.min(4)).map(|_| 122_u32).collect(),
+            (0..num_buffers.min(4)).map(|_| 3_u32).collect(),
         )
     }
     fn swap_device_context_state(
@@ -8060,6 +8075,9 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             "ID3D11DeviceContext::GetData(get_data_flags={:?})",
             get_data_flags
         ));
+        if let Some(bytes) = data {
+            known_fill(bytes, 764712);
+        }
         Ok(true)
     }
     fn set_predication(
@@ -8368,7 +8386,7 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
     fn get_resource_min_lod(&self, resource: direct3d_11::ResourceRef<'_, Self::Api>) -> f32 {
         let _ = &resource;
         record("ID3D11DeviceContext::GetResourceMinLOD()".to_string());
-        Default::default()
+        126.5_f32
     }
     fn resolve_subresource(
         &self,
@@ -8658,12 +8676,8 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             (0..num_buffers.min(4))
                 .map(|_| Some(RecordedBuffer::new()))
                 .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
-            (0..num_buffers.min(4))
-                .map(|_| Default::default())
-                .collect(),
+            (0..num_buffers.min(4)).map(|_| 39_u32).collect(),
+            (0..num_buffers.min(4)).map(|_| 46_u32).collect(),
         )
     }
     fn ia_get_index_buffer(
@@ -8676,8 +8690,8 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::IAGetIndexBuffer()".to_string());
         (
             Some(RecordedBuffer::new()),
-            Default::default(),
-            Default::default(),
+            directx_graphics_infrastructure::enumerations::Format(59),
+            66_u32,
         )
     }
     fn gs_get_constant_buffers(
@@ -8706,7 +8720,7 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
     }
     fn ia_get_primitive_topology(&self) -> direct3d_common::enumerations::PrimitiveTopology {
         record("ID3D11DeviceContext::IAGetPrimitiveTopology()".to_string());
-        Default::default()
+        direct3d_common::enumerations::PrimitiveTopology(33)
     }
     fn vs_get_shader_resources(
         &self,
@@ -8745,7 +8759,7 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         bool,
     ) {
         record("ID3D11DeviceContext::GetPredication()".to_string());
-        (Some(RecordedPredicate::new()), Default::default())
+        (Some(RecordedPredicate::new()), true)
     }
     fn gs_get_shader_resources(
         &self,
@@ -8833,8 +8847,8 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::OMGetBlendState()".to_string());
         (
             Some(RecordedBlendState::new()),
-            core::array::from_fn(|_| Default::default()),
-            Default::default(),
+            core::array::from_fn(|_| 66.5_f32),
+            73_u32,
         )
     }
     fn om_get_depth_stencil_state(
@@ -8844,7 +8858,7 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         u32,
     ) {
         record("ID3D11DeviceContext::OMGetDepthStencilState()".to_string());
-        (Some(RecordedDepthStencilState::new()), Default::default())
+        (Some(RecordedDepthStencilState::new()), 53_u32)
     }
     fn so_get_targets(
         &self,
@@ -8868,7 +8882,7 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         (0..2_u32)
             .map(|_| {
                 data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_viewport(
-                    &[u8::MIN; 24],
+                    &known_bytes::<24>(843383),
                 )
             })
             .collect()
@@ -8878,7 +8892,7 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         (0..2_u32)
             .map(|_| {
                 data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                    &[u8::MIN; 16],
+                    &known_bytes::<16>(671905),
                 )
             })
             .collect()
@@ -9068,11 +9082,11 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
     }
     fn get_type(&self) -> direct3d_11::enumerations::DeviceContextType {
         record("ID3D11DeviceContext::GetType()".to_string());
-        Default::default()
+        direct3d_11::enumerations::DeviceContextType(104)
     }
     fn get_context_flags(&self) -> u32 {
         record("ID3D11DeviceContext::GetContextFlags()".to_string());
-        Default::default()
+        62_u32
     }
     fn finish_command_list(
         &self,
@@ -9142,11 +9156,11 @@ impl<A: Recorded> direct3d_11::Multithread for RecordedDeviceContext<A> {
             "ID3D11Multithread::SetMultithreadProtected(b_mt_protect={:?})",
             b_mt_protect
         ));
-        Default::default()
+        true
     }
     fn get_multithread_protected(&self) -> bool {
         record("ID3D11Multithread::GetMultithreadProtected()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -9154,11 +9168,11 @@ impl<A: Recorded> direct3d_11::UserDefinedAnnotation for RecordedDeviceContext<A
     fn begin_event(&self, name: &[u16]) -> i32 {
         let _ = &name;
         record("ID3DUserDefinedAnnotation::BeginEvent()".to_string());
-        Default::default()
+        113_i32
     }
     fn end_event(&self) -> i32 {
         record("ID3DUserDefinedAnnotation::EndEvent()".to_string());
-        Default::default()
+        46_i32
     }
     fn set_marker(&self, name: &[u16]) {
         let _ = &name;
@@ -9166,7 +9180,7 @@ impl<A: Recorded> direct3d_11::UserDefinedAnnotation for RecordedDeviceContext<A
     }
     fn get_status(&self) -> bool {
         record("ID3DUserDefinedAnnotation::GetStatus()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -9277,7 +9291,7 @@ impl<A: Recorded> direct3d_11::Fence for RecordedFence<A> {
     }
     fn get_completed_value(&self) -> u64 {
         record("ID3D11Fence::GetCompletedValue()".to_string());
-        Default::default()
+        97_u64
     }
     fn set_event_on_completion(
         &self,
@@ -9514,27 +9528,27 @@ impl<A: Recorded> direct3d_11::InfoQueue for RecordedInfoQueue<A> {
     }
     fn get_num_messages_allowed_by_storage_filter(&self) -> u64 {
         record("ID3D11InfoQueue::GetNumMessagesAllowedByStorageFilter()".to_string());
-        Default::default()
+        77_u64
     }
     fn get_num_messages_denied_by_storage_filter(&self) -> u64 {
         record("ID3D11InfoQueue::GetNumMessagesDeniedByStorageFilter()".to_string());
-        Default::default()
+        34_u64
     }
     fn get_num_stored_messages(&self) -> u64 {
         record("ID3D11InfoQueue::GetNumStoredMessages()".to_string());
-        Default::default()
+        104_u64
     }
     fn get_num_stored_messages_allowed_by_retrieval_filter(&self) -> u64 {
         record("ID3D11InfoQueue::GetNumStoredMessagesAllowedByRetrievalFilter()".to_string());
-        Default::default()
+        111_u64
     }
     fn get_num_messages_discarded_by_message_count_limit(&self) -> u64 {
         record("ID3D11InfoQueue::GetNumMessagesDiscardedByMessageCountLimit()".to_string());
-        Default::default()
+        70_u64
     }
     fn get_message_count_limit(&self) -> u64 {
         record("ID3D11InfoQueue::GetMessageCountLimit()".to_string());
-        Default::default()
+        44_u64
     }
     fn add_storage_filter_entries(
         &self,
@@ -9578,7 +9592,7 @@ impl<A: Recorded> direct3d_11::InfoQueue for RecordedInfoQueue<A> {
     }
     fn get_storage_filter_stack_size(&self) -> u32 {
         record("ID3D11InfoQueue::GetStorageFilterStackSize()".to_string());
-        Default::default()
+        12_u32
     }
     fn add_retrieval_filter_entries(
         &self,
@@ -9624,7 +9638,7 @@ impl<A: Recorded> direct3d_11::InfoQueue for RecordedInfoQueue<A> {
     }
     fn get_retrieval_filter_stack_size(&self) -> u32 {
         record("ID3D11InfoQueue::GetRetrievalFilterStackSize()".to_string());
-        Default::default()
+        16_u32
     }
     fn add_message(
         &self,
@@ -9701,7 +9715,7 @@ impl<A: Recorded> direct3d_11::InfoQueue for RecordedInfoQueue<A> {
             "ID3D11InfoQueue::GetBreakOnCategory(category={:?})",
             category
         ));
-        Default::default()
+        true
     }
     fn get_break_on_severity(&self, severity: direct3d_11::enumerations::MessageSeverity) -> bool {
         let _ = &severity;
@@ -9709,12 +9723,12 @@ impl<A: Recorded> direct3d_11::InfoQueue for RecordedInfoQueue<A> {
             "ID3D11InfoQueue::GetBreakOnSeverity(severity={:?})",
             severity
         ));
-        Default::default()
+        true
     }
     fn get_break_on_id(&self, id: direct3d_11::enumerations::MessageId) -> bool {
         let _ = &id;
         record(format!("ID3D11InfoQueue::GetBreakOnID(id={:?})", id));
-        Default::default()
+        true
     }
     fn set_mute_debug_output(&self, b_mute: bool) {
         let _ = &b_mute;
@@ -9725,7 +9739,7 @@ impl<A: Recorded> direct3d_11::InfoQueue for RecordedInfoQueue<A> {
     }
     fn get_mute_debug_output(&self) -> bool {
         record("ID3D11InfoQueue::GetMuteDebugOutput()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -9831,11 +9845,11 @@ impl<A: Recorded> direct3d_11::Multithread for RecordedMultithread<A> {
             "ID3D11Multithread::SetMultithreadProtected(b_mt_protect={:?})",
             b_mt_protect
         ));
-        Default::default()
+        true
     }
     fn get_multithread_protected(&self) -> bool {
         record("ID3D11Multithread::GetMultithreadProtected()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -9933,14 +9947,16 @@ impl<A: Recorded> direct3d_11::Predicate for RecordedPredicate<A> {}
 impl<A: Recorded> direct3d_11::Query for RecordedPredicate<A> {
     fn get_desc(&self) -> direct3d_11::structures::QueryDesc {
         record("ID3D11Query::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(&[u8::MIN; 8])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(
+            &known_bytes::<8>(315710),
+        )
     }
 }
 
 impl<A: Recorded> direct3d_11::Asynchronous for RecordedPredicate<A> {
     fn get_data_size(&self) -> u32 {
         record("ID3D11Asynchronous::GetDataSize()".to_string());
-        Default::default()
+        38_u32
     }
 }
 
@@ -10011,7 +10027,7 @@ impl<A: Recorded> direct3d_11::Query1 for RecordedQuery<A> {
     fn get_desc1(&self) -> direct3d_11::structures::QueryDesc1 {
         record("ID3D11Query1::GetDesc1()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc1(
-            &[u8::MIN; 12],
+            &known_bytes::<12>(943136),
         )
     }
 }
@@ -10019,14 +10035,16 @@ impl<A: Recorded> direct3d_11::Query1 for RecordedQuery<A> {
 impl<A: Recorded> direct3d_11::Query for RecordedQuery<A> {
     fn get_desc(&self) -> direct3d_11::structures::QueryDesc {
         record("ID3D11Query::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(&[u8::MIN; 8])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(
+            &known_bytes::<8>(315710),
+        )
     }
 }
 
 impl<A: Recorded> direct3d_11::Asynchronous for RecordedQuery<A> {
     fn get_data_size(&self) -> u32 {
         record("ID3D11Asynchronous::GetDataSize()".to_string());
-        Default::default()
+        38_u32
     }
 }
 
@@ -10097,7 +10115,7 @@ impl<A: Recorded> direct3d_11::RasterizerState2 for RecordedRasterizerState<A> {
     fn get_desc2(&self) -> direct3d_11::structures::RasterizerDesc2 {
         record("ID3D11RasterizerState2::GetDesc2()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc2(
-            &[u8::MIN; 48],
+            &known_bytes::<48>(134433),
         )
     }
 }
@@ -10106,7 +10124,7 @@ impl<A: Recorded> direct3d_11::RasterizerState1 for RecordedRasterizerState<A> {
     fn get_desc1(&self) -> direct3d_11::structures::RasterizerDesc1 {
         record("ID3D11RasterizerState1::GetDesc1()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc1(
-            &[u8::MIN; 44],
+            &known_bytes::<44>(698755),
         )
     }
 }
@@ -10115,7 +10133,7 @@ impl<A: Recorded> direct3d_11::RasterizerState for RecordedRasterizerState<A> {
     fn get_desc(&self) -> direct3d_11::structures::RasterizerDesc {
         record("ID3D11RasterizerState::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc(
-            &[u8::MIN; 40],
+            &known_bytes::<40>(901796),
         )
     }
 }
@@ -10265,7 +10283,7 @@ impl<A: Recorded> direct3d_11::RenderTargetView1 for RecordedRenderTargetView<A>
     fn get_desc1(&self) -> direct3d_11::structures::RenderTargetViewDesc1 {
         record("ID3D11RenderTargetView1::GetDesc1()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_render_target_view_desc1(
-            &[u8::MIN; 24],
+            &known_bytes::<24>(708830),
         )
     }
 }
@@ -10274,7 +10292,7 @@ impl<A: Recorded> direct3d_11::RenderTargetView for RecordedRenderTargetView<A> 
     fn get_desc(&self) -> direct3d_11::structures::RenderTargetViewDesc {
         record("ID3D11RenderTargetView::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_render_target_view_desc(
-            &[u8::MIN; 20],
+            &known_bytes::<20>(119976),
         )
     }
 }
@@ -10353,7 +10371,7 @@ impl<A: Recorded> direct3d_11::SamplerState for RecordedSamplerState<A> {
     fn get_desc(&self) -> direct3d_11::structures::SamplerDesc {
         record("ID3D11SamplerState::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_sampler_desc(
-            &[u8::MIN; 52],
+            &known_bytes::<52>(673382),
         )
     }
 }
@@ -10424,7 +10442,7 @@ impl<A: Recorded> direct3d_common::DestructionNotifier for RecordedSamplerState<
 impl<A: Recorded> direct3d_11::ShaderResourceView1 for RecordedShaderResourceView<A> {
     fn get_desc1(&self) -> direct3d_11::structures::ShaderResourceViewDesc1 {
         record("ID3D11ShaderResourceView1::GetDesc1()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_shader_resource_view_desc1(&[u8::MIN; 28])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_shader_resource_view_desc1(&known_bytes::<28>(109511))
     }
 }
 
@@ -10432,7 +10450,7 @@ impl<A: Recorded> direct3d_11::ShaderResourceView for RecordedShaderResourceView
     fn get_desc(&self) -> direct3d_11::structures::ShaderResourceViewDesc {
         record("ID3D11ShaderResourceView::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_shader_resource_view_desc(
-            &[u8::MIN; 24],
+            &known_bytes::<24>(69953),
         )
     }
 }
@@ -10510,7 +10528,7 @@ impl<A: Recorded> direct3d_common::DestructionNotifier for RecordedShaderResourc
 impl<A: Recorded> direct3d_11::ShaderTrace for RecordedShaderTrace<A> {
     fn trace_ready(&self) -> Result<u64, component_object_model::structures::HResult> {
         record("ID3D11ShaderTrace::TraceReady()".to_string());
-        Ok(Default::default())
+        Ok(102_u64)
     }
     fn reset_trace(&self) {
         record("ID3D11ShaderTrace::ResetTrace()".to_string());
@@ -10520,8 +10538,11 @@ impl<A: Recorded> direct3d_11::ShaderTrace for RecordedShaderTrace<A> {
     ) -> Result<direct3d_11::structures::TraceStats, component_object_model::structures::HResult>
     {
         record("ID3D11ShaderTrace::GetTraceStats()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_trace_stats(
+                &known_bytes::<8616>(443517),
+            ),
+        )
     }
     fn ps_select_stamp(
         &self,
@@ -10541,8 +10562,11 @@ impl<A: Recorded> direct3d_11::ShaderTrace for RecordedShaderTrace<A> {
     {
         let _ = &register;
         record("ID3D11ShaderTrace::GetInitialRegisterContents()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_trace_value(
+                &known_bytes::<20>(280201),
+            ),
+        )
     }
     fn get_step(
         &self,
@@ -10554,8 +10578,11 @@ impl<A: Recorded> direct3d_11::ShaderTrace for RecordedShaderTrace<A> {
             "ID3D11ShaderTrace::GetStep(step_index={:?})",
             step_index
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_trace_step(
+                &known_bytes::<24>(383575),
+            ),
+        )
     }
     fn get_written_register(
         &self,
@@ -10574,8 +10601,14 @@ impl<A: Recorded> direct3d_11::ShaderTrace for RecordedShaderTrace<A> {
             "ID3D11ShaderTrace::GetWrittenRegister(step_index={:?}, written_register_index={:?})",
             step_index, written_register_index
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok((
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_trace_register(
+                &known_bytes::<12>(629186),
+            ),
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_trace_value(
+                &known_bytes::<20>(629193),
+            ),
+        ))
     }
     fn get_read_register(
         &self,
@@ -10594,8 +10627,14 @@ impl<A: Recorded> direct3d_11::ShaderTrace for RecordedShaderTrace<A> {
             "ID3D11ShaderTrace::GetReadRegister(step_index={:?}, read_register_index={:?})",
             step_index, read_register_index
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok((
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_trace_register(
+                &known_bytes::<12>(167774),
+            ),
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_trace_value(
+                &known_bytes::<20>(167781),
+            ),
+        ))
     }
 }
 
@@ -10672,11 +10711,11 @@ impl<A: Recorded> direct3d_11::SwitchToRef for RecordedSwitchToRef<A> {
             "ID3D11SwitchToRef::SetUseRef(use_ref={:?})",
             use_ref
         ));
-        Default::default()
+        true
     }
     fn get_use_ref(&self) -> bool {
         record("ID3D11SwitchToRef::GetUseRef()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -10708,7 +10747,7 @@ impl<A: Recorded> direct3d_11::Texture1D for RecordedTexture1D<A> {
     fn get_desc(&self) -> direct3d_11::structures::Texture1DDesc {
         record("ID3D11Texture1D::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_1d_desc(
-            &[u8::MIN; 32],
+            &known_bytes::<32>(765992),
         )
     }
 }
@@ -10716,7 +10755,7 @@ impl<A: Recorded> direct3d_11::Texture1D for RecordedTexture1D<A> {
 impl<A: Recorded> direct3d_11::Resource for RecordedTexture1D<A> {
     fn get_type(&self) -> direct3d_11::enumerations::ResourceDimension {
         record("ID3D11Resource::GetType()".to_string());
-        Default::default()
+        direct3d_11::enumerations::ResourceDimension(72)
     }
     fn set_eviction_priority(&self, eviction_priority: u32) {
         let _ = &eviction_priority;
@@ -10727,7 +10766,7 @@ impl<A: Recorded> direct3d_11::Resource for RecordedTexture1D<A> {
     }
     fn get_eviction_priority(&self) -> u32 {
         record("ID3D11Resource::GetEvictionPriority()".to_string());
-        Default::default()
+        122_u32
     }
 }
 
@@ -11162,7 +11201,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedTexture1
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetSharedHandle()".to_string());
-        Ok(Default::default())
+        Ok(component_object_model::structures::Handle(54))
     }
     fn get_usage(
         &self,
@@ -11171,7 +11210,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedTexture1
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetUsage()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::Usage(113))
     }
     fn set_eviction_priority(
         &self,
@@ -11191,7 +11230,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedTexture1
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetEvictionPriority()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::ResourcePriority(94))
     }
 }
 
@@ -11255,7 +11294,7 @@ impl<A: Recorded> direct3d_11::Texture2D1 for RecordedTexture2D<A> {
     fn get_desc1(&self) -> direct3d_11::structures::Texture2DDesc1 {
         record("ID3D11Texture2D1::GetDesc1()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_2d_desc1(
-            &[u8::MIN; 48],
+            &known_bytes::<48>(333731),
         )
     }
 }
@@ -11264,7 +11303,7 @@ impl<A: Recorded> direct3d_11::Texture2D for RecordedTexture2D<A> {
     fn get_desc(&self) -> direct3d_11::structures::Texture2DDesc {
         record("ID3D11Texture2D::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_2d_desc(
-            &[u8::MIN; 44],
+            &known_bytes::<44>(513792),
         )
     }
 }
@@ -11272,7 +11311,7 @@ impl<A: Recorded> direct3d_11::Texture2D for RecordedTexture2D<A> {
 impl<A: Recorded> direct3d_11::Resource for RecordedTexture2D<A> {
     fn get_type(&self) -> direct3d_11::enumerations::ResourceDimension {
         record("ID3D11Resource::GetType()".to_string());
-        Default::default()
+        direct3d_11::enumerations::ResourceDimension(72)
     }
     fn set_eviction_priority(&self, eviction_priority: u32) {
         let _ = &eviction_priority;
@@ -11283,7 +11322,7 @@ impl<A: Recorded> direct3d_11::Resource for RecordedTexture2D<A> {
     }
     fn get_eviction_priority(&self) -> u32 {
         record("ID3D11Resource::GetEvictionPriority()".to_string());
-        Default::default()
+        122_u32
     }
 }
 
@@ -11718,7 +11757,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedTexture2
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetSharedHandle()".to_string());
-        Ok(Default::default())
+        Ok(component_object_model::structures::Handle(54))
     }
     fn get_usage(
         &self,
@@ -11727,7 +11766,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedTexture2
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetUsage()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::Usage(113))
     }
     fn set_eviction_priority(
         &self,
@@ -11747,7 +11786,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedTexture2
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetEvictionPriority()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::ResourcePriority(94))
     }
 }
 
@@ -11791,8 +11830,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface for RecordedTexture2D
         component_object_model::structures::HResult,
     > {
         record("IDXGISurface::GetDesc()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_surface_desc(&known_bytes::<20>(481648)))
     }
     fn map(
         &self,
@@ -11819,7 +11857,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface1 for RecordedTexture2
     {
         let _ = &discard;
         record(format!("IDXGISurface1::GetDC(discard={:?})", discard));
-        Ok(Default::default())
+        Ok(component_object_model::structures::Hdc(15))
     }
     fn release_dc(
         &self,
@@ -12006,7 +12044,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface2 for RecordedTexture2
             } else {
                 return Err(E_NOINTERFACE);
             },
-            Default::default(),
+            57_u32,
         ))
     }
 }
@@ -12039,7 +12077,7 @@ impl<A: Recorded> direct3d_11::Texture3D1 for RecordedTexture3D<A> {
     fn get_desc1(&self) -> direct3d_11::structures::Texture3DDesc1 {
         record("ID3D11Texture3D1::GetDesc1()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_3d_desc1(
-            &[u8::MIN; 40],
+            &known_bytes::<40>(358239),
         )
     }
 }
@@ -12048,7 +12086,7 @@ impl<A: Recorded> direct3d_11::Texture3D for RecordedTexture3D<A> {
     fn get_desc(&self) -> direct3d_11::structures::Texture3DDesc {
         record("ID3D11Texture3D::GetDesc()".to_string());
         data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_3d_desc(
-            &[u8::MIN; 36],
+            &known_bytes::<36>(714633),
         )
     }
 }
@@ -12056,7 +12094,7 @@ impl<A: Recorded> direct3d_11::Texture3D for RecordedTexture3D<A> {
 impl<A: Recorded> direct3d_11::Resource for RecordedTexture3D<A> {
     fn get_type(&self) -> direct3d_11::enumerations::ResourceDimension {
         record("ID3D11Resource::GetType()".to_string());
-        Default::default()
+        direct3d_11::enumerations::ResourceDimension(72)
     }
     fn set_eviction_priority(&self, eviction_priority: u32) {
         let _ = &eviction_priority;
@@ -12067,7 +12105,7 @@ impl<A: Recorded> direct3d_11::Resource for RecordedTexture3D<A> {
     }
     fn get_eviction_priority(&self) -> u32 {
         record("ID3D11Resource::GetEvictionPriority()".to_string());
-        Default::default()
+        122_u32
     }
 }
 
@@ -12502,7 +12540,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedTexture3
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetSharedHandle()".to_string());
-        Ok(Default::default())
+        Ok(component_object_model::structures::Handle(54))
     }
     fn get_usage(
         &self,
@@ -12511,7 +12549,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedTexture3
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetUsage()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::Usage(113))
     }
     fn set_eviction_priority(
         &self,
@@ -12531,7 +12569,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedTexture3
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetEvictionPriority()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::ResourcePriority(94))
     }
 }
 
@@ -12649,14 +12687,14 @@ impl<A: Recorded> direct3d_common::DestructionNotifier for RecordedTracingDevice
 impl<A: Recorded> direct3d_11::UnorderedAccessView1 for RecordedUnorderedAccessView<A> {
     fn get_desc1(&self) -> direct3d_11::structures::UnorderedAccessViewDesc1 {
         record("ID3D11UnorderedAccessView1::GetDesc1()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_unordered_access_view_desc1(&[u8::MIN; 24])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_unordered_access_view_desc1(&known_bytes::<24>(442812))
     }
 }
 
 impl<A: Recorded> direct3d_11::UnorderedAccessView for RecordedUnorderedAccessView<A> {
     fn get_desc(&self) -> direct3d_11::structures::UnorderedAccessViewDesc {
         record("ID3D11UnorderedAccessView::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_unordered_access_view_desc(&[u8::MIN; 20])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_unordered_access_view_desc(&known_bytes::<20>(929157))
     }
 }
 
@@ -12847,7 +12885,10 @@ impl<A: Recorded> direct3d_11::VideoContext2 for RecordedVideoContext<A> {
         let _ = &video_processor;
         let _ = &meta_data;
         record("ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData()".to_string());
-        Default::default()
+        if let Some(bytes) = meta_data {
+            known_fill(bytes, 15748);
+        }
+        directx_graphics_infrastructure::enumerations::HdrMetadataType(125)
     }
     fn video_processor_set_stream_hdr_meta_data(
         &self,
@@ -12878,7 +12919,10 @@ impl<A: Recorded> direct3d_11::VideoContext2 for RecordedVideoContext<A> {
             "ID3D11VideoContext2::VideoProcessorGetStreamHDRMetaData(stream_index={:?})",
             stream_index
         ));
-        Default::default()
+        if let Some(bytes) = meta_data {
+            known_fill(bytes, 102060);
+        }
+        directx_graphics_infrastructure::enumerations::HdrMetadataType(1)
     }
 }
 
@@ -12901,7 +12945,7 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
         let _ = &crypto_session;
         let _ = &privat_input_data;
         record("ID3D11VideoContext1::GetDataForNewHardwareKey()".to_string());
-        Ok(Default::default())
+        Ok(5_u64)
     }
     fn check_crypto_session_status(
         &self,
@@ -12912,7 +12956,7 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
     > {
         let _ = &crypto_session;
         record("ID3D11VideoContext1::CheckCryptoSessionStatus()".to_string());
-        Ok(Default::default())
+        Ok(direct3d_11::enumerations::CryptoSessionStatus(69))
     }
     fn decoder_enable_downsampling(
         &self,
@@ -12971,7 +13015,7 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
     ) -> directx_graphics_infrastructure::enumerations::ColorSpaceType {
         let _ = &video_processor;
         record("ID3D11VideoContext1::VideoProcessorGetOutputColorSpace1()".to_string());
-        Default::default()
+        directx_graphics_infrastructure::enumerations::ColorSpaceType(18)
     }
     fn video_processor_get_output_shader_usage(
         &self,
@@ -12979,7 +13023,7 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
     ) -> bool {
         let _ = &video_processor;
         record("ID3D11VideoContext1::VideoProcessorGetOutputShaderUsage()".to_string());
-        Default::default()
+        true
     }
     fn video_processor_set_stream_color_space1(
         &self,
@@ -13024,7 +13068,7 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             "ID3D11VideoContext1::VideoProcessorGetStreamColorSpace1(stream_index={:?})",
             stream_index
         ));
-        Default::default()
+        directx_graphics_infrastructure::enumerations::ColorSpaceType(67)
     }
     fn video_processor_get_stream_mirror(
         &self,
@@ -13037,7 +13081,7 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             "ID3D11VideoContext1::VideoProcessorGetStreamMirror(stream_index={:?})",
             stream_index
         ));
-        (Default::default(), Default::default(), Default::default())
+        (true, true, true)
     }
     fn video_processor_get_behavior_hints(
         &self,
@@ -13056,7 +13100,7 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             "ID3D11VideoContext1::VideoProcessorGetBehaviorHints(output_width={:?}, output_height={:?}, output_format={:?})",
             output_width, output_height, output_format
         ));
-        Ok(Default::default())
+        Ok(5_u32)
     }
 }
 
@@ -13221,9 +13265,9 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputTargetRect()".to_string());
         (
-            Default::default(),
+            true,
             data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                &[u8::MIN; 16],
+                &known_bytes::<16>(950542),
             ),
         )
     }
@@ -13234,9 +13278,9 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputBackgroundColor()".to_string());
         (
-            Default::default(),
+            true,
             data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_color(
-                &[u8::MIN; 16],
+                &known_bytes::<16>(642069),
             ),
         )
     }
@@ -13246,7 +13290,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> direct3d_11::structures::VideoProcessorColorSpace {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputColorSpace()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_color_space(&[u8::MIN; 4])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_color_space(&known_bytes::<4>(759021))
     }
     fn video_processor_get_output_alpha_fill_mode(
         &self,
@@ -13254,7 +13298,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> (direct3d_11::enumerations::VideoProcessorAlphaFillMode, u32) {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputAlphaFillMode()".to_string());
-        (Default::default(), Default::default())
+        (
+            direct3d_11::enumerations::VideoProcessorAlphaFillMode(33),
+            40_u32,
+        )
     }
     fn video_processor_get_output_constriction(
         &self,
@@ -13263,8 +13310,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputConstriction()".to_string());
         (
-            Default::default(),
-            data_direct3d_11::decode_windows_win32_foundation_size(&[u8::MIN; 8]),
+            true,
+            data_direct3d_11::decode_windows_win32_foundation_size(&known_bytes::<8>(553813)),
         )
     }
     fn video_processor_get_output_stereo_mode(
@@ -13273,7 +13320,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> bool {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputStereoMode()".to_string());
-        Default::default()
+        true
     }
     fn video_processor_get_output_extension(
         &self,
@@ -13285,7 +13332,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &extension_guid;
         let _ = &data;
         record("ID3D11VideoContext::VideoProcessorGetOutputExtension()".to_string());
-        Default::default()
+        known_fill(data, 527385);
+        76_i32
     }
     fn video_processor_set_stream_frame_format(
         &self,
@@ -13520,7 +13568,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamFrameFormat(stream_index={:?})",
             stream_index
         ));
-        Default::default()
+        direct3d_11::enumerations::VideoFrameFormat(8)
     }
     fn video_processor_get_stream_color_space(
         &self,
@@ -13533,7 +13581,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamColorSpace(stream_index={:?})",
             stream_index
         ));
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_color_space(&[u8::MIN; 4])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_color_space(&known_bytes::<4>(276343))
     }
     fn video_processor_get_stream_output_rate(
         &self,
@@ -13550,7 +13598,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamOutputRate(stream_index={:?})",
             stream_index
         ));
-        (Default::default(), Default::default(), data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&[u8::MIN; 8]))
+        (direct3d_11::enumerations::VideoProcessorOutputRate(43), true, data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&known_bytes::<8>(320348)))
     }
     fn video_processor_get_stream_source_rect(
         &self,
@@ -13564,9 +13612,9 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         (
-            Default::default(),
+            true,
             data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                &[u8::MIN; 16],
+                &known_bytes::<16>(711244),
             ),
         )
     }
@@ -13582,9 +13630,9 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         (
-            Default::default(),
+            true,
             data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                &[u8::MIN; 16],
+                &known_bytes::<16>(577836),
             ),
         )
     }
@@ -13599,7 +13647,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamAlpha(stream_index={:?})",
             stream_index
         ));
-        (Default::default(), Default::default())
+        (true, 39.5_f32)
     }
     fn video_processor_get_stream_palette(
         &self,
@@ -13614,7 +13662,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamPalette(stream_index={:?}, count={:?})",
             stream_index, count
         ));
-        (0..count.min(4)).map(|_| Default::default()).collect()
+        (0..count.min(4)).map(|_| 10_u32).collect()
     }
     fn video_processor_get_stream_pixel_aspect_ratio(
         &self,
@@ -13631,7 +13679,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamPixelAspectRatio(stream_index={:?})",
             stream_index
         ));
-        (Default::default(), data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&[u8::MIN; 8]), data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&[u8::MIN; 8]))
+        (true, data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&known_bytes::<8>(280006)), data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&known_bytes::<8>(280013)))
     }
     fn video_processor_get_stream_luma_key(
         &self,
@@ -13644,7 +13692,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamLumaKey(stream_index={:?})",
             stream_index
         ));
-        (Default::default(), Default::default(), Default::default())
+        (true, 82.5_f32, 89.5_f32)
     }
     fn video_processor_get_stream_stereo_format(
         &self,
@@ -13665,12 +13713,12 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         (
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
+            true,
+            direct3d_11::enumerations::VideoProcessorStereoFormat(62),
+            true,
+            true,
+            direct3d_11::enumerations::VideoProcessorStereoFlipMode(83),
+            90_i32,
         )
     }
     fn video_processor_get_stream_auto_processing_mode(
@@ -13684,7 +13732,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamAutoProcessingMode(stream_index={:?})",
             stream_index
         ));
-        Default::default()
+        true
     }
     fn video_processor_get_stream_filter(
         &self,
@@ -13699,7 +13747,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamFilter(stream_index={:?}, filter={:?})",
             stream_index, filter
         ));
-        (Default::default(), Default::default())
+        (true, 78_i32)
     }
     fn video_processor_get_stream_extension(
         &self,
@@ -13716,7 +13764,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamExtension(stream_index={:?})",
             stream_index
         ));
-        Default::default()
+        known_fill(data, 392571);
+        82_i32
     }
     fn video_processor_blt(
         &self,
@@ -13740,6 +13789,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &crypto_session;
         let _ = &data;
         record("ID3D11VideoContext::NegotiateCryptoSessionKeyExchange()".to_string());
+        known_fill(data, 628687);
         Ok(())
     }
     fn encryption_blt(
@@ -13754,6 +13804,9 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &dst_surface;
         let _ = &iv;
         record("ID3D11VideoContext::EncryptionBlt()".to_string());
+        if let Some(bytes) = iv {
+            known_fill(bytes, 727463);
+        }
     }
     fn decryption_blt(
         &self,
@@ -13771,6 +13824,9 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &content_key;
         let _ = &iv;
         record("ID3D11VideoContext::DecryptionBlt()".to_string());
+        if let Some(bytes) = iv {
+            known_fill(bytes, 239887);
+        }
     }
     fn start_session_key_refresh(
         &self,
@@ -13780,6 +13836,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &crypto_session;
         let _ = &random_number;
         record("ID3D11VideoContext::StartSessionKeyRefresh()".to_string());
+        known_fill(random_number, 167566);
     }
     fn finish_session_key_refresh(
         &self,
@@ -13796,6 +13853,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &crypto_session;
         let _ = &readback_key;
         record("ID3D11VideoContext::GetEncryptionBltKey()".to_string());
+        known_fill(readback_key, 294862);
         Ok(())
     }
     fn negotiate_authenticated_channel_key_exchange(
@@ -13806,6 +13864,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &channel;
         let _ = &data;
         record("ID3D11VideoContext::NegotiateAuthenticatedChannelKeyExchange()".to_string());
+        known_fill(data, 717297);
         Ok(())
     }
     fn query_authenticated_channel(
@@ -13818,6 +13877,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &input;
         let _ = &output;
         record("ID3D11VideoContext::QueryAuthenticatedChannel()".to_string());
+        known_fill(output, 365753);
         Ok(())
     }
     fn configure_authenticated_channel(
@@ -13831,8 +13891,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &channel;
         let _ = &input;
         record("ID3D11VideoContext::ConfigureAuthenticatedChannel()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_authenticated_configure_output(&known_bytes::<48>(97799)))
     }
     fn video_processor_set_stream_rotation(
         &self,
@@ -13861,7 +13920,7 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamRotation(stream_index={:?})",
             stream_index
         ));
-        (Default::default(), Default::default())
+        (true, direct3d_11::enumerations::VideoProcessorRotation(66))
     }
 }
 
@@ -13939,8 +13998,14 @@ impl<A: Recorded> direct3d_11::VideoDecoder for RecordedVideoDecoder<A> {
         component_object_model::structures::HResult,
     > {
         record("ID3D11VideoDecoder::GetCreationParameters()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok((
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_desc(
+                &known_bytes::<28>(944200),
+            ),
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_config(
+                &known_bytes::<100>(944207),
+            ),
+        ))
     }
     fn get_driver_handle(
         &self,
@@ -13949,7 +14014,7 @@ impl<A: Recorded> direct3d_11::VideoDecoder for RecordedVideoDecoder<A> {
         component_object_model::structures::HResult,
     > {
         record("ID3D11VideoDecoder::GetDriverHandle()".to_string());
-        Ok(Default::default())
+        Ok(component_object_model::structures::Handle(54))
     }
 }
 
@@ -14019,7 +14084,7 @@ impl<A: Recorded> direct3d_common::DestructionNotifier for RecordedVideoDecoder<
 impl<A: Recorded> direct3d_11::VideoDecoderOutputView for RecordedVideoDecoderOutputView<A> {
     fn get_desc(&self) -> direct3d_11::structures::VideoDecoderOutputViewDesc {
         record("ID3D11VideoDecoderOutputView::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_output_view_desc(&[u8::MIN; 24])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_output_view_desc(&known_bytes::<24>(846781))
     }
 }
 
@@ -14105,6 +14170,7 @@ impl<A: Recorded> direct3d_11::VideoDevice2 for RecordedVideoDevice<A> {
             "ID3D11VideoDevice2::CheckFeatureSupport(feature={:?})",
             feature
         ));
+        known_fill(feature_support_data, 586740);
         Ok(())
     }
     fn negotiate_crypto_session_key_exchange_mt(
@@ -14120,6 +14186,7 @@ impl<A: Recorded> direct3d_11::VideoDevice2 for RecordedVideoDevice<A> {
             "ID3D11VideoDevice2::NegotiateCryptoSessionKeyExchangeMT(flags={:?})",
             flags
         ));
+        known_fill(data, 959368);
         Ok(())
     }
 }
@@ -14135,7 +14202,7 @@ impl<A: Recorded> direct3d_11::VideoDevice1 for RecordedVideoDevice<A> {
         let _ = &decoder_profile;
         let _ = &key_exchange_type;
         record("ID3D11VideoDevice1::GetCryptoSessionPrivateDataSize()".to_string());
-        Ok((Default::default(), Default::default()))
+        Ok((15_u32, 22_u32))
     }
     fn get_video_decoder_caps(
         &self,
@@ -14156,7 +14223,7 @@ impl<A: Recorded> direct3d_11::VideoDevice1 for RecordedVideoDevice<A> {
             "ID3D11VideoDevice1::GetVideoDecoderCaps(sample_width={:?}, sample_height={:?}, bit_rate={:?})",
             sample_width, sample_height, bit_rate
         ));
-        Ok(Default::default())
+        Ok(118_u32)
     }
     fn check_video_decoder_downsampling(
         &self,
@@ -14175,7 +14242,7 @@ impl<A: Recorded> direct3d_11::VideoDevice1 for RecordedVideoDevice<A> {
             "ID3D11VideoDevice1::CheckVideoDecoderDownsampling(input_color_space={:?})",
             input_color_space
         ));
-        Ok((Default::default(), Default::default()))
+        Ok((true, true))
     }
     fn recommend_video_decoder_downsample_parameters(
         &self,
@@ -14193,8 +14260,11 @@ impl<A: Recorded> direct3d_11::VideoDevice1 for RecordedVideoDevice<A> {
             "ID3D11VideoDevice1::RecommendVideoDecoderDownsampleParameters(input_color_space={:?})",
             input_color_space
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_sample_desc(
+                &known_bytes::<16>(257047),
+            ),
+        )
     }
 }
 
@@ -14315,7 +14385,7 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
     }
     fn get_video_decoder_profile_count(&self) -> u32 {
         record("ID3D11VideoDevice::GetVideoDecoderProfileCount()".to_string());
-        Default::default()
+        73_u32
     }
     fn get_video_decoder_profile(
         &self,
@@ -14327,8 +14397,7 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
             "ID3D11VideoDevice::GetVideoDecoderProfile(index={:?})",
             index
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(Default::default())
     }
     fn check_video_decoder_format(
         &self,
@@ -14341,7 +14410,7 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
             "ID3D11VideoDevice::CheckVideoDecoderFormat(format={:?})",
             format
         ));
-        Ok(Default::default())
+        Ok(true)
     }
     fn get_video_decoder_config_count(
         &self,
@@ -14349,7 +14418,7 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
     ) -> Result<u32, component_object_model::structures::HResult> {
         let _ = &desc;
         record("ID3D11VideoDevice::GetVideoDecoderConfigCount()".to_string());
-        Ok(Default::default())
+        Ok(48_u32)
     }
     fn get_video_decoder_config(
         &self,
@@ -14365,8 +14434,11 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
             "ID3D11VideoDevice::GetVideoDecoderConfig(index={:?})",
             index
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_config(
+                &known_bytes::<100>(540719),
+            ),
+        )
     }
     fn get_content_protection_caps(
         &self,
@@ -14379,8 +14451,7 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
         let _ = &crypto_type;
         let _ = &decoder_profile;
         record("ID3D11VideoDevice::GetContentProtectionCaps()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_content_protection_caps(&known_bytes::<24>(572438)))
     }
     fn check_crypto_key_exchange(
         &self,
@@ -14396,8 +14467,7 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
             "ID3D11VideoDevice::CheckCryptoKeyExchange(index={:?})",
             index
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(Default::default())
     }
     fn set_private_data(
         &self,
@@ -14448,13 +14518,13 @@ impl<A: Recorded> direct3d_common::DestructionNotifier for RecordedVideoDevice<A
 impl<A: Recorded> direct3d_11::VideoProcessor for RecordedVideoProcessor<A> {
     fn get_content_desc(&self) -> direct3d_11::structures::VideoProcessorContentDesc {
         record("ID3D11VideoProcessor::GetContentDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_content_desc(&[u8::MIN; 40])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_content_desc(&known_bytes::<40>(959063))
     }
     fn get_rate_conversion_caps(
         &self,
     ) -> direct3d_11::structures::VideoProcessorRateConversionCaps {
         record("ID3D11VideoProcessor::GetRateConversionCaps()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_rate_conversion_caps(&[u8::MIN; 20])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_rate_conversion_caps(&known_bytes::<20>(328742))
     }
 }
 
@@ -14537,7 +14607,7 @@ impl<A: Recorded> direct3d_11::VideoProcessorEnumerator1 for RecordedVideoProces
             "ID3D11VideoProcessorEnumerator1::CheckVideoProcessorFormatConversion(input_format={:?}, input_color_space={:?}, output_format={:?}, output_color_space={:?})",
             input_format, input_color_space, output_format, output_color_space
         ));
-        Ok(Default::default())
+        Ok(true)
     }
 }
 
@@ -14549,8 +14619,7 @@ impl<A: Recorded> direct3d_11::VideoProcessorEnumerator for RecordedVideoProcess
         component_object_model::structures::HResult,
     > {
         record("ID3D11VideoProcessorEnumerator::GetVideoProcessorContentDesc()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_content_desc(&known_bytes::<40>(360680)))
     }
     fn check_video_processor_format(
         &self,
@@ -14561,7 +14630,7 @@ impl<A: Recorded> direct3d_11::VideoProcessorEnumerator for RecordedVideoProcess
             "ID3D11VideoProcessorEnumerator::CheckVideoProcessorFormat(format={:?})",
             format
         ));
-        Ok(Default::default())
+        Ok(57_u32)
     }
     fn get_video_processor_caps(
         &self,
@@ -14570,8 +14639,11 @@ impl<A: Recorded> direct3d_11::VideoProcessorEnumerator for RecordedVideoProcess
         component_object_model::structures::HResult,
     > {
         record("ID3D11VideoProcessorEnumerator::GetVideoProcessorCaps()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_caps(
+                &known_bytes::<36>(6793),
+            ),
+        )
     }
     fn get_video_processor_rate_conversion_caps(
         &self,
@@ -14585,8 +14657,7 @@ impl<A: Recorded> direct3d_11::VideoProcessorEnumerator for RecordedVideoProcess
             "ID3D11VideoProcessorEnumerator::GetVideoProcessorRateConversionCaps(type_index={:?})",
             type_index
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_rate_conversion_caps(&known_bytes::<20>(956551)))
     }
     fn get_video_processor_custom_rate(
         &self,
@@ -14602,8 +14673,7 @@ impl<A: Recorded> direct3d_11::VideoProcessorEnumerator for RecordedVideoProcess
             "ID3D11VideoProcessorEnumerator::GetVideoProcessorCustomRate(type_index={:?}, custom_rate_index={:?})",
             type_index, custom_rate_index
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_custom_rate(&known_bytes::<20>(298585)))
     }
     fn get_video_processor_filter_range(
         &self,
@@ -14617,8 +14687,7 @@ impl<A: Recorded> direct3d_11::VideoProcessorEnumerator for RecordedVideoProcess
             "ID3D11VideoProcessorEnumerator::GetVideoProcessorFilterRange(filter={:?})",
             filter
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_filter_range(&known_bytes::<16>(675056)))
     }
 }
 
@@ -14688,7 +14757,7 @@ impl<A: Recorded> direct3d_common::DestructionNotifier for RecordedVideoProcesso
 impl<A: Recorded> direct3d_11::VideoProcessorInputView for RecordedVideoProcessorInputView<A> {
     fn get_desc(&self) -> direct3d_11::structures::VideoProcessorInputViewDesc {
         record("ID3D11VideoProcessorInputView::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_input_view_desc(&[u8::MIN; 16])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_input_view_desc(&known_bytes::<16>(402294))
     }
 }
 
@@ -14765,7 +14834,7 @@ impl<A: Recorded> direct3d_common::DestructionNotifier for RecordedVideoProcesso
 impl<A: Recorded> direct3d_11::VideoProcessorOutputView for RecordedVideoProcessorOutputView<A> {
     fn get_desc(&self) -> direct3d_11::structures::VideoProcessorOutputViewDesc {
         record("ID3D11VideoProcessorOutputView::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_output_view_desc(&[u8::MIN; 16])
+        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_output_view_desc(&known_bytes::<16>(544996))
     }
 }
 
@@ -14908,11 +14977,11 @@ impl<A: Recorded> direct3d_11::UserDefinedAnnotation for RecordedUserDefinedAnno
     fn begin_event(&self, name: &[u16]) -> i32 {
         let _ = &name;
         record("ID3DUserDefinedAnnotation::BeginEvent()".to_string());
-        Default::default()
+        113_i32
     }
     fn end_event(&self) -> i32 {
         record("ID3DUserDefinedAnnotation::EndEvent()".to_string());
-        Default::default()
+        46_i32
     }
     fn set_marker(&self, name: &[u16]) {
         let _ = &name;
@@ -14920,7 +14989,7 @@ impl<A: Recorded> direct3d_11::UserDefinedAnnotation for RecordedUserDefinedAnno
     }
     fn get_status(&self) -> bool {
         record("ID3DUserDefinedAnnotation::GetStatus()".to_string());
-        Default::default()
+        true
     }
 }
 

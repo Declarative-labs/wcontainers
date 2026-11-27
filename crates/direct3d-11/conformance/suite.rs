@@ -17,6 +17,8 @@
     clippy::option_map_unit_fn,
     clippy::bool_assert_comparison,
     clippy::eq_op,
+    clippy::format_in_format_args,
+    clippy::to_string_in_format_args,
     reason = "generated: every call has the same shape"
 )]
 
@@ -142,6 +144,51 @@ fn equals_its_clone<T: Clone + Eq>(object: T) -> bool {
 fn answered<T>(answer: T) -> bool {
     drop(answer);
     true
+}
+
+/// What each method both glues carry to the implementation answered, in the order called: the place and the answer's
+/// every field (`Debug`), an object in it named only as one (its identity is no value); and the caller's bytes after a
+/// method that writes them. The same drive made on an implementation directly and through both glues must give the same.
+#[derive(Debug, Default)]
+struct Answers(std::sync::Mutex<Vec<String>>);
+
+impl Answers {
+    fn push(&self, line: String) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(line);
+    }
+
+    /// The caller's bytes after the method.
+    fn bytes(&self, place: &str, bytes: &SuiteBytes) {
+        let held = bytes
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        self.push(format!("{place} wrote {held:?}"));
+    }
+
+    fn len(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Notes a call that noted nothing since `noted` answers (skipped for want of an object, or panicked).
+    fn not_called_since(&self, noted: usize, place: &str) {
+        if self.len() == noted {
+            self.push(format!("{place}: not called, or panicked"));
+        }
+    }
+
+    fn lines(self) -> Vec<String> {
+        self.0
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// One object of each kind the suite made, by kind.
@@ -8736,7 +8783,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     let this = o.k44.as_ref()?;
                     let answer = direct3d_11::VideoDevice::create_authenticated_channel(
                         this,
-                        Default::default(),
+                        direct3d_11::enumerations::D3D11_AUTHENTICATED_CHANNEL_D3D11,
                     );
                     answer.ok()
                 })
@@ -14061,8 +14108,9 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
     o.kinds_held()
 }
 
-/// Calls every method on every object held, and the exports, each answer checked.
-fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
+/// Calls every method on every object held, and the exports, each answer checked, and notes in `answers` what each
+/// method both glues carry to the implementation answered.
+fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Driven {
     let mut driven = Driven::default();
     // ID3DBlob::GetBufferPointer on Blob
     driven.attempt(|| {
@@ -14072,12 +14120,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_common::Blob::get_buffer_pointer(this))
     });
     // ID3DBlob::GetBufferSize on Blob
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k0.as_ref() else {
             return false;
         };
-        answered(direct3d_common::Blob::get_buffer_size(this))
+        answered({
+            let answer = direct3d_common::Blob::get_buffer_size(this);
+            answers.push(format!(
+                "ID3DBlob::GetBufferSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3DBlob::GetBufferSize on Blob");
     // ID3DDestructionNotifier::RegisterDestructionCallback on DestructionNotifier
     driven.attempt(|| {
         let Some(this) = o.k1.as_ref() else {
@@ -14093,50 +14150,108 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on DestructionNotifier
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k1.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on DestructionNotifier",
+    );
     // ID3D11AuthenticatedChannel::GetCertificateSize on AuthenticatedChannel
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k2.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::AuthenticatedChannel::get_certificate_size(
-            this,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::AuthenticatedChannel::get_certificate_size(this);
+            answers.push(format!(
+                "ID3D11AuthenticatedChannel::GetCertificateSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11AuthenticatedChannel::GetCertificateSize on AuthenticatedChannel",
+    );
     // ID3D11AuthenticatedChannel::GetCertificate on AuthenticatedChannel
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k2.as_ref() else {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(direct3d_11::AuthenticatedChannel::get_certificate(
-            this, &lying,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::AuthenticatedChannel::get_certificate(this, &lying);
+            answers.push(format!(
+                "ID3D11AuthenticatedChannel::GetCertificate -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("ID3D11AuthenticatedChannel::GetCertificate", &lying);
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11AuthenticatedChannel::GetCertificate on AuthenticatedChannel",
+    );
     // ID3D11AuthenticatedChannel::GetChannelHandle on AuthenticatedChannel
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k2.as_ref() else {
             return false;
         };
-        answered(direct3d_11::AuthenticatedChannel::get_channel_handle(this))
+        answered({
+            let answer = direct3d_11::AuthenticatedChannel::get_channel_handle(this);
+            answers.push(format!(
+                "ID3D11AuthenticatedChannel::GetChannelHandle -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11AuthenticatedChannel::GetChannelHandle on AuthenticatedChannel",
+    );
     // ID3D11DeviceChild::GetDevice on AuthenticatedChannel
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k2.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::GetDevice on AuthenticatedChannel",
+    );
     // ID3D11DeviceChild::GetPrivateData on AuthenticatedChannel
     driven.attempt(|| {
         let Some(this) = o.k2.as_ref() else {
@@ -14150,27 +14265,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on AuthenticatedChannel
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k2.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on AuthenticatedChannel",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on AuthenticatedChannel
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k2.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on AuthenticatedChannel",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on AuthenticatedChannel
     driven.attempt(|| {
         let Some(this) = o.k2.as_ref() else {
@@ -14186,38 +14322,78 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on AuthenticatedChannel
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k2.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on AuthenticatedChannel",
+    );
     // ID3D11BlendState1::GetDesc1 on BlendState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k3.as_ref() else {
             return false;
         };
-        answered(direct3d_11::BlendState1::get_desc1(this))
+        answered({
+            let answer = direct3d_11::BlendState1::get_desc1(this);
+            answers.push(format!(
+                "ID3D11BlendState1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11BlendState1::GetDesc1 on BlendState");
     // ID3D11BlendState::GetDesc on BlendState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k3.as_ref() else {
             return false;
         };
-        answered(direct3d_11::BlendState::get_desc(this))
+        answered({
+            let answer = direct3d_11::BlendState::get_desc(this);
+            answers.push(format!(
+                "ID3D11BlendState::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11BlendState::GetDesc on BlendState");
     // ID3D11DeviceChild::GetDevice on BlendState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k3.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on BlendState");
     // ID3D11DeviceChild::GetPrivateData on BlendState
     driven.attempt(|| {
         let Some(this) = o.k3.as_ref() else {
@@ -14231,27 +14407,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on BlendState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k3.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on BlendState");
     // ID3D11DeviceChild::SetPrivateDataInterface on BlendState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k3.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on BlendState",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on BlendState
     driven.attempt(|| {
         let Some(this) = o.k3.as_ref() else {
@@ -14267,17 +14461,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on BlendState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k3.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on BlendState",
+    );
     // ID3D11Buffer::GetDesc on Buffer
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
@@ -14303,19 +14507,40 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Resource::GetEvictionPriority on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Resource::get_eviction_priority(this))
+        answered({
+            let answer = direct3d_11::Resource::get_eviction_priority(this);
+            answers.push(format!(
+                "ID3D11Resource::GetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Resource::GetEvictionPriority on Buffer");
     // ID3D11DeviceChild::GetDevice on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on Buffer");
     // ID3D11DeviceChild::GetPrivateData on Buffer
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
@@ -14329,51 +14554,85 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on Buffer");
     // ID3D11DeviceChild::SetPrivateDataInterface on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
-    });
-    // IDXGIObject::SetPrivateData on Buffer
-    driven.attempt(|| {
-        let Some(this) = o.k4.as_ref() else {
-            return false;
-        };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
-    });
-    // IDXGIObject::SetPrivateDataInterface on Buffer
-    driven.attempt(|| {
-        let Some(this) = o.k4.as_ref() else {
-            return false;
-        };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on Buffer",
+    );
+    // IDXGIObject::SetPrivateData on Buffer
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k4.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Buffer");
+    // IDXGIObject::SetPrivateDataInterface on Buffer
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k4.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Buffer");
     // IDXGIObject::GetPrivateData on Buffer
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
@@ -14387,69 +14646,136 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Buffer");
     // IDXGIDeviceSubObject::GetDevice on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DeviceSubObject::get_device(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDeviceSubObject::GetDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDeviceSubObject::GetDevice on Buffer");
     // IDXGIResource::GetSharedHandle on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_shared_handle(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_shared_handle(this);
+            answers.push(format!(
+                "IDXGIResource::GetSharedHandle -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetSharedHandle on Buffer");
     // IDXGIResource::GetUsage on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_usage(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_usage(this);
+            answers.push(format!(
+                "IDXGIResource::GetUsage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetUsage on Buffer");
     // IDXGIResource::SetEvictionPriority on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource::set_eviction_priority(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
-            ),
-        )
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
+            );
+            answers.push(format!(
+                "IDXGIResource::SetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::SetEvictionPriority on Buffer");
     // IDXGIResource::GetEvictionPriority on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_eviction_priority(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_eviction_priority(this);
+            answers.push(format!(
+                "IDXGIResource::GetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetEvictionPriority on Buffer");
     // IDXGIResource1::CreateSubresourceSurface on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource1::create_subresource_surface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource1::create_subresource_surface(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIResource1::CreateSubresourceSurface -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource1::CreateSubresourceSurface on Buffer");
     // IDXGIResource1::CreateSharedHandle on Buffer
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
@@ -14479,31 +14805,65 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Buffer
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Buffer",
+    );
     // ID3D11ClassInstance::GetClassLinkage on ClassInstance
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k5.as_ref() else {
             return false;
         };
-        answered(direct3d_11::ClassInstance::get_class_linkage(this))
+        answered({
+            let answer = direct3d_11::ClassInstance::get_class_linkage(this);
+            answers.push(format!(
+                "ID3D11ClassInstance::GetClassLinkage -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11ClassInstance::GetClassLinkage on ClassInstance",
+    );
     // ID3D11ClassInstance::GetDesc on ClassInstance
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k5.as_ref() else {
             return false;
         };
-        answered(direct3d_11::ClassInstance::get_desc(this))
+        answered({
+            let answer = direct3d_11::ClassInstance::get_desc(this);
+            answers.push(format!(
+                "ID3D11ClassInstance::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11ClassInstance::GetDesc on ClassInstance");
     // ID3D11ClassInstance::GetInstanceName on ClassInstance
     driven.attempt(|| {
         let Some(this) = o.k5.as_ref() else {
@@ -14519,12 +14879,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::ClassInstance::get_type_name(this, None))
     });
     // ID3D11DeviceChild::GetDevice on ClassInstance
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k5.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on ClassInstance");
     // ID3D11DeviceChild::GetPrivateData on ClassInstance
     driven.attempt(|| {
         let Some(this) = o.k5.as_ref() else {
@@ -14538,27 +14910,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on ClassInstance
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k5.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on ClassInstance");
     // ID3D11DeviceChild::SetPrivateDataInterface on ClassInstance
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k5.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on ClassInstance",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on ClassInstance
     driven.attempt(|| {
         let Some(this) = o.k5.as_ref() else {
@@ -14574,49 +14964,98 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on ClassInstance
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k5.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on ClassInstance",
+    );
     // ID3D11ClassLinkage::GetClassInstance on ClassLinkage
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k6.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::ClassLinkage::get_class_instance(
-            this,
-            c"",
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::ClassLinkage::get_class_instance(this, c"", Default::default());
+            answers.push(format!(
+                "ID3D11ClassLinkage::GetClassInstance -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11ClassLinkage::GetClassInstance on ClassLinkage",
+    );
     // ID3D11ClassLinkage::CreateClassInstance on ClassLinkage
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k6.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::ClassLinkage::create_class_instance(
-            this,
-            c"",
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::ClassLinkage::create_class_instance(
+                this,
+                c"",
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11ClassLinkage::CreateClassInstance -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11ClassLinkage::CreateClassInstance on ClassLinkage",
+    );
     // ID3D11DeviceChild::GetDevice on ClassLinkage
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k6.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on ClassLinkage");
     // ID3D11DeviceChild::GetPrivateData on ClassLinkage
     driven.attempt(|| {
         let Some(this) = o.k6.as_ref() else {
@@ -14630,27 +15069,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on ClassLinkage
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k6.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on ClassLinkage");
     // ID3D11DeviceChild::SetPrivateDataInterface on ClassLinkage
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k6.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on ClassLinkage",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on ClassLinkage
     driven.attempt(|| {
         let Some(this) = o.k6.as_ref() else {
@@ -14666,31 +15123,62 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on ClassLinkage
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k6.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on ClassLinkage",
+    );
     // ID3D11CommandList::GetContextFlags on CommandList
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k7.as_ref() else {
             return false;
         };
-        answered(direct3d_11::CommandList::get_context_flags(this))
+        answered({
+            let answer = direct3d_11::CommandList::get_context_flags(this);
+            answers.push(format!(
+                "ID3D11CommandList::GetContextFlags -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11CommandList::GetContextFlags on CommandList");
     // ID3D11DeviceChild::GetDevice on CommandList
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k7.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on CommandList");
     // ID3D11DeviceChild::GetPrivateData on CommandList
     driven.attempt(|| {
         let Some(this) = o.k7.as_ref() else {
@@ -14704,27 +15192,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on CommandList
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k7.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on CommandList");
     // ID3D11DeviceChild::SetPrivateDataInterface on CommandList
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k7.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on CommandList",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on CommandList
     driven.attempt(|| {
         let Some(this) = o.k7.as_ref() else {
@@ -14740,24 +15246,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on CommandList
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k7.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on CommandList",
+    );
     // ID3D11DeviceChild::GetDevice on ComputeShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k8.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on ComputeShader");
     // ID3D11DeviceChild::GetPrivateData on ComputeShader
     driven.attempt(|| {
         let Some(this) = o.k8.as_ref() else {
@@ -14771,27 +15299,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on ComputeShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k8.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on ComputeShader");
     // ID3D11DeviceChild::SetPrivateDataInterface on ComputeShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k8.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on ComputeShader",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on ComputeShader
     driven.attempt(|| {
         let Some(this) = o.k8.as_ref() else {
@@ -14807,24 +15353,43 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on ComputeShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k8.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on ComputeShader",
+    );
     // ID3D11Counter::GetDesc on Counter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k9.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Counter::get_desc(this))
+        answered({
+            let answer = direct3d_11::Counter::get_desc(this);
+            answers.push(format!(
+                "ID3D11Counter::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Counter::GetDesc on Counter");
     // ID3D11Asynchronous::GetDataSize on Counter
     driven.attempt(|| {
         let Some(this) = o.k9.as_ref() else {
@@ -14833,12 +15398,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::Asynchronous::get_data_size(this))
     });
     // ID3D11DeviceChild::GetDevice on Counter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k9.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on Counter");
     // ID3D11DeviceChild::GetPrivateData on Counter
     driven.attempt(|| {
         let Some(this) = o.k9.as_ref() else {
@@ -14852,27 +15429,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on Counter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k9.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on Counter");
     // ID3D11DeviceChild::SetPrivateDataInterface on Counter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k9.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on Counter",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on Counter
     driven.attempt(|| {
         let Some(this) = o.k9.as_ref() else {
@@ -14888,60 +15483,140 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Counter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k9.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Counter",
+    );
     // ID3D11CryptoSession::GetCryptoType on CryptoSession
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
             return false;
         };
-        answered(direct3d_11::CryptoSession::get_crypto_type(this))
+        answered({
+            let answer = direct3d_11::CryptoSession::get_crypto_type(this);
+            answers.push(format!(
+                "ID3D11CryptoSession::GetCryptoType -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11CryptoSession::GetCryptoType on CryptoSession");
     // ID3D11CryptoSession::GetDecoderProfile on CryptoSession
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
             return false;
         };
-        answered(direct3d_11::CryptoSession::get_decoder_profile(this))
+        answered({
+            let answer = direct3d_11::CryptoSession::get_decoder_profile(this);
+            answers.push(format!(
+                "ID3D11CryptoSession::GetDecoderProfile -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11CryptoSession::GetDecoderProfile on CryptoSession",
+    );
     // ID3D11CryptoSession::GetCertificateSize on CryptoSession
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::CryptoSession::get_certificate_size(this))
+        failure_is_negative({
+            let answer = direct3d_11::CryptoSession::get_certificate_size(this);
+            answers.push(format!(
+                "ID3D11CryptoSession::GetCertificateSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11CryptoSession::GetCertificateSize on CryptoSession",
+    );
     // ID3D11CryptoSession::GetCertificate on CryptoSession
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(direct3d_11::CryptoSession::get_certificate(this, &lying))
+        failure_is_negative({
+            let answer = direct3d_11::CryptoSession::get_certificate(this, &lying);
+            answers.push(format!(
+                "ID3D11CryptoSession::GetCertificate -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("ID3D11CryptoSession::GetCertificate", &lying);
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11CryptoSession::GetCertificate on CryptoSession",
+    );
     // ID3D11CryptoSession::GetCryptoSessionHandle on CryptoSession
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
             return false;
         };
-        answered(direct3d_11::CryptoSession::get_crypto_session_handle(this))
+        answered({
+            let answer = direct3d_11::CryptoSession::get_crypto_session_handle(this);
+            answers.push(format!(
+                "ID3D11CryptoSession::GetCryptoSessionHandle -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11CryptoSession::GetCryptoSessionHandle on CryptoSession",
+    );
     // ID3D11DeviceChild::GetDevice on CryptoSession
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on CryptoSession");
     // ID3D11DeviceChild::GetPrivateData on CryptoSession
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
@@ -14955,27 +15630,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on CryptoSession
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on CryptoSession");
     // ID3D11DeviceChild::SetPrivateDataInterface on CryptoSession
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on CryptoSession",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on CryptoSession
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
@@ -14991,66 +15684,135 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on CryptoSession
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k10.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on CryptoSession",
+    );
     // ID3D11Debug::SetFeatureMask on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Debug::set_feature_mask(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Debug::set_feature_mask(this, Default::default());
+            answers.push(format!(
+                "ID3D11Debug::SetFeatureMask -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Debug::SetFeatureMask on Debug");
     // ID3D11Debug::GetFeatureMask on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Debug::get_feature_mask(this))
+        answered({
+            let answer = direct3d_11::Debug::get_feature_mask(this);
+            answers.push(format!(
+                "ID3D11Debug::GetFeatureMask -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Debug::GetFeatureMask on Debug");
     // ID3D11Debug::SetPresentPerRenderOpDelay on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Debug::set_present_per_render_op_delay(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::Debug::set_present_per_render_op_delay(this, Default::default());
+            answers.push(format!(
+                "ID3D11Debug::SetPresentPerRenderOpDelay -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Debug::SetPresentPerRenderOpDelay on Debug");
     // ID3D11Debug::GetPresentPerRenderOpDelay on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Debug::get_present_per_render_op_delay(this))
+        answered({
+            let answer = direct3d_11::Debug::get_present_per_render_op_delay(this);
+            answers.push(format!(
+                "ID3D11Debug::GetPresentPerRenderOpDelay -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Debug::GetPresentPerRenderOpDelay on Debug");
     // ID3D11Debug::SetSwapChain on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Debug::set_swap_chain(this, None))
+        failure_is_negative({
+            let answer = direct3d_11::Debug::set_swap_chain(this, None);
+            answers.push(format!(
+                "ID3D11Debug::SetSwapChain -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Debug::SetSwapChain on Debug");
     // ID3D11Debug::GetSwapChain on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Debug::get_swap_chain(this))
+        failure_is_negative({
+            let answer = direct3d_11::Debug::get_swap_chain(this);
+            answers.push(format!(
+                "ID3D11Debug::GetSwapChain -> {}",
+                match &answer {
+                    Ok(v0) => format!(
+                        "Ok({})",
+                        match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        }
+                    ),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Debug::GetSwapChain on Debug");
     // ID3D11Debug::ValidateContext on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
@@ -15058,19 +15820,34 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k15.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Debug::validate_context(this, v1))
+        failure_is_negative({
+            let answer = direct3d_11::Debug::validate_context(this, v1);
+            answers.push(format!(
+                "ID3D11Debug::ValidateContext -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Debug::ValidateContext on Debug");
     // ID3D11Debug::ReportLiveDeviceObjects on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Debug::report_live_device_objects(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Debug::report_live_device_objects(this, Default::default());
+            answers.push(format!(
+                "ID3D11Debug::ReportLiveDeviceObjects -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Debug::ReportLiveDeviceObjects on Debug");
     // ID3D11Debug::ValidateContextForDispatch on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
@@ -15078,8 +15855,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k15.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Debug::validate_context_for_dispatch(this, v1))
+        failure_is_negative({
+            let answer = direct3d_11::Debug::validate_context_for_dispatch(this, v1);
+            answers.push(format!(
+                "ID3D11Debug::ValidateContextForDispatch -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Debug::ValidateContextForDispatch on Debug");
     // ID3DDestructionNotifier::RegisterDestructionCallback on Debug
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
@@ -15095,31 +15880,65 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k11.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Debug",
+    );
     // ID3D11DepthStencilState::GetDesc on DepthStencilState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k12.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DepthStencilState::get_desc(this))
+        answered({
+            let answer = direct3d_11::DepthStencilState::get_desc(this);
+            answers.push(format!(
+                "ID3D11DepthStencilState::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DepthStencilState::GetDesc on DepthStencilState",
+    );
     // ID3D11DeviceChild::GetDevice on DepthStencilState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k12.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on DepthStencilState");
     // ID3D11DeviceChild::GetPrivateData on DepthStencilState
     driven.attempt(|| {
         let Some(this) = o.k12.as_ref() else {
@@ -15133,27 +15952,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on DepthStencilState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k12.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on DepthStencilState",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on DepthStencilState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k12.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on DepthStencilState",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on DepthStencilState
     driven.attempt(|| {
         let Some(this) = o.k12.as_ref() else {
@@ -15169,24 +16009,43 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on DepthStencilState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k12.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on DepthStencilState",
+    );
     // ID3D11DepthStencilView::GetDesc on DepthStencilView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k13.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DepthStencilView::get_desc(this))
+        answered({
+            let answer = direct3d_11::DepthStencilView::get_desc(this);
+            answers.push(format!(
+                "ID3D11DepthStencilView::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DepthStencilView::GetDesc on DepthStencilView");
     // ID3D11View::GetResource on DepthStencilView
     driven.attempt(|| {
         let Some(this) = o.k13.as_ref() else {
@@ -15195,12 +16054,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::View::get_resource(this))
     });
     // ID3D11DeviceChild::GetDevice on DepthStencilView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k13.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on DepthStencilView");
     // ID3D11DeviceChild::GetPrivateData on DepthStencilView
     driven.attempt(|| {
         let Some(this) = o.k13.as_ref() else {
@@ -15214,27 +16085,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on DepthStencilView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k13.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on DepthStencilView",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on DepthStencilView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k13.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on DepthStencilView",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on DepthStencilView
     driven.attempt(|| {
         let Some(this) = o.k13.as_ref() else {
@@ -15250,50 +16142,91 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on DepthStencilView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k13.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on DepthStencilView",
+    );
     // ID3D11Device5::OpenSharedFence on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device5::open_shared_fence(
-            this,
-            Default::default(),
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device5::open_shared_fence(
+                this,
+                Default::default(),
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11Device5::OpenSharedFence -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device5::OpenSharedFence on Device");
     // ID3D11Device5::CreateFence on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device5::create_fence(
-            this,
-            Default::default(),
-            Default::default(),
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device5::create_fence(
+                this,
+                Default::default(),
+                Default::default(),
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11Device5::CreateFence -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device5::CreateFence on Device");
     // ID3D11Device4::RegisterDeviceRemovedEvent on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device4::register_device_removed_event(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::Device4::register_device_removed_event(this, Default::default());
+            answers.push(format!(
+                "ID3D11Device4::RegisterDeviceRemovedEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device4::RegisterDeviceRemovedEvent on Device");
     // ID3D11Device4::UnregisterDeviceRemoved on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15305,6 +16238,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Device3::CreateShaderResourceView1 on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
@@ -15322,11 +16256,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device3::create_shader_resource_view1(
-            this, v1, None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device3::create_shader_resource_view1(this, v1, None);
+            answers.push(format!(
+                "ID3D11Device3::CreateShaderResourceView1 -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device3::CreateShaderResourceView1 on Device");
     // ID3D11Device3::CreateUnorderedAccessView1 on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
@@ -15344,11 +16288,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device3::create_unordered_access_view1(
-            this, v1, None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device3::create_unordered_access_view1(this, v1, None);
+            answers.push(format!(
+                "ID3D11Device3::CreateUnorderedAccessView1 -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device3::CreateUnorderedAccessView1 on Device");
     // ID3D11Device3::CreateRenderTargetView1 on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
@@ -15366,17 +16320,38 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device3::create_render_target_view1(
-            this, v1, None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device3::create_render_target_view1(this, v1, None);
+            answers.push(format!(
+                "ID3D11Device3::CreateRenderTargetView1 -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device3::CreateRenderTargetView1 on Device");
     // ID3D11Device3::GetImmediateContext3 on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Device3::get_immediate_context3(this))
+        answered({
+            let answer = direct3d_11::Device3::get_immediate_context3(this);
+            answers.push(format!(
+                "ID3D11Device3::GetImmediateContext3 -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device3::GetImmediateContext3 on Device");
     // ID3D11Device3::CreateDeferredContext3 on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15446,12 +16421,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Device2::GetImmediateContext2 on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Device2::get_immediate_context2(this))
+        answered({
+            let answer = direct3d_11::Device2::get_immediate_context2(this);
+            answers.push(format!(
+                "ID3D11Device2::GetImmediateContext2 -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device2::GetImmediateContext2 on Device");
     // ID3D11Device2::CreateDeferredContext2 on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15487,24 +16474,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Device2::CheckMultisampleQualityLevels1 on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device2::check_multisample_quality_levels1(
-            this,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device2::check_multisample_quality_levels1(
+                this,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11Device2::CheckMultisampleQualityLevels1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11Device2::CheckMultisampleQualityLevels1 on Device",
+    );
     // ID3D11Device1::GetImmediateContext1 on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Device1::get_immediate_context1(this))
+        answered({
+            let answer = direct3d_11::Device1::get_immediate_context1(this);
+            answers.push(format!(
+                "ID3D11Device1::GetImmediateContext1 -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device1::GetImmediateContext1 on Device");
     // ID3D11Device1::CreateDeferredContext1 on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15516,42 +16527,89 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Device1::CreateDeviceContextState on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device1::create_device_context_state(
-            this,
-            Default::default(),
-            &[],
-            Default::default(),
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device1::create_device_context_state(
+                this,
+                Default::default(),
+                &[],
+                Default::default(),
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11Device1::CreateDeviceContextState -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", {
+                        let (t1_0, t1_1) = v0;
+                        format!(
+                            "({}, {})",
+                            format!("{:?}", t1_0),
+                            match t1_1 {
+                                Some(v2) => format!("Some({})", "an object".to_string()),
+                                None => "None".to_string(),
+                            }
+                        )
+                    }),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device1::CreateDeviceContextState on Device");
     // ID3D11Device1::OpenSharedResource1 on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device1::open_shared_resource1(
-            this,
-            Default::default(),
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device1::open_shared_resource1(
+                this,
+                Default::default(),
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11Device1::OpenSharedResource1 -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device1::OpenSharedResource1 on Device");
     // ID3D11Device1::OpenSharedResourceByName on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device1::open_shared_resource_by_name(
-            this,
-            &[],
-            Default::default(),
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device1::open_shared_resource_by_name(
+                this,
+                &[],
+                Default::default(),
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11Device1::OpenSharedResourceByName -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device1::OpenSharedResourceByName on Device");
     // ID3D11Device::CreateShaderResourceView on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
@@ -15569,11 +16627,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_shader_resource_view(
-            this, v1, None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_shader_resource_view(this, v1, None);
+            answers.push(format!(
+                "ID3D11Device::CreateShaderResourceView -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateShaderResourceView on Device");
     // ID3D11Device::CreateUnorderedAccessView on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
@@ -15591,11 +16659,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_unordered_access_view(
-            this, v1, None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_unordered_access_view(this, v1, None);
+            answers.push(format!(
+                "ID3D11Device::CreateUnorderedAccessView -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateUnorderedAccessView on Device");
     // ID3D11Device::CreateRenderTargetView on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
@@ -15613,11 +16691,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_render_target_view(
-            this, v1, None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_render_target_view(this, v1, None);
+            answers.push(format!(
+                "ID3D11Device::CreateRenderTargetView -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateRenderTargetView on Device");
     // ID3D11Device::CreateDepthStencilView on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
@@ -15635,82 +16723,200 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_depth_stencil_view(
-            this, v1, None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_depth_stencil_view(this, v1, None);
+            answers.push(format!(
+                "ID3D11Device::CreateDepthStencilView -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateDepthStencilView on Device");
     // ID3D11Device::CreateInputLayout on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_input_layout(this, &[], &[]))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_input_layout(this, &[], &[]);
+            answers.push(format!(
+                "ID3D11Device::CreateInputLayout -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateInputLayout on Device");
     // ID3D11Device::CreateVertexShader on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_vertex_shader(this, &[], None))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_vertex_shader(this, &[], None);
+            answers.push(format!(
+                "ID3D11Device::CreateVertexShader -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateVertexShader on Device");
     // ID3D11Device::CreateGeometryShader on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_geometry_shader(this, &[], None))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_geometry_shader(this, &[], None);
+            answers.push(format!(
+                "ID3D11Device::CreateGeometryShader -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateGeometryShader on Device");
     // ID3D11Device::CreateGeometryShaderWithStreamOutput on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::Device::create_geometry_shader_with_stream_output(
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_geometry_shader_with_stream_output(
                 this,
                 &[],
                 &[],
                 &[],
                 Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11Device::CreateGeometryShaderWithStreamOutput -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11Device::CreateGeometryShaderWithStreamOutput on Device",
+    );
     // ID3D11Device::CreatePixelShader on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_pixel_shader(this, &[], None))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_pixel_shader(this, &[], None);
+            answers.push(format!(
+                "ID3D11Device::CreatePixelShader -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreatePixelShader on Device");
     // ID3D11Device::CreateHullShader on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_hull_shader(this, &[], None))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_hull_shader(this, &[], None);
+            answers.push(format!(
+                "ID3D11Device::CreateHullShader -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateHullShader on Device");
     // ID3D11Device::CreateDomainShader on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_domain_shader(this, &[], None))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_domain_shader(this, &[], None);
+            answers.push(format!(
+                "ID3D11Device::CreateDomainShader -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateDomainShader on Device");
     // ID3D11Device::CreateComputeShader on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_compute_shader(this, &[], None))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_compute_shader(this, &[], None);
+            answers.push(format!(
+                "ID3D11Device::CreateComputeShader -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateComputeShader on Device");
     // ID3D11Device::CreateClassLinkage on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::create_class_linkage(this))
+        failure_is_negative({
+            let answer = direct3d_11::Device::create_class_linkage(this);
+            answers.push(format!(
+                "ID3D11Device::CreateClassLinkage -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CreateClassLinkage on Device");
     // ID3D11Device::CreateDeferredContext on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15722,56 +16928,102 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Device::OpenSharedResource on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::open_shared_resource(
-            this,
-            Default::default(),
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device::open_shared_resource(
+                this,
+                Default::default(),
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11Device::OpenSharedResource -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::OpenSharedResource on Device");
     // ID3D11Device::CheckFormatSupport on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::check_format_support(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device::check_format_support(this, Default::default());
+            answers.push(format!(
+                "ID3D11Device::CheckFormatSupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CheckFormatSupport on Device");
     // ID3D11Device::CheckMultisampleQualityLevels on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::check_multisample_quality_levels(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device::check_multisample_quality_levels(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11Device::CheckMultisampleQualityLevels -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11Device::CheckMultisampleQualityLevels on Device",
+    );
     // ID3D11Device::CheckCounterInfo on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Device::check_counter_info(this))
+        answered({
+            let answer = direct3d_11::Device::check_counter_info(this);
+            answers.push(format!(
+                "ID3D11Device::CheckCounterInfo -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CheckCounterInfo on Device");
     // ID3D11Device::CheckFeatureSupport on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(direct3d_11::Device::check_feature_support(
-            this,
-            Default::default(),
-            &lying,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::Device::check_feature_support(this, Default::default(), &lying);
+            answers.push(format!(
+                "ID3D11Device::CheckFeatureSupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("ID3D11Device::CheckFeatureSupport", &lying);
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::CheckFeatureSupport on Device");
     // ID3D11Device::GetPrivateData on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15785,96 +17037,177 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Device::SetPrivateData on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11Device::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::SetPrivateData on Device");
     // ID3D11Device::SetPrivateDataInterface on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::Device::set_private_data_interface(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11Device::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::SetPrivateDataInterface on Device");
     // ID3D11Device::GetFeatureLevel on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Device::get_feature_level(this))
+        answered({
+            let answer = direct3d_11::Device::get_feature_level(this);
+            answers.push(format!(
+                "ID3D11Device::GetFeatureLevel -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::GetFeatureLevel on Device");
     // ID3D11Device::GetCreationFlags on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Device::get_creation_flags(this))
+        answered({
+            let answer = direct3d_11::Device::get_creation_flags(this);
+            answers.push(format!(
+                "ID3D11Device::GetCreationFlags -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::GetCreationFlags on Device");
     // ID3D11Device::GetDeviceRemovedReason on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::get_device_removed_reason(this))
+        failure_is_negative({
+            let answer = direct3d_11::Device::get_device_removed_reason(this);
+            answers.push(format!(
+                "ID3D11Device::GetDeviceRemovedReason -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::GetDeviceRemovedReason on Device");
     // ID3D11Device::GetImmediateContext on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Device::get_immediate_context(this))
+        answered({
+            let answer = direct3d_11::Device::get_immediate_context(this);
+            answers.push(format!(
+                "ID3D11Device::GetImmediateContext -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::GetImmediateContext on Device");
     // ID3D11Device::SetExceptionMode on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Device::set_exception_mode(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Device::set_exception_mode(this, Default::default());
+            answers.push(format!(
+                "ID3D11Device::SetExceptionMode -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::SetExceptionMode on Device");
     // ID3D11Device::GetExceptionMode on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Device::get_exception_mode(this))
+        answered({
+            let answer = direct3d_11::Device::get_exception_mode(this);
+            answers.push(format!(
+                "ID3D11Device::GetExceptionMode -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device::GetExceptionMode on Device");
     // IDXGIObject::SetPrivateData on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Device");
     // IDXGIObject::SetPrivateDataInterface on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Device");
     // IDXGIObject::GetPrivateData on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15888,22 +17221,44 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Device");
     // IDXGIDevice::GetAdapter on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Device::get_adapter(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device::get_adapter(this);
+            answers.push(format!(
+                "IDXGIDevice::GetAdapter -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice::GetAdapter on Device");
     // IDXGIDevice::QueryResourceResidency on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15914,45 +17269,75 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIDevice::SetGPUThreadPriority on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Device::set_gpu_thread_priority(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device::set_gpu_thread_priority(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIDevice::SetGPUThreadPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice::SetGPUThreadPriority on Device");
     // IDXGIDevice::GetGPUThreadPriority on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Device::get_gpu_thread_priority(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device::get_gpu_thread_priority(this);
+            answers.push(format!(
+                "IDXGIDevice::GetGPUThreadPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice::GetGPUThreadPriority on Device");
     // IDXGIDevice1::SetMaximumFrameLatency on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Device1::set_maximum_frame_latency(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device1::set_maximum_frame_latency(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIDevice1::SetMaximumFrameLatency -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice1::SetMaximumFrameLatency on Device");
     // IDXGIDevice1::GetMaximumFrameLatency on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Device1::get_maximum_frame_latency(this),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device1::get_maximum_frame_latency(this);
+            answers.push(format!(
+                "IDXGIDevice1::GetMaximumFrameLatency -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice1::GetMaximumFrameLatency on Device");
     // IDXGIDevice2::OfferResources on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15961,7 +17346,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         failure_is_negative(directx_graphics_infrastructure::Device2::offer_resources(
             this,
             &[],
-            Default::default(),
+            directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
         ))
     });
     // IDXGIDevice2::ReclaimResources on Device
@@ -15975,15 +17360,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIDevice2::EnqueueSetEvent on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Device2::enqueue_set_event(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device2::enqueue_set_event(
+                this,
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDevice2::EnqueueSetEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice2::EnqueueSetEvent on Device");
     // IDXGIDevice3::Trim on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -15999,7 +17393,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         failure_is_negative(directx_graphics_infrastructure::Device4::offer_resources1(
             this,
             &[],
-            Default::default(),
+            directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             Default::default(),
         ))
     });
@@ -16035,12 +17429,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Multithread::GetMultithreadProtected on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Multithread::get_multithread_protected(this))
+        answered({
+            let answer = direct3d_11::Multithread::get_multithread_protected(this);
+            answers.push(format!(
+                "ID3D11Multithread::GetMultithreadProtected -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11Multithread::GetMultithreadProtected on Device",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -16056,18 +17462,29 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Device",
+    );
     // ID3D11DeviceContext4::Signal on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -16075,13 +17492,18 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k17.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceContext4::signal(
-            this,
-            v1,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceContext4::signal(this, v1, Default::default());
+            answers.push(format!(
+                "ID3D11DeviceContext4::Signal -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext4::Signal on DeviceContext");
     // ID3D11DeviceContext4::Wait on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -16089,12 +17511,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k17.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceContext4::wait(
-            this,
-            v1,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceContext4::wait(this, v1, Default::default());
+            answers.push(format!(
+                "ID3D11DeviceContext4::Wait -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext4::Wait on DeviceContext");
     // ID3D11DeviceContext3::Flush1 on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -16117,15 +17543,26 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceContext3::GetHardwareProtectionState on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext3::get_hardware_protection_state(
-            this,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext3::get_hardware_protection_state(this);
+            answers.push(format!(
+                "ID3D11DeviceContext3::GetHardwareProtectionState -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext3::GetHardwareProtectionState on DeviceContext",
+    );
     // ID3D11DeviceContext2::UpdateTileMappings on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -16143,19 +17580,31 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceContext2::update_tile_mappings(
-            this,
-            v1,
-            &[],
-            &[],
-            None,
-            &[],
-            &[],
-            &[],
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceContext2::update_tile_mappings(
+                this,
+                v1,
+                &[],
+                &[],
+                None,
+                &[],
+                &[],
+                &[],
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext2::UpdateTileMappings -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext2::UpdateTileMappings on DeviceContext",
+    );
     // ID3D11DeviceContext2::ResizeTilePool on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -16163,12 +17612,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k4.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceContext2::resize_tile_pool(
-            this,
-            v1,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceContext2::resize_tile_pool(this, v1, Default::default());
+            answers.push(format!(
+                "ID3D11DeviceContext2::ResizeTilePool -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext2::ResizeTilePool on DeviceContext",
+    );
     // ID3D11DeviceContext2::TiledResourceBarrier on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -16179,12 +17636,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceContext2::IsAnnotationEnabled on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext2::is_annotation_enabled(this))
+        answered({
+            let answer = direct3d_11::DeviceContext2::is_annotation_enabled(this);
+            answers.push(format!(
+                "ID3D11DeviceContext2::IsAnnotationEnabled -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext2::IsAnnotationEnabled on DeviceContext",
+    );
     // ID3D11DeviceContext2::SetMarkerInt on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -16412,72 +17881,247 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceContext1::VSGetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::vs_get_constant_buffers1(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::vs_get_constant_buffers1(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext1::VSGetConstantBuffers1 -> {}",
+                {
+                    let (t0_0, t0_1, t0_2) = &answer;
+                    format!(
+                        "({}, {}, {})",
+                        format!(
+                            "[{}]",
+                            t0_0.iter()
+                                .map(|v1| match v1 {
+                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                                    None => "None".to_string(),
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        ),
+                        format!("{:?}", t0_1),
+                        format!("{:?}", t0_2)
+                    )
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::VSGetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::HSGetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::hs_get_constant_buffers1(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::hs_get_constant_buffers1(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext1::HSGetConstantBuffers1 -> {}",
+                {
+                    let (t0_0, t0_1, t0_2) = &answer;
+                    format!(
+                        "({}, {}, {})",
+                        format!(
+                            "[{}]",
+                            t0_0.iter()
+                                .map(|v1| match v1 {
+                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                                    None => "None".to_string(),
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        ),
+                        format!("{:?}", t0_1),
+                        format!("{:?}", t0_2)
+                    )
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::HSGetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::DSGetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::ds_get_constant_buffers1(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::ds_get_constant_buffers1(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext1::DSGetConstantBuffers1 -> {}",
+                {
+                    let (t0_0, t0_1, t0_2) = &answer;
+                    format!(
+                        "({}, {}, {})",
+                        format!(
+                            "[{}]",
+                            t0_0.iter()
+                                .map(|v1| match v1 {
+                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                                    None => "None".to_string(),
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        ),
+                        format!("{:?}", t0_1),
+                        format!("{:?}", t0_2)
+                    )
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::DSGetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::GSGetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::gs_get_constant_buffers1(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::gs_get_constant_buffers1(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext1::GSGetConstantBuffers1 -> {}",
+                {
+                    let (t0_0, t0_1, t0_2) = &answer;
+                    format!(
+                        "({}, {}, {})",
+                        format!(
+                            "[{}]",
+                            t0_0.iter()
+                                .map(|v1| match v1 {
+                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                                    None => "None".to_string(),
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        ),
+                        format!("{:?}", t0_1),
+                        format!("{:?}", t0_2)
+                    )
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::GSGetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::PSGetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::ps_get_constant_buffers1(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::ps_get_constant_buffers1(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext1::PSGetConstantBuffers1 -> {}",
+                {
+                    let (t0_0, t0_1, t0_2) = &answer;
+                    format!(
+                        "({}, {}, {})",
+                        format!(
+                            "[{}]",
+                            t0_0.iter()
+                                .map(|v1| match v1 {
+                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                                    None => "None".to_string(),
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        ),
+                        format!("{:?}", t0_1),
+                        format!("{:?}", t0_2)
+                    )
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::PSGetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::CSGetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::cs_get_constant_buffers1(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::cs_get_constant_buffers1(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext1::CSGetConstantBuffers1 -> {}",
+                {
+                    let (t0_0, t0_1, t0_2) = &answer;
+                    format!(
+                        "({}, {}, {})",
+                        format!(
+                            "[{}]",
+                            t0_0.iter()
+                                .map(|v1| match v1 {
+                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                                    None => "None".to_string(),
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        ),
+                        format!("{:?}", t0_1),
+                        format!("{:?}", t0_2)
+                    )
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::CSGetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::SwapDeviceContextState on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -16485,10 +18129,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k49.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::swap_device_context_state(
-            this, v1,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::swap_device_context_state(this, v1);
+            answers.push(format!(
+                "ID3D11DeviceContext1::SwapDeviceContextState -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::SwapDeviceContextState on DeviceContext",
+    );
     // ID3D11DeviceContext1::ClearView on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -16617,6 +18273,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceContext::Map on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -16634,14 +18291,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceContext::map(
-            this,
-            v1,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceContext::map(
+                this,
+                v1,
+                Default::default(),
+                direct3d_11::enumerations::D3D11_MAP_READ,
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::Map -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::Map on DeviceContext");
     // ID3D11DeviceContext::Unmap on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -16823,6 +18491,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::DeviceContext::end(this, v1))
     });
     // ID3D11DeviceContext::GetData on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -16839,13 +18508,18 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(direct3d_11::DeviceContext::get_data(
-            this,
-            v1,
-            Some(&lying),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceContext::get_data(this, v1, Some(&lying), Default::default());
+            answers.push(format!(
+                "ID3D11DeviceContext::GetData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("ID3D11DeviceContext::GetData", &lying);
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::GetData on DeviceContext");
     // ID3D11DeviceContext::SetPredication on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17237,6 +18911,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceContext::GetResourceMinLOD on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -17254,8 +18929,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::get_resource_min_lod(this, v1))
+        answered({
+            let answer = direct3d_11::DeviceContext::get_resource_min_lod(this, v1);
+            answers.push(format!(
+                "ID3D11DeviceContext::GetResourceMinLOD -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::GetResourceMinLOD on DeviceContext",
+    );
     // ID3D11DeviceContext::ResolveSubresource on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17443,27 +19129,71 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceContext::VSGetConstantBuffers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::vs_get_constant_buffers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::vs_get_constant_buffers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::VSGetConstantBuffers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::VSGetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::PSGetShaderResources on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ps_get_shader_resources(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ps_get_shader_resources(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::PSGetShaderResources -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::PSGetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::PSGetShader on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17472,16 +19202,35 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::DeviceContext::ps_get_shader(this))
     });
     // ID3D11DeviceContext::PSGetSamplers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ps_get_samplers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ps_get_samplers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::PSGetSamplers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::PSGetSamplers on DeviceContext");
     // ID3D11DeviceContext::VSGetShader on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17490,52 +19239,157 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::DeviceContext::vs_get_shader(this))
     });
     // ID3D11DeviceContext::PSGetConstantBuffers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ps_get_constant_buffers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ps_get_constant_buffers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::PSGetConstantBuffers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::PSGetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::IAGetInputLayout on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ia_get_input_layout(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::ia_get_input_layout(this);
+            answers.push(format!(
+                "ID3D11DeviceContext::IAGetInputLayout -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::IAGetInputLayout on DeviceContext",
+    );
     // ID3D11DeviceContext::IAGetVertexBuffers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ia_get_vertex_buffers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ia_get_vertex_buffers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!("ID3D11DeviceContext::IAGetVertexBuffers -> {}", {
+                let (t0_0, t0_1, t0_2) = &answer;
+                format!(
+                    "({}, {}, {})",
+                    format!(
+                        "[{}]",
+                        t0_0.iter()
+                            .map(|v1| match v1 {
+                                Some(v2) => format!("Some({})", "an object".to_string()),
+                                None => "None".to_string(),
+                            })
+                            .collect::<Vec<String>>()
+                            .join(", ")
+                    ),
+                    format!("{:?}", t0_1),
+                    format!("{:?}", t0_2)
+                )
+            }));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::IAGetVertexBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::IAGetIndexBuffer on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ia_get_index_buffer(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::ia_get_index_buffer(this);
+            answers.push(format!("ID3D11DeviceContext::IAGetIndexBuffer -> {}", {
+                let (t0_0, t0_1, t0_2) = &answer;
+                format!(
+                    "({}, {}, {})",
+                    match t0_0 {
+                        Some(v1) => format!("Some({})", "an object".to_string()),
+                        None => "None".to_string(),
+                    },
+                    format!("{:?}", t0_1),
+                    format!("{:?}", t0_2)
+                )
+            }));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::IAGetIndexBuffer on DeviceContext",
+    );
     // ID3D11DeviceContext::GSGetConstantBuffers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::gs_get_constant_buffers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::gs_get_constant_buffers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::GSGetConstantBuffers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::GSGetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::GSGetShader on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17544,143 +19398,438 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::DeviceContext::gs_get_shader(this))
     });
     // ID3D11DeviceContext::IAGetPrimitiveTopology on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ia_get_primitive_topology(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::ia_get_primitive_topology(this);
+            answers.push(format!(
+                "ID3D11DeviceContext::IAGetPrimitiveTopology -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::IAGetPrimitiveTopology on DeviceContext",
+    );
     // ID3D11DeviceContext::VSGetShaderResources on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::vs_get_shader_resources(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
-    });
-    // ID3D11DeviceContext::VSGetSamplers on DeviceContext
-    driven.attempt(|| {
-        let Some(this) = o.k15.as_ref() else {
-            return false;
-        };
-        answered(direct3d_11::DeviceContext::vs_get_samplers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
-    });
-    // ID3D11DeviceContext::GetPredication on DeviceContext
-    driven.attempt(|| {
-        let Some(this) = o.k15.as_ref() else {
-            return false;
-        };
-        answered(direct3d_11::DeviceContext::get_predication(this))
-    });
-    // ID3D11DeviceContext::GSGetShaderResources on DeviceContext
-    driven.attempt(|| {
-        let Some(this) = o.k15.as_ref() else {
-            return false;
-        };
-        answered(direct3d_11::DeviceContext::gs_get_shader_resources(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
-    });
-    // ID3D11DeviceContext::GSGetSamplers on DeviceContext
-    driven.attempt(|| {
-        let Some(this) = o.k15.as_ref() else {
-            return false;
-        };
-        answered(direct3d_11::DeviceContext::gs_get_samplers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
-    });
-    // ID3D11DeviceContext::OMGetRenderTargets on DeviceContext
-    driven.attempt(|| {
-        let Some(this) = o.k15.as_ref() else {
-            return false;
-        };
-        answered(direct3d_11::DeviceContext::om_get_render_targets(
-            this,
-            Default::default(),
-        ))
-    });
-    // ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessViews on DeviceContext
-    driven.attempt(|| {
-        let Some(this) = o.k15.as_ref() else {
-            return false;
-        };
-        answered(
-            direct3d_11::DeviceContext::om_get_render_targets_and_unordered_access_views(
+        answered({
+            let answer = direct3d_11::DeviceContext::vs_get_shader_resources(
                 this,
                 Default::default(),
                 Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::VSGetShaderResources -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::VSGetShaderResources on DeviceContext",
+    );
+    // ID3D11DeviceContext::VSGetSamplers on DeviceContext
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k15.as_ref() else {
+            return false;
+        };
+        answered({
+            let answer = direct3d_11::DeviceContext::vs_get_samplers(
+                this,
                 Default::default(),
-            ),
-        )
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::VSGetSamplers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::VSGetSamplers on DeviceContext");
+    // ID3D11DeviceContext::GetPredication on DeviceContext
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k15.as_ref() else {
+            return false;
+        };
+        answered({
+            let answer = direct3d_11::DeviceContext::get_predication(this);
+            answers.push(format!("ID3D11DeviceContext::GetPredication -> {}", {
+                let (t0_0, t0_1) = &answer;
+                format!(
+                    "({}, {})",
+                    match t0_0 {
+                        Some(v1) => format!("Some({})", "an object".to_string()),
+                        None => "None".to_string(),
+                    },
+                    format!("{:?}", t0_1)
+                )
+            }));
+            answer
+        })
+    });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::GetPredication on DeviceContext",
+    );
+    // ID3D11DeviceContext::GSGetShaderResources on DeviceContext
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k15.as_ref() else {
+            return false;
+        };
+        answered({
+            let answer = direct3d_11::DeviceContext::gs_get_shader_resources(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::GSGetShaderResources -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::GSGetShaderResources on DeviceContext",
+    );
+    // ID3D11DeviceContext::GSGetSamplers on DeviceContext
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k15.as_ref() else {
+            return false;
+        };
+        answered({
+            let answer = direct3d_11::DeviceContext::gs_get_samplers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::GSGetSamplers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "ID3D11DeviceContext::GSGetSamplers on DeviceContext");
+    // ID3D11DeviceContext::OMGetRenderTargets on DeviceContext
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k15.as_ref() else {
+            return false;
+        };
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::om_get_render_targets(this, Default::default());
+            answers.push(format!("ID3D11DeviceContext::OMGetRenderTargets -> {}", {
+                let (t0_0, t0_1) = &answer;
+                format!(
+                    "({}, {})",
+                    format!(
+                        "[{}]",
+                        t0_0.iter()
+                            .map(|v1| match v1 {
+                                Some(v2) => format!("Some({})", "an object".to_string()),
+                                None => "None".to_string(),
+                            })
+                            .collect::<Vec<String>>()
+                            .join(", ")
+                    ),
+                    match t0_1 {
+                        Some(v1) => format!("Some({})", "an object".to_string()),
+                        None => "None".to_string(),
+                    }
+                )
+            }));
+            answer
+        })
+    });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::OMGetRenderTargets on DeviceContext",
+    );
+    // ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessViews on DeviceContext
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k15.as_ref() else {
+            return false;
+        };
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::om_get_render_targets_and_unordered_access_views(
+                    this,
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                );
+            answers.push(format!(
+                "ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessViews -> {}",
+                {
+                    let (t0_0, t0_1, t0_2) = &answer;
+                    format!(
+                        "({}, {}, {})",
+                        format!(
+                            "[{}]",
+                            t0_0.iter()
+                                .map(|v1| match v1 {
+                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                                    None => "None".to_string(),
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        ),
+                        match t0_1 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        },
+                        format!(
+                            "[{}]",
+                            t0_2.iter()
+                                .map(|v1| match v1 {
+                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                                    None => "None".to_string(),
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        )
+                    )
+                }
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessViews on DeviceContext",
+    );
     // ID3D11DeviceContext::OMGetBlendState on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::om_get_blend_state(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::om_get_blend_state(this);
+            answers.push(format!("ID3D11DeviceContext::OMGetBlendState -> {}", {
+                let (t0_0, t0_1, t0_2) = &answer;
+                format!(
+                    "({}, {}, {})",
+                    match t0_0 {
+                        Some(v1) => format!("Some({})", "an object".to_string()),
+                        None => "None".to_string(),
+                    },
+                    format!("{:?}", t0_1),
+                    format!("{:?}", t0_2)
+                )
+            }));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::OMGetBlendState on DeviceContext",
+    );
     // ID3D11DeviceContext::OMGetDepthStencilState on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::om_get_depth_stencil_state(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::om_get_depth_stencil_state(this);
+            answers.push(format!(
+                "ID3D11DeviceContext::OMGetDepthStencilState -> {}",
+                {
+                    let (t0_0, t0_1) = &answer;
+                    format!(
+                        "({}, {})",
+                        match t0_0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        },
+                        format!("{:?}", t0_1)
+                    )
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::OMGetDepthStencilState on DeviceContext",
+    );
     // ID3D11DeviceContext::SOGetTargets on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::so_get_targets(
-            this,
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::so_get_targets(this, Default::default());
+            answers.push(format!(
+                "ID3D11DeviceContext::SOGetTargets -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::SOGetTargets on DeviceContext");
     // ID3D11DeviceContext::RSGetState on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::rs_get_state(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::rs_get_state(this);
+            answers.push(format!(
+                "ID3D11DeviceContext::RSGetState -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::RSGetState on DeviceContext");
     // ID3D11DeviceContext::RSGetViewports on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::rs_get_viewports(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::rs_get_viewports(this);
+            answers.push(format!(
+                "ID3D11DeviceContext::RSGetViewports -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::RSGetViewports on DeviceContext",
+    );
     // ID3D11DeviceContext::RSGetScissorRects on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::rs_get_scissor_rects(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::rs_get_scissor_rects(this);
+            answers.push(format!(
+                "ID3D11DeviceContext::RSGetScissorRects -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::RSGetScissorRects on DeviceContext",
+    );
     // ID3D11DeviceContext::HSGetShaderResources on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::hs_get_shader_resources(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::hs_get_shader_resources(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::HSGetShaderResources -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::HSGetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::HSGetShader on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17689,38 +19838,101 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::DeviceContext::hs_get_shader(this))
     });
     // ID3D11DeviceContext::HSGetSamplers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::hs_get_samplers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::hs_get_samplers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::HSGetSamplers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::HSGetSamplers on DeviceContext");
     // ID3D11DeviceContext::HSGetConstantBuffers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::hs_get_constant_buffers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::hs_get_constant_buffers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::HSGetConstantBuffers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::HSGetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::DSGetShaderResources on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ds_get_shader_resources(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ds_get_shader_resources(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::DSGetShaderResources -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::DSGetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::DSGetShader on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17729,49 +19941,134 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::DeviceContext::ds_get_shader(this))
     });
     // ID3D11DeviceContext::DSGetSamplers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ds_get_samplers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ds_get_samplers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::DSGetSamplers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::DSGetSamplers on DeviceContext");
     // ID3D11DeviceContext::DSGetConstantBuffers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ds_get_constant_buffers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ds_get_constant_buffers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::DSGetConstantBuffers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::DSGetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::CSGetShaderResources on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::cs_get_shader_resources(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::cs_get_shader_resources(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::CSGetShaderResources -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::CSGetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::CSGetUnorderedAccessViews on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::cs_get_unordered_access_views(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::cs_get_unordered_access_views(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::CSGetUnorderedAccessViews -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::CSGetUnorderedAccessViews on DeviceContext",
+    );
     // ID3D11DeviceContext::CSGetShader on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17780,27 +20077,68 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::DeviceContext::cs_get_shader(this))
     });
     // ID3D11DeviceContext::CSGetSamplers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::cs_get_samplers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::cs_get_samplers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::CSGetSamplers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::CSGetSamplers on DeviceContext");
     // ID3D11DeviceContext::CSGetConstantBuffers on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::cs_get_constant_buffers(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::cs_get_constant_buffers(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11DeviceContext::CSGetConstantBuffers -> {}",
+                format!(
+                    "[{}]",
+                    &answer
+                        .iter()
+                        .map(|v0| match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::CSGetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::ClearState on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17816,36 +20154,81 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::DeviceContext::flush(this))
     });
     // ID3D11DeviceContext::GetType on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::get_type(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::get_type(this);
+            answers.push(format!(
+                "ID3D11DeviceContext::GetType -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::GetType on DeviceContext");
     // ID3D11DeviceContext::GetContextFlags on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::get_context_flags(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::get_context_flags(this);
+            answers.push(format!(
+                "ID3D11DeviceContext::GetContextFlags -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::GetContextFlags on DeviceContext",
+    );
     // ID3D11DeviceContext::FinishCommandList on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceContext::finish_command_list(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceContext::finish_command_list(this, Default::default());
+            answers.push(format!(
+                "ID3D11DeviceContext::FinishCommandList -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::FinishCommandList on DeviceContext",
+    );
     // ID3D11DeviceChild::GetDevice on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on DeviceContext");
     // ID3D11DeviceChild::GetPrivateData on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17859,27 +20242,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on DeviceContext");
     // ID3D11DeviceChild::SetPrivateDataInterface on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on DeviceContext",
+    );
     // ID3D11Multithread::Enter on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17905,26 +20306,62 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Multithread::GetMultithreadProtected on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Multithread::get_multithread_protected(this))
+        answered({
+            let answer = direct3d_11::Multithread::get_multithread_protected(this);
+            answers.push(format!(
+                "ID3D11Multithread::GetMultithreadProtected -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11Multithread::GetMultithreadProtected on DeviceContext",
+    );
     // ID3DUserDefinedAnnotation::BeginEvent on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UserDefinedAnnotation::begin_event(this, &[]))
+        answered({
+            let answer = direct3d_11::UserDefinedAnnotation::begin_event(this, &[]);
+            answers.push(format!(
+                "ID3DUserDefinedAnnotation::BeginEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DUserDefinedAnnotation::BeginEvent on DeviceContext",
+    );
     // ID3DUserDefinedAnnotation::EndEvent on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UserDefinedAnnotation::end_event(this))
+        answered({
+            let answer = direct3d_11::UserDefinedAnnotation::end_event(this);
+            answers.push(format!(
+                "ID3DUserDefinedAnnotation::EndEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DUserDefinedAnnotation::EndEvent on DeviceContext",
+    );
     // ID3DUserDefinedAnnotation::SetMarker on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17933,12 +20370,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::UserDefinedAnnotation::set_marker(this, &[]))
     });
     // ID3DUserDefinedAnnotation::GetStatus on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UserDefinedAnnotation::get_status(this))
+        answered({
+            let answer = direct3d_11::UserDefinedAnnotation::get_status(this);
+            answers.push(format!(
+                "ID3DUserDefinedAnnotation::GetStatus -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DUserDefinedAnnotation::GetStatus on DeviceContext",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -17954,24 +20403,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on DeviceContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on DeviceContext",
+    );
     // ID3D11DeviceChild::GetDevice on DomainShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k16.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on DomainShader");
     // ID3D11DeviceChild::GetPrivateData on DomainShader
     driven.attempt(|| {
         let Some(this) = o.k16.as_ref() else {
@@ -17985,27 +20456,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on DomainShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k16.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on DomainShader");
     // ID3D11DeviceChild::SetPrivateDataInterface on DomainShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k16.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on DomainShader",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on DomainShader
     driven.attempt(|| {
         let Some(this) = o.k16.as_ref() else {
@@ -18021,17 +20510,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on DomainShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k16.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on DomainShader",
+    );
     // ID3D11Fence::CreateSharedHandle on Fence
     driven.attempt(|| {
         let Some(this) = o.k17.as_ref() else {
@@ -18045,30 +20544,60 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Fence::GetCompletedValue on Fence
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k17.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Fence::get_completed_value(this))
+        answered({
+            let answer = direct3d_11::Fence::get_completed_value(this);
+            answers.push(format!(
+                "ID3D11Fence::GetCompletedValue -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Fence::GetCompletedValue on Fence");
     // ID3D11Fence::SetEventOnCompletion on Fence
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k17.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::Fence::set_event_on_completion(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Fence::set_event_on_completion(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11Fence::SetEventOnCompletion -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Fence::SetEventOnCompletion on Fence");
     // ID3D11DeviceChild::GetDevice on Fence
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k17.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on Fence");
     // ID3D11DeviceChild::GetPrivateData on Fence
     driven.attempt(|| {
         let Some(this) = o.k17.as_ref() else {
@@ -18082,27 +20611,42 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on Fence
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k17.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on Fence");
     // ID3D11DeviceChild::SetPrivateDataInterface on Fence
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k17.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateDataInterface on Fence");
     // ID3DDestructionNotifier::RegisterDestructionCallback on Fence
     driven.attempt(|| {
         let Some(this) = o.k17.as_ref() else {
@@ -18118,24 +20662,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Fence
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k17.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Fence",
+    );
     // ID3D11DeviceChild::GetDevice on GeometryShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k18.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on GeometryShader");
     // ID3D11DeviceChild::GetPrivateData on GeometryShader
     driven.attempt(|| {
         let Some(this) = o.k18.as_ref() else {
@@ -18149,27 +20715,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on GeometryShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k18.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on GeometryShader");
     // ID3D11DeviceChild::SetPrivateDataInterface on GeometryShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k18.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on GeometryShader",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on GeometryShader
     driven.attempt(|| {
         let Some(this) = o.k18.as_ref() else {
@@ -18185,24 +20769,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on GeometryShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k18.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on GeometryShader",
+    );
     // ID3D11DeviceChild::GetDevice on HullShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k19.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on HullShader");
     // ID3D11DeviceChild::GetPrivateData on HullShader
     driven.attempt(|| {
         let Some(this) = o.k19.as_ref() else {
@@ -18216,27 +20822,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on HullShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k19.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on HullShader");
     // ID3D11DeviceChild::SetPrivateDataInterface on HullShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k19.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on HullShader",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on HullShader
     driven.attempt(|| {
         let Some(this) = o.k19.as_ref() else {
@@ -18252,27 +20876,43 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on HullShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k19.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on HullShader",
+    );
     // ID3D11InfoQueue::SetMessageCountLimit on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::set_message_count_limit(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::InfoQueue::set_message_count_limit(this, Default::default());
+            answers.push(format!(
+                "ID3D11InfoQueue::SetMessageCountLimit -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::SetMessageCountLimit on InfoQueue");
     // ID3D11InfoQueue::ClearStoredMessages on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
@@ -18293,47 +20933,115 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11InfoQueue::GetNumMessagesAllowedByStorageFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_num_messages_allowed_by_storage_filter(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_num_messages_allowed_by_storage_filter(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::GetNumMessagesAllowedByStorageFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::GetNumMessagesAllowedByStorageFilter on InfoQueue",
+    );
     // ID3D11InfoQueue::GetNumMessagesDeniedByStorageFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_num_messages_denied_by_storage_filter(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_num_messages_denied_by_storage_filter(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::GetNumMessagesDeniedByStorageFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::GetNumMessagesDeniedByStorageFilter on InfoQueue",
+    );
     // ID3D11InfoQueue::GetNumStoredMessages on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_num_stored_messages(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_num_stored_messages(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::GetNumStoredMessages -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::GetNumStoredMessages on InfoQueue");
     // ID3D11InfoQueue::GetNumStoredMessagesAllowedByRetrievalFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_num_stored_messages_allowed_by_retrieval_filter(this))
+        answered({
+            let answer =
+                direct3d_11::InfoQueue::get_num_stored_messages_allowed_by_retrieval_filter(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::GetNumStoredMessagesAllowedByRetrievalFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::GetNumStoredMessagesAllowedByRetrievalFilter on InfoQueue",
+    );
     // ID3D11InfoQueue::GetNumMessagesDiscardedByMessageCountLimit on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_num_messages_discarded_by_message_count_limit(this))
+        answered({
+            let answer =
+                direct3d_11::InfoQueue::get_num_messages_discarded_by_message_count_limit(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::GetNumMessagesDiscardedByMessageCountLimit -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::GetNumMessagesDiscardedByMessageCountLimit on InfoQueue",
+    );
     // ID3D11InfoQueue::GetMessageCountLimit on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_message_count_limit(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_message_count_limit(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::GetMessageCountLimit -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::GetMessageCountLimit on InfoQueue");
     // ID3D11InfoQueue::GetStorageFilter on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
@@ -18353,19 +21061,43 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::InfoQueue::clear_storage_filter(this))
     });
     // ID3D11InfoQueue::PushEmptyStorageFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::push_empty_storage_filter(this))
+        failure_is_negative({
+            let answer = direct3d_11::InfoQueue::push_empty_storage_filter(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::PushEmptyStorageFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::PushEmptyStorageFilter on InfoQueue",
+    );
     // ID3D11InfoQueue::PushCopyOfStorageFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::push_copy_of_storage_filter(this))
+        failure_is_negative({
+            let answer = direct3d_11::InfoQueue::push_copy_of_storage_filter(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::PushCopyOfStorageFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::PushCopyOfStorageFilter on InfoQueue",
+    );
     // ID3D11InfoQueue::PopStorageFilter on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
@@ -18374,12 +21106,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::InfoQueue::pop_storage_filter(this))
     });
     // ID3D11InfoQueue::GetStorageFilterStackSize on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_storage_filter_stack_size(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_storage_filter_stack_size(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::GetStorageFilterStackSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::GetStorageFilterStackSize on InfoQueue",
+    );
     // ID3D11InfoQueue::GetRetrievalFilter on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
@@ -18399,19 +21143,43 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::InfoQueue::clear_retrieval_filter(this))
     });
     // ID3D11InfoQueue::PushEmptyRetrievalFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::push_empty_retrieval_filter(this))
+        failure_is_negative({
+            let answer = direct3d_11::InfoQueue::push_empty_retrieval_filter(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::PushEmptyRetrievalFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::PushEmptyRetrievalFilter on InfoQueue",
+    );
     // ID3D11InfoQueue::PushCopyOfRetrievalFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::push_copy_of_retrieval_filter(this))
+        failure_is_negative({
+            let answer = direct3d_11::InfoQueue::push_copy_of_retrieval_filter(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::PushCopyOfRetrievalFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::PushCopyOfRetrievalFilter on InfoQueue",
+    );
     // ID3D11InfoQueue::PopRetrievalFilter on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
@@ -18420,101 +21188,171 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::InfoQueue::pop_retrieval_filter(this))
     });
     // ID3D11InfoQueue::GetRetrievalFilterStackSize on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_retrieval_filter_stack_size(
-            this,
-        ))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_retrieval_filter_stack_size(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::GetRetrievalFilterStackSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11InfoQueue::GetRetrievalFilterStackSize on InfoQueue",
+    );
     // ID3D11InfoQueue::AddMessage on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::add_message(
-            this,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            c"",
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::InfoQueue::add_message(
+                this,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                c"",
+            );
+            answers.push(format!(
+                "ID3D11InfoQueue::AddMessage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::AddMessage on InfoQueue");
     // ID3D11InfoQueue::AddApplicationMessage on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::add_application_message(
-            this,
-            Default::default(),
-            c"",
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::InfoQueue::add_application_message(this, Default::default(), c"");
+            answers.push(format!(
+                "ID3D11InfoQueue::AddApplicationMessage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::AddApplicationMessage on InfoQueue");
     // ID3D11InfoQueue::SetBreakOnCategory on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::set_break_on_category(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::InfoQueue::set_break_on_category(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11InfoQueue::SetBreakOnCategory -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::SetBreakOnCategory on InfoQueue");
     // ID3D11InfoQueue::SetBreakOnSeverity on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::set_break_on_severity(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::InfoQueue::set_break_on_severity(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11InfoQueue::SetBreakOnSeverity -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::SetBreakOnSeverity on InfoQueue");
     // ID3D11InfoQueue::SetBreakOnID on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::InfoQueue::set_break_on_id(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::InfoQueue::set_break_on_id(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11InfoQueue::SetBreakOnID -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::SetBreakOnID on InfoQueue");
     // ID3D11InfoQueue::GetBreakOnCategory on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_break_on_category(
-            this,
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_break_on_category(this, Default::default());
+            answers.push(format!(
+                "ID3D11InfoQueue::GetBreakOnCategory -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::GetBreakOnCategory on InfoQueue");
     // ID3D11InfoQueue::GetBreakOnSeverity on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_break_on_severity(
-            this,
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_break_on_severity(this, Default::default());
+            answers.push(format!(
+                "ID3D11InfoQueue::GetBreakOnSeverity -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::GetBreakOnSeverity on InfoQueue");
     // ID3D11InfoQueue::GetBreakOnID on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_break_on_id(
-            this,
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_break_on_id(this, Default::default());
+            answers.push(format!(
+                "ID3D11InfoQueue::GetBreakOnID -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::GetBreakOnID on InfoQueue");
     // ID3D11InfoQueue::SetMuteDebugOutput on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
@@ -18526,12 +21364,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11InfoQueue::GetMuteDebugOutput on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::get_mute_debug_output(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::get_mute_debug_output(this);
+            answers.push(format!(
+                "ID3D11InfoQueue::GetMuteDebugOutput -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::GetMuteDebugOutput on InfoQueue");
     // ID3DDestructionNotifier::RegisterDestructionCallback on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
@@ -18547,24 +21394,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on InfoQueue",
+    );
     // ID3D11DeviceChild::GetDevice on InputLayout
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k21.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on InputLayout");
     // ID3D11DeviceChild::GetPrivateData on InputLayout
     driven.attempt(|| {
         let Some(this) = o.k21.as_ref() else {
@@ -18578,27 +21447,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on InputLayout
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k21.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on InputLayout");
     // ID3D11DeviceChild::SetPrivateDataInterface on InputLayout
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k21.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on InputLayout",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on InputLayout
     driven.attempt(|| {
         let Some(this) = o.k21.as_ref() else {
@@ -18614,17 +21501,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on InputLayout
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k21.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on InputLayout",
+    );
     // ID3D11Multithread::Enter on Multithread
     driven.attempt(|| {
         let Some(this) = o.k22.as_ref() else {
@@ -18650,12 +21547,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Multithread::GetMultithreadProtected on Multithread
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k22.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Multithread::get_multithread_protected(this))
+        answered({
+            let answer = direct3d_11::Multithread::get_multithread_protected(this);
+            answers.push(format!(
+                "ID3D11Multithread::GetMultithreadProtected -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11Multithread::GetMultithreadProtected on Multithread",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on Multithread
     driven.attempt(|| {
         let Some(this) = o.k22.as_ref() else {
@@ -18671,24 +21580,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Multithread
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k22.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Multithread",
+    );
     // ID3D11DeviceChild::GetDevice on PixelShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k23.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on PixelShader");
     // ID3D11DeviceChild::GetPrivateData on PixelShader
     driven.attempt(|| {
         let Some(this) = o.k23.as_ref() else {
@@ -18702,27 +21633,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on PixelShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k23.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on PixelShader");
     // ID3D11DeviceChild::SetPrivateDataInterface on PixelShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k23.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on PixelShader",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on PixelShader
     driven.attempt(|| {
         let Some(this) = o.k23.as_ref() else {
@@ -18738,17 +21687,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on PixelShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k23.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on PixelShader",
+    );
     // ID3D11Query::GetDesc on Predicate
     driven.attempt(|| {
         let Some(this) = o.k24.as_ref() else {
@@ -18764,12 +21723,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::Asynchronous::get_data_size(this))
     });
     // ID3D11DeviceChild::GetDevice on Predicate
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k24.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on Predicate");
     // ID3D11DeviceChild::GetPrivateData on Predicate
     driven.attempt(|| {
         let Some(this) = o.k24.as_ref() else {
@@ -18783,27 +21754,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on Predicate
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k24.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on Predicate");
     // ID3D11DeviceChild::SetPrivateDataInterface on Predicate
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k24.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on Predicate",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on Predicate
     driven.attempt(|| {
         let Some(this) = o.k24.as_ref() else {
@@ -18819,24 +21808,43 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Predicate
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k24.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Predicate",
+    );
     // ID3D11Query1::GetDesc1 on Query
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k25.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Query1::get_desc1(this))
+        answered({
+            let answer = direct3d_11::Query1::get_desc1(this);
+            answers.push(format!(
+                "ID3D11Query1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Query1::GetDesc1 on Query");
     // ID3D11Query::GetDesc on Query
     driven.attempt(|| {
         let Some(this) = o.k25.as_ref() else {
@@ -18852,12 +21860,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::Asynchronous::get_data_size(this))
     });
     // ID3D11DeviceChild::GetDevice on Query
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k25.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on Query");
     // ID3D11DeviceChild::GetPrivateData on Query
     driven.attempt(|| {
         let Some(this) = o.k25.as_ref() else {
@@ -18871,27 +21891,42 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on Query
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k25.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on Query");
     // ID3D11DeviceChild::SetPrivateDataInterface on Query
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k25.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateDataInterface on Query");
     // ID3DDestructionNotifier::RegisterDestructionCallback on Query
     driven.attempt(|| {
         let Some(this) = o.k25.as_ref() else {
@@ -18907,45 +21942,94 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Query
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k25.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Query",
+    );
     // ID3D11RasterizerState2::GetDesc2 on RasterizerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k26.as_ref() else {
             return false;
         };
-        answered(direct3d_11::RasterizerState2::get_desc2(this))
+        answered({
+            let answer = direct3d_11::RasterizerState2::get_desc2(this);
+            answers.push(format!(
+                "ID3D11RasterizerState2::GetDesc2 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11RasterizerState2::GetDesc2 on RasterizerState");
     // ID3D11RasterizerState1::GetDesc1 on RasterizerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k26.as_ref() else {
             return false;
         };
-        answered(direct3d_11::RasterizerState1::get_desc1(this))
+        answered({
+            let answer = direct3d_11::RasterizerState1::get_desc1(this);
+            answers.push(format!(
+                "ID3D11RasterizerState1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11RasterizerState1::GetDesc1 on RasterizerState");
     // ID3D11RasterizerState::GetDesc on RasterizerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k26.as_ref() else {
             return false;
         };
-        answered(direct3d_11::RasterizerState::get_desc(this))
+        answered({
+            let answer = direct3d_11::RasterizerState::get_desc(this);
+            answers.push(format!(
+                "ID3D11RasterizerState::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11RasterizerState::GetDesc on RasterizerState");
     // ID3D11DeviceChild::GetDevice on RasterizerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k26.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on RasterizerState");
     // ID3D11DeviceChild::GetPrivateData on RasterizerState
     driven.attempt(|| {
         let Some(this) = o.k26.as_ref() else {
@@ -18959,27 +22043,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on RasterizerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k26.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on RasterizerState",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on RasterizerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k26.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on RasterizerState",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on RasterizerState
     driven.attempt(|| {
         let Some(this) = o.k26.as_ref() else {
@@ -18995,30 +22100,50 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on RasterizerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k26.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on RasterizerState",
+    );
     // ID3D11RefDefaultTrackingOptions::SetTrackingOptions on RefDefaultTrackingOptions
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k27.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::RefDefaultTrackingOptions::set_tracking_options(
+        failure_is_negative({
+            let answer = direct3d_11::RefDefaultTrackingOptions::set_tracking_options(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11RefDefaultTrackingOptions::SetTrackingOptions -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11RefDefaultTrackingOptions::SetTrackingOptions on RefDefaultTrackingOptions",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on RefDefaultTrackingOptions
     driven.attempt(|| {
         let Some(this) = o.k27.as_ref() else {
@@ -19034,27 +22159,47 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on RefDefaultTrackingOptions
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k27.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on RefDefaultTrackingOptions",
+    );
     // ID3D11RefTrackingOptions::SetTrackingOptions on RefTrackingOptions
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k28.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::RefTrackingOptions::set_tracking_options(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::RefTrackingOptions::set_tracking_options(this, Default::default());
+            answers.push(format!(
+                "ID3D11RefTrackingOptions::SetTrackingOptions -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11RefTrackingOptions::SetTrackingOptions on RefTrackingOptions",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on RefTrackingOptions
     driven.attempt(|| {
         let Some(this) = o.k28.as_ref() else {
@@ -19070,31 +22215,62 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on RefTrackingOptions
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k28.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on RefTrackingOptions",
+    );
     // ID3D11RenderTargetView1::GetDesc1 on RenderTargetView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k29.as_ref() else {
             return false;
         };
-        answered(direct3d_11::RenderTargetView1::get_desc1(this))
+        answered({
+            let answer = direct3d_11::RenderTargetView1::get_desc1(this);
+            answers.push(format!(
+                "ID3D11RenderTargetView1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11RenderTargetView1::GetDesc1 on RenderTargetView",
+    );
     // ID3D11RenderTargetView::GetDesc on RenderTargetView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k29.as_ref() else {
             return false;
         };
-        answered(direct3d_11::RenderTargetView::get_desc(this))
+        answered({
+            let answer = direct3d_11::RenderTargetView::get_desc(this);
+            answers.push(format!(
+                "ID3D11RenderTargetView::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11RenderTargetView::GetDesc on RenderTargetView");
     // ID3D11View::GetResource on RenderTargetView
     driven.attempt(|| {
         let Some(this) = o.k29.as_ref() else {
@@ -19103,12 +22279,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::View::get_resource(this))
     });
     // ID3D11DeviceChild::GetDevice on RenderTargetView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k29.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on RenderTargetView");
     // ID3D11DeviceChild::GetPrivateData on RenderTargetView
     driven.attempt(|| {
         let Some(this) = o.k29.as_ref() else {
@@ -19122,27 +22310,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on RenderTargetView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k29.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on RenderTargetView",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on RenderTargetView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k29.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on RenderTargetView",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on RenderTargetView
     driven.attempt(|| {
         let Some(this) = o.k29.as_ref() else {
@@ -19158,31 +22367,62 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on RenderTargetView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k29.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on RenderTargetView",
+    );
     // ID3D11SamplerState::GetDesc on SamplerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k30.as_ref() else {
             return false;
         };
-        answered(direct3d_11::SamplerState::get_desc(this))
+        answered({
+            let answer = direct3d_11::SamplerState::get_desc(this);
+            answers.push(format!(
+                "ID3D11SamplerState::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11SamplerState::GetDesc on SamplerState");
     // ID3D11DeviceChild::GetDevice on SamplerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k30.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on SamplerState");
     // ID3D11DeviceChild::GetPrivateData on SamplerState
     driven.attempt(|| {
         let Some(this) = o.k30.as_ref() else {
@@ -19196,27 +22436,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on SamplerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k30.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on SamplerState");
     // ID3D11DeviceChild::SetPrivateDataInterface on SamplerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k30.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on SamplerState",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on SamplerState
     driven.attempt(|| {
         let Some(this) = o.k30.as_ref() else {
@@ -19232,31 +22490,65 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on SamplerState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k30.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on SamplerState",
+    );
     // ID3D11ShaderResourceView1::GetDesc1 on ShaderResourceView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k31.as_ref() else {
             return false;
         };
-        answered(direct3d_11::ShaderResourceView1::get_desc1(this))
+        answered({
+            let answer = direct3d_11::ShaderResourceView1::get_desc1(this);
+            answers.push(format!(
+                "ID3D11ShaderResourceView1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11ShaderResourceView1::GetDesc1 on ShaderResourceView",
+    );
     // ID3D11ShaderResourceView::GetDesc on ShaderResourceView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k31.as_ref() else {
             return false;
         };
-        answered(direct3d_11::ShaderResourceView::get_desc(this))
+        answered({
+            let answer = direct3d_11::ShaderResourceView::get_desc(this);
+            answers.push(format!(
+                "ID3D11ShaderResourceView::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11ShaderResourceView::GetDesc on ShaderResourceView",
+    );
     // ID3D11View::GetResource on ShaderResourceView
     driven.attempt(|| {
         let Some(this) = o.k31.as_ref() else {
@@ -19265,12 +22557,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::View::get_resource(this))
     });
     // ID3D11DeviceChild::GetDevice on ShaderResourceView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k31.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on ShaderResourceView");
     // ID3D11DeviceChild::GetPrivateData on ShaderResourceView
     driven.attempt(|| {
         let Some(this) = o.k31.as_ref() else {
@@ -19284,27 +22588,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on ShaderResourceView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k31.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on ShaderResourceView",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on ShaderResourceView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k31.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on ShaderResourceView",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on ShaderResourceView
     driven.attempt(|| {
         let Some(this) = o.k31.as_ref() else {
@@ -19320,24 +22645,43 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderResourceView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k31.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderResourceView",
+    );
     // ID3D11ShaderTrace::TraceReady on ShaderTrace
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::ShaderTrace::trace_ready(this))
+        failure_is_negative({
+            let answer = direct3d_11::ShaderTrace::trace_ready(this);
+            answers.push(format!(
+                "ID3D11ShaderTrace::TraceReady -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11ShaderTrace::TraceReady on ShaderTrace");
     // ID3D11ShaderTrace::ResetTrace on ShaderTrace
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
@@ -19346,51 +22690,96 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::ShaderTrace::reset_trace(this))
     });
     // ID3D11ShaderTrace::GetTraceStats on ShaderTrace
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::ShaderTrace::get_trace_stats(this))
+        failure_is_negative({
+            let answer = direct3d_11::ShaderTrace::get_trace_stats(this);
+            answers.push(format!(
+                "ID3D11ShaderTrace::GetTraceStats -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11ShaderTrace::GetTraceStats on ShaderTrace");
     // ID3D11ShaderTrace::PSSelectStamp on ShaderTrace
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::ShaderTrace::ps_select_stamp(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::ShaderTrace::ps_select_stamp(this, Default::default());
+            answers.push(format!(
+                "ID3D11ShaderTrace::PSSelectStamp -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11ShaderTrace::PSSelectStamp on ShaderTrace");
     // ID3D11ShaderTrace::GetStep on ShaderTrace
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::ShaderTrace::get_step(this, Default::default()))
+        failure_is_negative({
+            let answer = direct3d_11::ShaderTrace::get_step(this, Default::default());
+            answers.push(format!(
+                "ID3D11ShaderTrace::GetStep -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11ShaderTrace::GetStep on ShaderTrace");
     // ID3D11ShaderTrace::GetWrittenRegister on ShaderTrace
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::ShaderTrace::get_written_register(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::ShaderTrace::get_written_register(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11ShaderTrace::GetWrittenRegister -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11ShaderTrace::GetWrittenRegister on ShaderTrace",
+    );
     // ID3D11ShaderTrace::GetReadRegister on ShaderTrace
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::ShaderTrace::get_read_register(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::ShaderTrace::get_read_register(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11ShaderTrace::GetReadRegister -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11ShaderTrace::GetReadRegister on ShaderTrace");
     // ID3DDestructionNotifier::RegisterDestructionCallback on ShaderTrace
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
@@ -19406,17 +22795,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderTrace
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderTrace",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on ShaderTraceFactory
     driven.attempt(|| {
         let Some(this) = o.k33.as_ref() else {
@@ -19432,17 +22831,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderTraceFactory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k33.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderTraceFactory",
+    );
     // ID3D11SwitchToRef::SetUseRef on SwitchToRef
     driven.attempt(|| {
         let Some(this) = o.k34.as_ref() else {
@@ -19454,12 +22863,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11SwitchToRef::GetUseRef on SwitchToRef
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k34.as_ref() else {
             return false;
         };
-        answered(direct3d_11::SwitchToRef::get_use_ref(this))
+        answered({
+            let answer = direct3d_11::SwitchToRef::get_use_ref(this);
+            answers.push(format!(
+                "ID3D11SwitchToRef::GetUseRef -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11SwitchToRef::GetUseRef on SwitchToRef");
     // ID3DDestructionNotifier::RegisterDestructionCallback on SwitchToRef
     driven.attempt(|| {
         let Some(this) = o.k34.as_ref() else {
@@ -19475,17 +22893,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on SwitchToRef
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k34.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on SwitchToRef",
+    );
     // ID3D11Texture1D::GetDesc on Texture1D
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
@@ -19511,19 +22939,40 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Resource::GetEvictionPriority on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Resource::get_eviction_priority(this))
+        answered({
+            let answer = direct3d_11::Resource::get_eviction_priority(this);
+            answers.push(format!(
+                "ID3D11Resource::GetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Resource::GetEvictionPriority on Texture1D");
     // ID3D11DeviceChild::GetDevice on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on Texture1D");
     // ID3D11DeviceChild::GetPrivateData on Texture1D
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
@@ -19537,51 +22986,85 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on Texture1D");
     // ID3D11DeviceChild::SetPrivateDataInterface on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
-    });
-    // IDXGIObject::SetPrivateData on Texture1D
-    driven.attempt(|| {
-        let Some(this) = o.k35.as_ref() else {
-            return false;
-        };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
-    });
-    // IDXGIObject::SetPrivateDataInterface on Texture1D
-    driven.attempt(|| {
-        let Some(this) = o.k35.as_ref() else {
-            return false;
-        };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on Texture1D",
+    );
+    // IDXGIObject::SetPrivateData on Texture1D
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k35.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Texture1D");
+    // IDXGIObject::SetPrivateDataInterface on Texture1D
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k35.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Texture1D");
     // IDXGIObject::GetPrivateData on Texture1D
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
@@ -19595,69 +23078,139 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Texture1D");
     // IDXGIDeviceSubObject::GetDevice on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DeviceSubObject::get_device(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDeviceSubObject::GetDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDeviceSubObject::GetDevice on Texture1D");
     // IDXGIResource::GetSharedHandle on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_shared_handle(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_shared_handle(this);
+            answers.push(format!(
+                "IDXGIResource::GetSharedHandle -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetSharedHandle on Texture1D");
     // IDXGIResource::GetUsage on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_usage(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_usage(this);
+            answers.push(format!(
+                "IDXGIResource::GetUsage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetUsage on Texture1D");
     // IDXGIResource::SetEvictionPriority on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource::set_eviction_priority(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
-            ),
-        )
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
+            );
+            answers.push(format!(
+                "IDXGIResource::SetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::SetEvictionPriority on Texture1D");
     // IDXGIResource::GetEvictionPriority on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_eviction_priority(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_eviction_priority(this);
+            answers.push(format!(
+                "IDXGIResource::GetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetEvictionPriority on Texture1D");
     // IDXGIResource1::CreateSubresourceSurface on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource1::create_subresource_surface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource1::create_subresource_surface(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIResource1::CreateSubresourceSurface -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIResource1::CreateSubresourceSurface on Texture1D",
+    );
     // IDXGIResource1::CreateSharedHandle on Texture1D
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
@@ -19687,24 +23240,43 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Texture1D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Texture1D",
+    );
     // ID3D11Texture2D1::GetDesc1 on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Texture2D1::get_desc1(this))
+        answered({
+            let answer = direct3d_11::Texture2D1::get_desc1(this);
+            answers.push(format!(
+                "ID3D11Texture2D1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Texture2D1::GetDesc1 on Texture2D");
     // ID3D11Texture2D::GetDesc on Texture2D
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
@@ -19730,19 +23302,40 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Resource::GetEvictionPriority on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Resource::get_eviction_priority(this))
+        answered({
+            let answer = direct3d_11::Resource::get_eviction_priority(this);
+            answers.push(format!(
+                "ID3D11Resource::GetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Resource::GetEvictionPriority on Texture2D");
     // ID3D11DeviceChild::GetDevice on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on Texture2D");
     // ID3D11DeviceChild::GetPrivateData on Texture2D
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
@@ -19756,51 +23349,85 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on Texture2D");
     // ID3D11DeviceChild::SetPrivateDataInterface on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
-    });
-    // IDXGIObject::SetPrivateData on Texture2D
-    driven.attempt(|| {
-        let Some(this) = o.k36.as_ref() else {
-            return false;
-        };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
-    });
-    // IDXGIObject::SetPrivateDataInterface on Texture2D
-    driven.attempt(|| {
-        let Some(this) = o.k36.as_ref() else {
-            return false;
-        };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on Texture2D",
+    );
+    // IDXGIObject::SetPrivateData on Texture2D
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k36.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Texture2D");
+    // IDXGIObject::SetPrivateDataInterface on Texture2D
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k36.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Texture2D");
     // IDXGIObject::GetPrivateData on Texture2D
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
@@ -19814,69 +23441,139 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Texture2D");
     // IDXGIDeviceSubObject::GetDevice on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DeviceSubObject::get_device(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDeviceSubObject::GetDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDeviceSubObject::GetDevice on Texture2D");
     // IDXGIResource::GetSharedHandle on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_shared_handle(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_shared_handle(this);
+            answers.push(format!(
+                "IDXGIResource::GetSharedHandle -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetSharedHandle on Texture2D");
     // IDXGIResource::GetUsage on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_usage(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_usage(this);
+            answers.push(format!(
+                "IDXGIResource::GetUsage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetUsage on Texture2D");
     // IDXGIResource::SetEvictionPriority on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource::set_eviction_priority(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
-            ),
-        )
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
+            );
+            answers.push(format!(
+                "IDXGIResource::SetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::SetEvictionPriority on Texture2D");
     // IDXGIResource::GetEvictionPriority on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_eviction_priority(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_eviction_priority(this);
+            answers.push(format!(
+                "IDXGIResource::GetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetEvictionPriority on Texture2D");
     // IDXGIResource1::CreateSubresourceSurface on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource1::create_subresource_surface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource1::create_subresource_surface(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIResource1::CreateSubresourceSurface -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIResource1::CreateSubresourceSurface on Texture2D",
+    );
     // IDXGIResource1::CreateSharedHandle on Texture2D
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
@@ -19935,15 +23632,28 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGISurface2::GetResource on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Surface2::get_resource(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Surface2::get_resource(this, &Default::default());
+            answers.push(format!(
+                "IDXGISurface2::GetResource -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", {
+                        let (t1_0, t1_1) = v0;
+                        format!("({}, {})", "an object".to_string(), format!("{:?}", t1_1))
+                    }),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISurface2::GetResource on Texture2D");
     // ID3DDestructionNotifier::RegisterDestructionCallback on Texture2D
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
@@ -19959,24 +23669,43 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Texture2D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Texture2D",
+    );
     // ID3D11Texture3D1::GetDesc1 on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Texture3D1::get_desc1(this))
+        answered({
+            let answer = direct3d_11::Texture3D1::get_desc1(this);
+            answers.push(format!(
+                "ID3D11Texture3D1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Texture3D1::GetDesc1 on Texture3D");
     // ID3D11Texture3D::GetDesc on Texture3D
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
@@ -20002,19 +23731,40 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11Resource::GetEvictionPriority on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Resource::get_eviction_priority(this))
+        answered({
+            let answer = direct3d_11::Resource::get_eviction_priority(this);
+            answers.push(format!(
+                "ID3D11Resource::GetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Resource::GetEvictionPriority on Texture3D");
     // ID3D11DeviceChild::GetDevice on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on Texture3D");
     // ID3D11DeviceChild::GetPrivateData on Texture3D
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
@@ -20028,51 +23778,85 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on Texture3D");
     // ID3D11DeviceChild::SetPrivateDataInterface on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
-    });
-    // IDXGIObject::SetPrivateData on Texture3D
-    driven.attempt(|| {
-        let Some(this) = o.k37.as_ref() else {
-            return false;
-        };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
-    });
-    // IDXGIObject::SetPrivateDataInterface on Texture3D
-    driven.attempt(|| {
-        let Some(this) = o.k37.as_ref() else {
-            return false;
-        };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on Texture3D",
+    );
+    // IDXGIObject::SetPrivateData on Texture3D
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k37.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Texture3D");
+    // IDXGIObject::SetPrivateDataInterface on Texture3D
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k37.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Texture3D");
     // IDXGIObject::GetPrivateData on Texture3D
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
@@ -20086,69 +23870,139 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Texture3D");
     // IDXGIDeviceSubObject::GetDevice on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DeviceSubObject::get_device(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDeviceSubObject::GetDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDeviceSubObject::GetDevice on Texture3D");
     // IDXGIResource::GetSharedHandle on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_shared_handle(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_shared_handle(this);
+            answers.push(format!(
+                "IDXGIResource::GetSharedHandle -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetSharedHandle on Texture3D");
     // IDXGIResource::GetUsage on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_usage(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_usage(this);
+            answers.push(format!(
+                "IDXGIResource::GetUsage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetUsage on Texture3D");
     // IDXGIResource::SetEvictionPriority on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource::set_eviction_priority(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
-            ),
-        )
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
+            );
+            answers.push(format!(
+                "IDXGIResource::SetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::SetEvictionPriority on Texture3D");
     // IDXGIResource::GetEvictionPriority on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_eviction_priority(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_eviction_priority(this);
+            answers.push(format!(
+                "IDXGIResource::GetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetEvictionPriority on Texture3D");
     // IDXGIResource1::CreateSubresourceSurface on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource1::create_subresource_surface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource1::create_subresource_surface(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIResource1::CreateSubresourceSurface -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIResource1::CreateSubresourceSurface on Texture3D",
+    );
     // IDXGIResource1::CreateSharedHandle on Texture3D
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
@@ -20178,31 +24032,52 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on Texture3D
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on Texture3D",
+    );
     // ID3D11TracingDevice::SetShaderTrackingOptionsByType on TracingDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k38.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::TracingDevice::set_shader_tracking_options_by_type(
+        failure_is_negative({
+            let answer = direct3d_11::TracingDevice::set_shader_tracking_options_by_type(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11TracingDevice::SetShaderTrackingOptionsByType -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11TracingDevice::SetShaderTrackingOptionsByType on TracingDevice",
+    );
     // ID3D11TracingDevice::SetShaderTrackingOptions on TracingDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k38.as_ref() else {
             return false;
@@ -20310,12 +24185,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(direct3d_11::TracingDevice::set_shader_tracking_options(
-            this,
-            v1,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::TracingDevice::set_shader_tracking_options(
+                this,
+                v1,
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11TracingDevice::SetShaderTrackingOptions -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11TracingDevice::SetShaderTrackingOptions on TracingDevice",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on TracingDevice
     driven.attempt(|| {
         let Some(this) = o.k38.as_ref() else {
@@ -20331,31 +24217,65 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on TracingDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k38.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on TracingDevice",
+    );
     // ID3D11UnorderedAccessView1::GetDesc1 on UnorderedAccessView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k39.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UnorderedAccessView1::get_desc1(this))
+        answered({
+            let answer = direct3d_11::UnorderedAccessView1::get_desc1(this);
+            answers.push(format!(
+                "ID3D11UnorderedAccessView1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11UnorderedAccessView1::GetDesc1 on UnorderedAccessView",
+    );
     // ID3D11UnorderedAccessView::GetDesc on UnorderedAccessView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k39.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UnorderedAccessView::get_desc(this))
+        answered({
+            let answer = direct3d_11::UnorderedAccessView::get_desc(this);
+            answers.push(format!(
+                "ID3D11UnorderedAccessView::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11UnorderedAccessView::GetDesc on UnorderedAccessView",
+    );
     // ID3D11View::GetResource on UnorderedAccessView
     driven.attempt(|| {
         let Some(this) = o.k39.as_ref() else {
@@ -20364,12 +24284,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::View::get_resource(this))
     });
     // ID3D11DeviceChild::GetDevice on UnorderedAccessView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k39.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on UnorderedAccessView");
     // ID3D11DeviceChild::GetPrivateData on UnorderedAccessView
     driven.attempt(|| {
         let Some(this) = o.k39.as_ref() else {
@@ -20383,27 +24315,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on UnorderedAccessView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k39.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on UnorderedAccessView",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on UnorderedAccessView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k39.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on UnorderedAccessView",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on UnorderedAccessView
     driven.attempt(|| {
         let Some(this) = o.k39.as_ref() else {
@@ -20419,24 +24372,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on UnorderedAccessView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k39.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on UnorderedAccessView",
+    );
     // ID3D11DeviceChild::GetDevice on VertexShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k40.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on VertexShader");
     // ID3D11DeviceChild::GetPrivateData on VertexShader
     driven.attempt(|| {
         let Some(this) = o.k40.as_ref() else {
@@ -20450,27 +24425,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on VertexShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k40.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on VertexShader");
     // ID3D11DeviceChild::SetPrivateDataInterface on VertexShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k40.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on VertexShader",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on VertexShader
     driven.attempt(|| {
         let Some(this) = o.k40.as_ref() else {
@@ -20486,18 +24479,29 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on VertexShader
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k40.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on VertexShader",
+    );
     // ID3D11VideoContext3::DecoderBeginFrame1 on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20508,15 +24512,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v2) = o.k43.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoContext3::decoder_begin_frame1(
-            this,
-            v1,
-            v2,
-            None,
-            &[],
-            &[],
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoContext3::decoder_begin_frame1(this, v1, v2, None, &[], &[]);
+            answers.push(format!(
+                "ID3D11VideoContext3::DecoderBeginFrame1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext3::DecoderBeginFrame1 on VideoContext",
+    );
     // ID3D11VideoContext3::SubmitDecoderBuffers2 on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -20549,6 +24558,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20557,14 +24567,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        answered(
-            direct3d_11::VideoContext2::video_processor_get_output_hdr_meta_data(
+        answered({
+            let answer = direct3d_11::VideoContext2::video_processor_get_output_hdr_meta_data(
                 this,
                 v1,
                 Some(&lying),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes(
+                "ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData",
+                &lying,
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData on VideoContext",
+    );
     // ID3D11VideoContext2::VideoProcessorSetStreamHDRMetaData on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -20584,6 +24607,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3D11VideoContext2::VideoProcessorGetStreamHDRMetaData on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20592,15 +24616,28 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        answered(
-            direct3d_11::VideoContext2::video_processor_get_stream_hdr_meta_data(
+        answered({
+            let answer = direct3d_11::VideoContext2::video_processor_get_stream_hdr_meta_data(
                 this,
                 v1,
                 Default::default(),
                 Some(&lying),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext2::VideoProcessorGetStreamHDRMetaData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes(
+                "ID3D11VideoContext2::VideoProcessorGetStreamHDRMetaData",
+                &lying,
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext2::VideoProcessorGetStreamHDRMetaData on VideoContext",
+    );
     // ID3D11VideoContext1::SubmitDecoderBuffers1 on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -20616,6 +24653,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11VideoContext1::GetDataForNewHardwareKey on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20623,13 +24661,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k10.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoContext1::get_data_for_new_hardware_key(
-            this,
-            v1,
-            &[],
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoContext1::get_data_for_new_hardware_key(this, v1, &[]);
+            answers.push(format!(
+                "ID3D11VideoContext1::GetDataForNewHardwareKey -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::GetDataForNewHardwareKey on VideoContext",
+    );
     // ID3D11VideoContext1::CheckCryptoSessionStatus on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20637,10 +24683,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k10.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoContext1::check_crypto_session_status(
-            this, v1,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoContext1::check_crypto_session_status(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext1::CheckCryptoSessionStatus -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::CheckCryptoSessionStatus on VideoContext",
+    );
     // ID3D11VideoContext1::VideoProcessorSetOutputColorSpace1 on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -20674,6 +24729,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3D11VideoContext1::VideoProcessorGetOutputColorSpace1 on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20681,9 +24737,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext1::video_processor_get_output_color_space1(this, v1))
+        answered({
+            let answer =
+                direct3d_11::VideoContext1::video_processor_get_output_color_space1(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext1::VideoProcessorGetOutputColorSpace1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::VideoProcessorGetOutputColorSpace1 on VideoContext",
+    );
     // ID3D11VideoContext1::VideoProcessorGetOutputShaderUsage on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20691,8 +24760,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext1::video_processor_get_output_shader_usage(this, v1))
+        answered({
+            let answer =
+                direct3d_11::VideoContext1::video_processor_get_output_shader_usage(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext1::VideoProcessorGetOutputShaderUsage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::VideoProcessorGetOutputShaderUsage on VideoContext",
+    );
     // ID3D11VideoContext1::VideoProcessorSetStreamColorSpace1 on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -20730,6 +24811,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3D11VideoContext1::VideoProcessorGetStreamColorSpace1 on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20737,15 +24819,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext1::video_processor_get_stream_color_space1(
+        answered({
+            let answer = direct3d_11::VideoContext1::video_processor_get_stream_color_space1(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext1::VideoProcessorGetStreamColorSpace1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::VideoProcessorGetStreamColorSpace1 on VideoContext",
+    );
     // ID3D11VideoContext1::VideoProcessorGetStreamMirror on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20753,15 +24845,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext1::video_processor_get_stream_mirror(
+        answered({
+            let answer = direct3d_11::VideoContext1::video_processor_get_stream_mirror(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext1::VideoProcessorGetStreamMirror -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::VideoProcessorGetStreamMirror on VideoContext",
+    );
     // ID3D11VideoContext1::VideoProcessorGetBehaviorHints on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20769,17 +24871,26 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::VideoContext1::video_processor_get_behavior_hints(
+        failure_is_negative({
+            let answer = direct3d_11::VideoContext1::video_processor_get_behavior_hints(
                 this,
                 v1,
                 Default::default(),
                 Default::default(),
                 Default::default(),
                 &[],
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext1::VideoProcessorGetBehaviorHints -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::VideoProcessorGetBehaviorHints on VideoContext",
+    );
     // ID3D11VideoContext::GetDecoderBuffer on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -20811,6 +24922,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11VideoContext::DecoderBeginFrame on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20821,11 +24933,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v2) = o.k43.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoContext::decoder_begin_frame(
-            this, v1, v2, None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoContext::decoder_begin_frame(this, v1, v2, None);
+            answers.push(format!(
+                "ID3D11VideoContext::DecoderBeginFrame -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::DecoderBeginFrame on VideoContext",
+    );
     // ID3D11VideoContext::DecoderEndFrame on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20833,8 +24955,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k42.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoContext::decoder_end_frame(this, v1))
+        failure_is_negative({
+            let answer = direct3d_11::VideoContext::decoder_end_frame(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext::DecoderEndFrame -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11VideoContext::DecoderEndFrame on VideoContext");
     // ID3D11VideoContext::SubmitDecoderBuffers on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -20919,6 +25049,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3D11VideoContext::VideoProcessorGetOutputTargetRect on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20926,9 +25057,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::video_processor_get_output_target_rect(this, v1))
+        answered({
+            let answer =
+                direct3d_11::VideoContext::video_processor_get_output_target_rect(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetOutputTargetRect -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetOutputTargetRect on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetOutputBackgroundColor on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20936,9 +25080,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::video_processor_get_output_background_color(this, v1))
+        answered({
+            let answer =
+                direct3d_11::VideoContext::video_processor_get_output_background_color(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetOutputBackgroundColor -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetOutputBackgroundColor on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetOutputColorSpace on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20946,9 +25103,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::video_processor_get_output_color_space(this, v1))
+        answered({
+            let answer =
+                direct3d_11::VideoContext::video_processor_get_output_color_space(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetOutputColorSpace -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetOutputColorSpace on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetOutputAlphaFillMode on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20956,9 +25126,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::video_processor_get_output_alpha_fill_mode(this, v1))
+        answered({
+            let answer =
+                direct3d_11::VideoContext::video_processor_get_output_alpha_fill_mode(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetOutputAlphaFillMode -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetOutputAlphaFillMode on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetOutputConstriction on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20966,9 +25149,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::video_processor_get_output_constriction(this, v1))
+        answered({
+            let answer =
+                direct3d_11::VideoContext::video_processor_get_output_constriction(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetOutputConstriction -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetOutputConstriction on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetOutputStereoMode on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20976,9 +25172,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::video_processor_get_output_stereo_mode(this, v1))
+        answered({
+            let answer =
+                direct3d_11::VideoContext::video_processor_get_output_stereo_mode(this, v1);
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetOutputStereoMode -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetOutputStereoMode on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetOutputExtension on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -20987,15 +25196,28 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        answered(
-            direct3d_11::VideoContext::video_processor_get_output_extension(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_output_extension(
                 this,
                 v1,
                 &Default::default(),
                 &lying,
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetOutputExtension -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes(
+                "ID3D11VideoContext::VideoProcessorGetOutputExtension",
+                &lying,
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetOutputExtension on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamFrameFormat on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -21218,6 +25440,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3D11VideoContext::VideoProcessorGetStreamFrameFormat on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21225,15 +25448,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_frame_format(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_frame_format(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamFrameFormat -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamFrameFormat on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamColorSpace on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21241,15 +25474,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_color_space(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_color_space(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamColorSpace -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamColorSpace on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamOutputRate on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21257,15 +25500,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_output_rate(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_output_rate(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamOutputRate -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamOutputRate on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamSourceRect on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21273,15 +25526,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_source_rect(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_source_rect(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamSourceRect -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamSourceRect on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamDestRect on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21289,15 +25552,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_dest_rect(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_dest_rect(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamDestRect -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamDestRect on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamAlpha on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21305,13 +25578,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::video_processor_get_stream_alpha(
-            this,
-            v1,
-            Default::default(),
-        ))
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_alpha(
+                this,
+                v1,
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamAlpha -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamAlpha on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamPalette on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21319,16 +25604,26 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_palette(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_palette(
                 this,
                 v1,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamPalette -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamPalette on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamPixelAspectRatio on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21336,15 +25631,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_pixel_aspect_ratio(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_pixel_aspect_ratio(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamPixelAspectRatio -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamPixelAspectRatio on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamLumaKey on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21352,15 +25657,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_luma_key(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_luma_key(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamLumaKey -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamLumaKey on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamStereoFormat on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21368,15 +25683,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_stereo_format(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_stereo_format(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamStereoFormat -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamStereoFormat on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamAutoProcessingMode on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21384,15 +25709,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_auto_processing_mode(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_auto_processing_mode(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamAutoProcessingMode -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamAutoProcessingMode on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamFilter on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21400,16 +25735,26 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_filter(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_filter(
                 this,
                 v1,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamFilter on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamExtension on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21418,16 +25763,29 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_extension(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_extension(
                 this,
                 v1,
                 Default::default(),
                 &Default::default(),
                 &lying,
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamExtension -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes(
+                "ID3D11VideoContext::VideoProcessorGetStreamExtension",
+                &lying,
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamExtension on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorBlt on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -21448,6 +25806,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11VideoContext::NegotiateCryptoSessionKeyExchange on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21456,11 +25815,26 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(
-            direct3d_11::VideoContext::negotiate_crypto_session_key_exchange(this, v1, &lying),
-        )
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoContext::negotiate_crypto_session_key_exchange(this, v1, &lying);
+            answers.push(format!(
+                "ID3D11VideoContext::NegotiateCryptoSessionKeyExchange -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes(
+                "ID3D11VideoContext::NegotiateCryptoSessionKeyExchange",
+                &lying,
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::NegotiateCryptoSessionKeyExchange on VideoContext",
+    );
     // ID3D11VideoContext::EncryptionBlt on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21475,15 +25849,15 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        answered(direct3d_11::VideoContext::encryption_blt(
-            this,
-            v1,
-            v2,
-            v3,
-            Some(&lying),
-        ))
+        answered({
+            let answer = direct3d_11::VideoContext::encryption_blt(this, v1, v2, v3, Some(&lying));
+            answers.bytes("ID3D11VideoContext::EncryptionBlt", &lying);
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11VideoContext::EncryptionBlt on VideoContext");
     // ID3D11VideoContext::DecryptionBlt on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21498,17 +25872,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        answered(direct3d_11::VideoContext::decryption_blt(
-            this,
-            v1,
-            v2,
-            v3,
-            None,
-            None,
-            Some(&lying),
-        ))
+        answered({
+            let answer = direct3d_11::VideoContext::decryption_blt(
+                this,
+                v1,
+                v2,
+                v3,
+                None,
+                None,
+                Some(&lying),
+            );
+            answers.bytes("ID3D11VideoContext::DecryptionBlt", &lying);
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11VideoContext::DecryptionBlt on VideoContext");
     // ID3D11VideoContext::StartSessionKeyRefresh on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21517,10 +25897,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        answered(direct3d_11::VideoContext::start_session_key_refresh(
-            this, v1, &lying,
-        ))
+        answered({
+            let answer = direct3d_11::VideoContext::start_session_key_refresh(this, v1, &lying);
+            answers.bytes("ID3D11VideoContext::StartSessionKeyRefresh", &lying);
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::StartSessionKeyRefresh on VideoContext",
+    );
     // ID3D11VideoContext::FinishSessionKeyRefresh on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -21534,6 +25920,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11VideoContext::GetEncryptionBltKey on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21542,11 +25929,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(direct3d_11::VideoContext::get_encryption_blt_key(
-            this, v1, &lying,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoContext::get_encryption_blt_key(this, v1, &lying);
+            answers.push(format!(
+                "ID3D11VideoContext::GetEncryptionBltKey -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("ID3D11VideoContext::GetEncryptionBltKey", &lying);
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::GetEncryptionBltKey on VideoContext",
+    );
     // ID3D11VideoContext::NegotiateAuthenticatedChannelKeyExchange on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21555,13 +25953,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(
-            direct3d_11::VideoContext::negotiate_authenticated_channel_key_exchange(
+        failure_is_negative({
+            let answer = direct3d_11::VideoContext::negotiate_authenticated_channel_key_exchange(
                 this, v1, &lying,
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::NegotiateAuthenticatedChannelKeyExchange -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes(
+                "ID3D11VideoContext::NegotiateAuthenticatedChannelKeyExchange",
+                &lying,
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::NegotiateAuthenticatedChannelKeyExchange on VideoContext",
+    );
     // ID3D11VideoContext::QueryAuthenticatedChannel on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21570,14 +25982,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(direct3d_11::VideoContext::query_authenticated_channel(
-            this,
-            v1,
-            &[],
-            &lying,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoContext::query_authenticated_channel(this, v1, &[], &lying);
+            answers.push(format!(
+                "ID3D11VideoContext::QueryAuthenticatedChannel -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("ID3D11VideoContext::QueryAuthenticatedChannel", &lying);
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::QueryAuthenticatedChannel on VideoContext",
+    );
     // ID3D11VideoContext::ConfigureAuthenticatedChannel on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21585,12 +26006,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k2.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoContext::configure_authenticated_channel(
-            this,
-            v1,
-            &[],
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoContext::configure_authenticated_channel(this, v1, &[]);
+            answers.push(format!(
+                "ID3D11VideoContext::ConfigureAuthenticatedChannel -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::ConfigureAuthenticatedChannel on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamRotation on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -21610,6 +26038,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3D11VideoContext::VideoProcessorGetStreamRotation on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -21617,21 +26046,42 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_get_stream_rotation(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_get_stream_rotation(
                 this,
                 v1,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoContext::VideoProcessorGetStreamRotation -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorGetStreamRotation on VideoContext",
+    );
     // ID3D11DeviceChild::GetDevice on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on VideoContext");
     // ID3D11DeviceChild::GetPrivateData on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -21645,27 +26095,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on VideoContext");
     // ID3D11DeviceChild::SetPrivateDataInterface on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on VideoContext",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -21681,38 +26149,81 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on VideoContext
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on VideoContext",
+    );
     // ID3D11VideoDecoder::GetCreationParameters on VideoDecoder
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k42.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDecoder::get_creation_parameters(this))
+        failure_is_negative({
+            let answer = direct3d_11::VideoDecoder::get_creation_parameters(this);
+            answers.push(format!(
+                "ID3D11VideoDecoder::GetCreationParameters -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDecoder::GetCreationParameters on VideoDecoder",
+    );
     // ID3D11VideoDecoder::GetDriverHandle on VideoDecoder
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k42.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDecoder::get_driver_handle(this))
+        failure_is_negative({
+            let answer = direct3d_11::VideoDecoder::get_driver_handle(this);
+            answers.push(format!(
+                "ID3D11VideoDecoder::GetDriverHandle -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11VideoDecoder::GetDriverHandle on VideoDecoder");
     // ID3D11DeviceChild::GetDevice on VideoDecoder
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k42.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on VideoDecoder");
     // ID3D11DeviceChild::GetPrivateData on VideoDecoder
     driven.attempt(|| {
         let Some(this) = o.k42.as_ref() else {
@@ -21726,27 +26237,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on VideoDecoder
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k42.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on VideoDecoder");
     // ID3D11DeviceChild::SetPrivateDataInterface on VideoDecoder
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k42.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on VideoDecoder",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on VideoDecoder
     driven.attempt(|| {
         let Some(this) = o.k42.as_ref() else {
@@ -21762,24 +26291,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on VideoDecoder
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k42.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on VideoDecoder",
+    );
     // ID3D11VideoDecoderOutputView::GetDesc on VideoDecoderOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k43.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoDecoderOutputView::get_desc(this))
+        answered({
+            let answer = direct3d_11::VideoDecoderOutputView::get_desc(this);
+            answers.push(format!(
+                "ID3D11VideoDecoderOutputView::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDecoderOutputView::GetDesc on VideoDecoderOutputView",
+    );
     // ID3D11View::GetResource on VideoDecoderOutputView
     driven.attempt(|| {
         let Some(this) = o.k43.as_ref() else {
@@ -21788,12 +26339,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::View::get_resource(this))
     });
     // ID3D11DeviceChild::GetDevice on VideoDecoderOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k43.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::GetDevice on VideoDecoderOutputView",
+    );
     // ID3D11DeviceChild::GetPrivateData on VideoDecoderOutputView
     driven.attempt(|| {
         let Some(this) = o.k43.as_ref() else {
@@ -21807,27 +26373,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on VideoDecoderOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k43.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on VideoDecoderOutputView",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on VideoDecoderOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k43.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on VideoDecoderOutputView",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on VideoDecoderOutputView
     driven.attempt(|| {
         let Some(this) = o.k43.as_ref() else {
@@ -21843,30 +26430,51 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on VideoDecoderOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k43.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on VideoDecoderOutputView",
+    );
     // ID3D11VideoDevice2::CheckFeatureSupport on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(direct3d_11::VideoDevice2::check_feature_support(
-            this,
-            Default::default(),
-            &lying,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoDevice2::check_feature_support(this, Default::default(), &lying);
+            answers.push(format!(
+                "ID3D11VideoDevice2::CheckFeatureSupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("ID3D11VideoDevice2::CheckFeatureSupport", &lying);
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice2::CheckFeatureSupport on VideoDevice",
+    );
     // ID3D11VideoDevice2::NegotiateCryptoSessionKeyExchangeMT on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
@@ -21875,30 +26483,54 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(
-            direct3d_11::VideoDevice2::negotiate_crypto_session_key_exchange_mt(
+        failure_is_negative({
+            let answer = direct3d_11::VideoDevice2::negotiate_crypto_session_key_exchange_mt(
                 this,
                 v1,
                 Default::default(),
                 &lying,
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoDevice2::NegotiateCryptoSessionKeyExchangeMT -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes(
+                "ID3D11VideoDevice2::NegotiateCryptoSessionKeyExchangeMT",
+                &lying,
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice2::NegotiateCryptoSessionKeyExchangeMT on VideoDevice",
+    );
     // ID3D11VideoDevice1::GetCryptoSessionPrivateDataSize on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::VideoDevice1::get_crypto_session_private_data_size(
+        failure_is_negative({
+            let answer = direct3d_11::VideoDevice1::get_crypto_session_private_data_size(
                 this,
                 &Default::default(),
                 None,
                 &Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoDevice1::GetCryptoSessionPrivateDataSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice1::GetCryptoSessionPrivateDataSize on VideoDevice",
+    );
     // ID3D11VideoDevice::CreateVideoProcessor on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
@@ -21906,107 +26538,220 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDevice::create_video_processor(
-            this,
-            v1,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoDevice::create_video_processor(this, v1, Default::default());
+            answers.push(format!(
+                "ID3D11VideoDevice::CreateVideoProcessor -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice::CreateVideoProcessor on VideoDevice",
+    );
     // ID3D11VideoDevice::CreateAuthenticatedChannel on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDevice::create_authenticated_channel(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoDevice::create_authenticated_channel(
+                this,
+                direct3d_11::enumerations::D3D11_AUTHENTICATED_CHANNEL_D3D11,
+            );
+            answers.push(format!(
+                "ID3D11VideoDevice::CreateAuthenticatedChannel -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice::CreateAuthenticatedChannel on VideoDevice",
+    );
     // ID3D11VideoDevice::CreateCryptoSession on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDevice::create_crypto_session(
-            this,
-            &Default::default(),
-            None,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoDevice::create_crypto_session(
+                this,
+                &Default::default(),
+                None,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11VideoDevice::CreateCryptoSession -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice::CreateCryptoSession on VideoDevice",
+    );
     // ID3D11VideoDevice::GetVideoDecoderProfileCount on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoDevice::get_video_decoder_profile_count(
-            this,
-        ))
+        answered({
+            let answer = direct3d_11::VideoDevice::get_video_decoder_profile_count(this);
+            answers.push(format!(
+                "ID3D11VideoDevice::GetVideoDecoderProfileCount -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice::GetVideoDecoderProfileCount on VideoDevice",
+    );
     // ID3D11VideoDevice::GetVideoDecoderProfile on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDevice::get_video_decoder_profile(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoDevice::get_video_decoder_profile(this, Default::default());
+            answers.push(format!(
+                "ID3D11VideoDevice::GetVideoDecoderProfile -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice::GetVideoDecoderProfile on VideoDevice",
+    );
     // ID3D11VideoDevice::CheckVideoDecoderFormat on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDevice::check_video_decoder_format(
-            this,
-            &Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoDevice::check_video_decoder_format(
+                this,
+                &Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11VideoDevice::CheckVideoDecoderFormat -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice::CheckVideoDecoderFormat on VideoDevice",
+    );
     // ID3D11VideoDevice::GetContentProtectionCaps on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDevice::get_content_protection_caps(
-            this, None, None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoDevice::get_content_protection_caps(this, None, None);
+            answers.push(format!(
+                "ID3D11VideoDevice::GetContentProtectionCaps -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice::GetContentProtectionCaps on VideoDevice",
+    );
     // ID3D11VideoDevice::CheckCryptoKeyExchange on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDevice::check_crypto_key_exchange(
-            this,
-            &Default::default(),
-            None,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoDevice::check_crypto_key_exchange(
+                this,
+                &Default::default(),
+                None,
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D11VideoDevice::CheckCryptoKeyExchange -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice::CheckCryptoKeyExchange on VideoDevice",
+    );
     // ID3D11VideoDevice::SetPrivateData on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDevice::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoDevice::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11VideoDevice::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11VideoDevice::SetPrivateData on VideoDevice");
     // ID3D11VideoDevice::SetPrivateDataInterface on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoDevice::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::VideoDevice::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11VideoDevice::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoDevice::SetPrivateDataInterface on VideoDevice",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on VideoDevice
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
@@ -22022,38 +26767,84 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on VideoDevice
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on VideoDevice",
+    );
     // ID3D11VideoProcessor::GetContentDesc on VideoProcessor
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoProcessor::get_content_desc(this))
+        answered({
+            let answer = direct3d_11::VideoProcessor::get_content_desc(this);
+            answers.push(format!(
+                "ID3D11VideoProcessor::GetContentDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoProcessor::GetContentDesc on VideoProcessor",
+    );
     // ID3D11VideoProcessor::GetRateConversionCaps on VideoProcessor
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoProcessor::get_rate_conversion_caps(this))
+        answered({
+            let answer = direct3d_11::VideoProcessor::get_rate_conversion_caps(this);
+            answers.push(format!(
+                "ID3D11VideoProcessor::GetRateConversionCaps -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoProcessor::GetRateConversionCaps on VideoProcessor",
+    );
     // ID3D11DeviceChild::GetDevice on VideoProcessor
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on VideoProcessor");
     // ID3D11DeviceChild::GetPrivateData on VideoProcessor
     driven.attempt(|| {
         let Some(this) = o.k45.as_ref() else {
@@ -22067,27 +26858,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on VideoProcessor
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k45.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::SetPrivateData on VideoProcessor");
     // ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessor
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k45.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessor",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on VideoProcessor
     driven.attempt(|| {
         let Some(this) = o.k45.as_ref() else {
@@ -22103,104 +26912,198 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessor
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k45.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessor",
+    );
     // ID3D11VideoProcessorEnumerator1::CheckVideoProcessorFormatConversion on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::VideoProcessorEnumerator1::check_video_processor_format_conversion(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            ),
-        )
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoProcessorEnumerator1::check_video_processor_format_conversion(
+                    this,
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                );
+            answers.push(format!(
+                "ID3D11VideoProcessorEnumerator1::CheckVideoProcessorFormatConversion -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11VideoProcessorEnumerator1::CheckVideoProcessorFormatConversion on VideoProcessorEnumerator");
     // ID3D11VideoProcessorEnumerator::GetVideoProcessorContentDesc on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::VideoProcessorEnumerator::get_video_processor_content_desc(this),
-        )
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoProcessorEnumerator::get_video_processor_content_desc(this);
+            answers.push(format!(
+                "ID3D11VideoProcessorEnumerator::GetVideoProcessorContentDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoProcessorEnumerator::GetVideoProcessorContentDesc on VideoProcessorEnumerator",
+    );
     // ID3D11VideoProcessorEnumerator::CheckVideoProcessorFormat on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::VideoProcessorEnumerator::check_video_processor_format(
+        failure_is_negative({
+            let answer = direct3d_11::VideoProcessorEnumerator::check_video_processor_format(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoProcessorEnumerator::CheckVideoProcessorFormat -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoProcessorEnumerator::CheckVideoProcessorFormat on VideoProcessorEnumerator",
+    );
     // ID3D11VideoProcessorEnumerator::GetVideoProcessorCaps on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::VideoProcessorEnumerator::get_video_processor_caps(this))
+        failure_is_negative({
+            let answer = direct3d_11::VideoProcessorEnumerator::get_video_processor_caps(this);
+            answers.push(format!(
+                "ID3D11VideoProcessorEnumerator::GetVideoProcessorCaps -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoProcessorEnumerator::GetVideoProcessorCaps on VideoProcessorEnumerator",
+    );
     // ID3D11VideoProcessorEnumerator::GetVideoProcessorRateConversionCaps on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::VideoProcessorEnumerator::get_video_processor_rate_conversion_caps(
-                this,
-                Default::default(),
-            ),
-        )
+        failure_is_negative({
+            let answer =
+                direct3d_11::VideoProcessorEnumerator::get_video_processor_rate_conversion_caps(
+                    this,
+                    Default::default(),
+                );
+            answers.push(format!(
+                "ID3D11VideoProcessorEnumerator::GetVideoProcessorRateConversionCaps -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11VideoProcessorEnumerator::GetVideoProcessorRateConversionCaps on VideoProcessorEnumerator");
     // ID3D11VideoProcessorEnumerator::GetVideoProcessorCustomRate on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::VideoProcessorEnumerator::get_video_processor_custom_rate(
+        failure_is_negative({
+            let answer = direct3d_11::VideoProcessorEnumerator::get_video_processor_custom_rate(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoProcessorEnumerator::GetVideoProcessorCustomRate -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoProcessorEnumerator::GetVideoProcessorCustomRate on VideoProcessorEnumerator",
+    );
     // ID3D11VideoProcessorEnumerator::GetVideoProcessorFilterRange on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_11::VideoProcessorEnumerator::get_video_processor_filter_range(
+        failure_is_negative({
+            let answer = direct3d_11::VideoProcessorEnumerator::get_video_processor_filter_range(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3D11VideoProcessorEnumerator::GetVideoProcessorFilterRange -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoProcessorEnumerator::GetVideoProcessorFilterRange on VideoProcessorEnumerator",
+    );
     // ID3D11DeviceChild::GetDevice on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::GetDevice on VideoProcessorEnumerator",
+    );
     // ID3D11DeviceChild::GetPrivateData on VideoProcessorEnumerator
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
@@ -22214,27 +27117,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on VideoProcessorEnumerator",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessorEnumerator",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on VideoProcessorEnumerator
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
@@ -22250,24 +27174,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessorEnumerator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k46.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessorEnumerator",
+    );
     // ID3D11VideoProcessorInputView::GetDesc on VideoProcessorInputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k47.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoProcessorInputView::get_desc(this))
+        answered({
+            let answer = direct3d_11::VideoProcessorInputView::get_desc(this);
+            answers.push(format!(
+                "ID3D11VideoProcessorInputView::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoProcessorInputView::GetDesc on VideoProcessorInputView",
+    );
     // ID3D11View::GetResource on VideoProcessorInputView
     driven.attempt(|| {
         let Some(this) = o.k47.as_ref() else {
@@ -22276,12 +27222,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::View::get_resource(this))
     });
     // ID3D11DeviceChild::GetDevice on VideoProcessorInputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k47.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::GetDevice on VideoProcessorInputView",
+    );
     // ID3D11DeviceChild::GetPrivateData on VideoProcessorInputView
     driven.attempt(|| {
         let Some(this) = o.k47.as_ref() else {
@@ -22295,27 +27256,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on VideoProcessorInputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k47.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on VideoProcessorInputView",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessorInputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k47.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessorInputView",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on VideoProcessorInputView
     driven.attempt(|| {
         let Some(this) = o.k47.as_ref() else {
@@ -22331,24 +27313,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessorInputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k47.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessorInputView",
+    );
     // ID3D11VideoProcessorOutputView::GetDesc on VideoProcessorOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k48.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoProcessorOutputView::get_desc(this))
+        answered({
+            let answer = direct3d_11::VideoProcessorOutputView::get_desc(this);
+            answers.push(format!(
+                "ID3D11VideoProcessorOutputView::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoProcessorOutputView::GetDesc on VideoProcessorOutputView",
+    );
     // ID3D11View::GetResource on VideoProcessorOutputView
     driven.attempt(|| {
         let Some(this) = o.k48.as_ref() else {
@@ -22357,12 +27361,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::View::get_resource(this))
     });
     // ID3D11DeviceChild::GetDevice on VideoProcessorOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k48.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::GetDevice on VideoProcessorOutputView",
+    );
     // ID3D11DeviceChild::GetPrivateData on VideoProcessorOutputView
     driven.attempt(|| {
         let Some(this) = o.k48.as_ref() else {
@@ -22376,27 +27395,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on VideoProcessorOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k48.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on VideoProcessorOutputView",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessorOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k48.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessorOutputView",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on VideoProcessorOutputView
     driven.attempt(|| {
         let Some(this) = o.k48.as_ref() else {
@@ -22412,24 +27452,46 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessorOutputView
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k48.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessorOutputView",
+    );
     // ID3D11DeviceChild::GetDevice on DeviceContextState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k49.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceChild::get_device(this))
+        answered({
+            let answer = direct3d_11::DeviceChild::get_device(this);
+            answers.push(format!(
+                "ID3D11DeviceChild::GetDevice -> {}",
+                match &answer {
+                    Some(v0) => format!("Some({})", "an object".to_string()),
+                    None => "None".to_string(),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceChild::GetDevice on DeviceContextState");
     // ID3D11DeviceChild::GetPrivateData on DeviceContextState
     driven.attempt(|| {
         let Some(this) = o.k49.as_ref() else {
@@ -22443,27 +27505,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // ID3D11DeviceChild::SetPrivateData on DeviceContextState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k49.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer =
+                direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateData on DeviceContextState",
+    );
     // ID3D11DeviceChild::SetPrivateDataInterface on DeviceContextState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k49.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_11::DeviceChild::set_private_data_interface(
-            this,
-            &Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::DeviceChild::set_private_data_interface(
+                this,
+                &Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "ID3D11DeviceChild::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceChild::SetPrivateDataInterface on DeviceContextState",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on DeviceContextState
     driven.attempt(|| {
         let Some(this) = o.k49.as_ref() else {
@@ -22479,31 +27562,65 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on DeviceContextState
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k49.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on DeviceContextState",
+    );
     // ID3DUserDefinedAnnotation::BeginEvent on UserDefinedAnnotation
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k50.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UserDefinedAnnotation::begin_event(this, &[]))
+        answered({
+            let answer = direct3d_11::UserDefinedAnnotation::begin_event(this, &[]);
+            answers.push(format!(
+                "ID3DUserDefinedAnnotation::BeginEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DUserDefinedAnnotation::BeginEvent on UserDefinedAnnotation",
+    );
     // ID3DUserDefinedAnnotation::EndEvent on UserDefinedAnnotation
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k50.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UserDefinedAnnotation::end_event(this))
+        answered({
+            let answer = direct3d_11::UserDefinedAnnotation::end_event(this);
+            answers.push(format!(
+                "ID3DUserDefinedAnnotation::EndEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DUserDefinedAnnotation::EndEvent on UserDefinedAnnotation",
+    );
     // ID3DUserDefinedAnnotation::SetMarker on UserDefinedAnnotation
     driven.attempt(|| {
         let Some(this) = o.k50.as_ref() else {
@@ -22512,12 +27629,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(direct3d_11::UserDefinedAnnotation::set_marker(this, &[]))
     });
     // ID3DUserDefinedAnnotation::GetStatus on UserDefinedAnnotation
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k50.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UserDefinedAnnotation::get_status(this))
+        answered({
+            let answer = direct3d_11::UserDefinedAnnotation::get_status(this);
+            answers.push(format!(
+                "ID3DUserDefinedAnnotation::GetStatus -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DUserDefinedAnnotation::GetStatus on UserDefinedAnnotation",
+    );
     // ID3DDestructionNotifier::RegisterDestructionCallback on UserDefinedAnnotation
     driven.attempt(|| {
         let Some(this) = o.k50.as_ref() else {
@@ -22533,138 +27662,241 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on UserDefinedAnnotation
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k50.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on UserDefinedAnnotation",
+    );
     // IDXGIAdapter4::GetDesc3 on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Adapter4::get_desc3(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Adapter4::get_desc3(this);
+            answers.push(format!(
+                "IDXGIAdapter4::GetDesc3 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIAdapter4::GetDesc3 on Adapter");
     // IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        failure_is_negative(directx_graphics_infrastructure::Adapter3::register_hardware_content_protection_teardown_status_event(this, Default::default()))
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Adapter3::register_hardware_content_protection_teardown_status_event(this, Default::default()); answers.push(format!("IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent -> {}", format!("{:?}", &answer))); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent on Adapter",
+    );
     // IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus on Adapter
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
         answered(directx_graphics_infrastructure::Adapter3::unregister_hardware_content_protection_teardown_status(this, Default::default()))
     });
     // IDXGIAdapter3::QueryVideoMemoryInfo on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Adapter3::query_video_memory_info(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Adapter3::query_video_memory_info(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIAdapter3::QueryVideoMemoryInfo -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIAdapter3::QueryVideoMemoryInfo on Adapter");
     // IDXGIAdapter3::SetVideoMemoryReservation on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Adapter3::set_video_memory_reservation(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Adapter3::set_video_memory_reservation(
                 this,
                 Default::default(),
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIAdapter3::SetVideoMemoryReservation -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIAdapter3::SetVideoMemoryReservation on Adapter");
     // IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        failure_is_negative(directx_graphics_infrastructure::Adapter3::register_video_memory_budget_change_notification_event(this, Default::default()))
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Adapter3::register_video_memory_budget_change_notification_event(this, Default::default()); answers.push(format!("IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent -> {}", format!("{:?}", &answer))); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent on Adapter",
+    );
     // IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification on Adapter
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
         answered(directx_graphics_infrastructure::Adapter3::unregister_video_memory_budget_change_notification(this, Default::default()))
     });
     // IDXGIAdapter2::GetDesc2 on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Adapter2::get_desc2(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Adapter2::get_desc2(this);
+            answers.push(format!(
+                "IDXGIAdapter2::GetDesc2 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIAdapter2::GetDesc2 on Adapter");
     // IDXGIAdapter1::GetDesc1 on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Adapter1::get_desc1(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Adapter1::get_desc1(this);
+            answers.push(format!(
+                "IDXGIAdapter1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIAdapter1::GetDesc1 on Adapter");
     // IDXGIAdapter::EnumOutputs on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Adapter::enum_outputs(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Adapter::enum_outputs(this, Default::default());
+            answers.push(format!(
+                "IDXGIAdapter::EnumOutputs -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIAdapter::EnumOutputs on Adapter");
     // IDXGIAdapter::GetDesc on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Adapter::get_desc(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Adapter::get_desc(this);
+            answers.push(format!(
+                "IDXGIAdapter::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIAdapter::GetDesc on Adapter");
     // IDXGIAdapter::CheckInterfaceSupport on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Adapter::check_interface_support(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Adapter::check_interface_support(
                 this,
                 &Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIAdapter::CheckInterfaceSupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIAdapter::CheckInterfaceSupport on Adapter");
     // IDXGIObject::SetPrivateData on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Adapter");
     // IDXGIObject::SetPrivateDataInterface on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Adapter");
     // IDXGIObject::GetPrivateData on Adapter
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
@@ -22678,15 +27910,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Adapter
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Adapter");
     // IDXGIDebug1::EnableLeakTrackingForThread on Debug
     driven.attempt(|| {
         let Some(this) = o.k62.as_ref() else {
@@ -22702,90 +27944,190 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(directx_graphics_infrastructure::Debug1::disable_leak_tracking_for_thread(this))
     });
     // IDXGIDebug1::IsLeakTrackingEnabledForThread on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k62.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Debug1::is_leak_tracking_enabled_for_thread(this))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::Debug1::is_leak_tracking_enabled_for_thread(this);
+            answers.push(format!(
+                "IDXGIDebug1::IsLeakTrackingEnabledForThread -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDebug1::IsLeakTrackingEnabledForThread on Debug",
+    );
     // IDXGIDebug::ReportLiveObjects on Debug
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k62.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Debug::report_live_objects(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Debug::report_live_objects(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDebug::ReportLiveObjects -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDebug::ReportLiveObjects on Debug");
     // IDXGIDecodeSwapChain::PresentBuffer on DecodeSwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k63.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DecodeSwapChain::present_buffer(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DecodeSwapChain::present_buffer(
                 this,
                 Default::default(),
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIDecodeSwapChain::PresentBuffer -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDecodeSwapChain::PresentBuffer on DecodeSwapChain",
+    );
     // IDXGIDecodeSwapChain::SetDestSize on DecodeSwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k63.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DecodeSwapChain::set_dest_size(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DecodeSwapChain::set_dest_size(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIDecodeSwapChain::SetDestSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDecodeSwapChain::SetDestSize on DecodeSwapChain",
+    );
     // IDXGIDecodeSwapChain::GetSourceRect on DecodeSwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k63.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::DecodeSwapChain::get_source_rect(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DecodeSwapChain::get_source_rect(this);
+            answers.push(format!(
+                "IDXGIDecodeSwapChain::GetSourceRect -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDecodeSwapChain::GetSourceRect on DecodeSwapChain",
+    );
     // IDXGIDecodeSwapChain::GetTargetRect on DecodeSwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k63.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::DecodeSwapChain::get_target_rect(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DecodeSwapChain::get_target_rect(this);
+            answers.push(format!(
+                "IDXGIDecodeSwapChain::GetTargetRect -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDecodeSwapChain::GetTargetRect on DecodeSwapChain",
+    );
     // IDXGIDecodeSwapChain::GetDestSize on DecodeSwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k63.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::DecodeSwapChain::get_dest_size(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DecodeSwapChain::get_dest_size(this);
+            answers.push(format!(
+                "IDXGIDecodeSwapChain::GetDestSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDecodeSwapChain::GetDestSize on DecodeSwapChain",
+    );
     // IDXGIDecodeSwapChain::SetColorSpace on DecodeSwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k63.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DecodeSwapChain::set_color_space(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DecodeSwapChain::set_color_space(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIDecodeSwapChain::SetColorSpace -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDecodeSwapChain::SetColorSpace on DecodeSwapChain",
+    );
     // IDXGIDecodeSwapChain::GetColorSpace on DecodeSwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k63.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::DecodeSwapChain::get_color_space(this))
+        answered({
+            let answer = directx_graphics_infrastructure::DecodeSwapChain::get_color_space(this);
+            answers.push(format!(
+                "IDXGIDecodeSwapChain::GetColorSpace -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDecodeSwapChain::GetColorSpace on DecodeSwapChain",
+    );
     // IDXGIDevice4::OfferResources1 on Device
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
@@ -22794,7 +28136,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         failure_is_negative(directx_graphics_infrastructure::Device4::offer_resources1(
             this,
             &[],
-            Default::default(),
+            directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             Default::default(),
         ))
     });
@@ -22820,7 +28162,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         failure_is_negative(directx_graphics_infrastructure::Device2::offer_resources(
             this,
             &[],
-            Default::default(),
+            directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
         ))
     });
     // IDXGIDevice2::ReclaimResources on Device
@@ -22834,43 +28176,78 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIDevice2::EnqueueSetEvent on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Device2::enqueue_set_event(
-            this,
-            Default::default(),
-        ))
-    });
-    // IDXGIDevice1::SetMaximumFrameLatency on Device
-    driven.attempt(|| {
-        let Some(this) = o.k64.as_ref() else {
-            return false;
-        };
-        failure_is_negative(
-            directx_graphics_infrastructure::Device1::set_maximum_frame_latency(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device2::enqueue_set_event(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIDevice2::EnqueueSetEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice2::EnqueueSetEvent on Device");
+    // IDXGIDevice1::SetMaximumFrameLatency on Device
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k64.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device1::set_maximum_frame_latency(
+                this,
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDevice1::SetMaximumFrameLatency -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(noted, "IDXGIDevice1::SetMaximumFrameLatency on Device");
     // IDXGIDevice1::GetMaximumFrameLatency on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Device1::get_maximum_frame_latency(this),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device1::get_maximum_frame_latency(this);
+            answers.push(format!(
+                "IDXGIDevice1::GetMaximumFrameLatency -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice1::GetMaximumFrameLatency on Device");
     // IDXGIDevice::GetAdapter on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Device::get_adapter(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device::get_adapter(this);
+            answers.push(format!(
+                "IDXGIDevice::GetAdapter -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice::GetAdapter on Device");
     // IDXGIDevice::QueryResourceResidency on Device
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
@@ -22881,48 +28258,80 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIDevice::SetGPUThreadPriority on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Device::set_gpu_thread_priority(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device::set_gpu_thread_priority(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIDevice::SetGPUThreadPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice::SetGPUThreadPriority on Device");
     // IDXGIDevice::GetGPUThreadPriority on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Device::get_gpu_thread_priority(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Device::get_gpu_thread_priority(this);
+            answers.push(format!(
+                "IDXGIDevice::GetGPUThreadPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice::GetGPUThreadPriority on Device");
     // IDXGIObject::SetPrivateData on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Device");
     // IDXGIObject::SetPrivateDataInterface on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Device");
     // IDXGIObject::GetPrivateData on Device
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
@@ -22936,22 +28345,44 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Device");
     // IDXGIDisplayControl::IsStereoEnabled on DisplayControl
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k65.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::DisplayControl::is_stereo_enabled(this))
+        answered({
+            let answer = directx_graphics_infrastructure::DisplayControl::is_stereo_enabled(this);
+            answers.push(format!(
+                "IDXGIDisplayControl::IsStereoEnabled -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDisplayControl::IsStereoEnabled on DisplayControl",
+    );
     // IDXGIDisplayControl::SetStereoEnabled on DisplayControl
     driven.attempt(|| {
         let Some(this) = o.k65.as_ref() else {
@@ -22965,117 +28396,219 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIFactory7::RegisterAdaptersChangedEvent on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory7::register_adapters_changed_event(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Factory7::register_adapters_changed_event(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIFactory7::RegisterAdaptersChangedEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIFactory7::RegisterAdaptersChangedEvent on Factory",
+    );
     // IDXGIFactory7::UnregisterAdaptersChangedEvent on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory7::unregister_adapters_changed_event(
-                this,
-                Default::default(),
-            ),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Factory7::unregister_adapters_changed_event(
+                    this,
+                    Default::default(),
+                );
+            answers.push(format!(
+                "IDXGIFactory7::UnregisterAdaptersChangedEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIFactory7::UnregisterAdaptersChangedEvent on Factory",
+    );
     // IDXGIFactory6::EnumAdapterByGpuPreference on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                 this,
                 Default::default(),
                 Default::default(),
                 &Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIFactory6::EnumAdapterByGpuPreference -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIFactory6::EnumAdapterByGpuPreference on Factory",
+    );
     // IDXGIFactory5::CheckFeatureSupport on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory5::check_feature_support(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Factory5::check_feature_support(
                 this,
                 Default::default(),
                 &lying,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIFactory5::CheckFeatureSupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("IDXGIFactory5::CheckFeatureSupport", &lying);
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory5::CheckFeatureSupport on Factory");
     // IDXGIFactory4::EnumWarpAdapter on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory4::enum_warp_adapter(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIFactory4::EnumWarpAdapter -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory4::EnumWarpAdapter on Factory");
     // IDXGIFactory3::GetCreationFlags on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Factory3::get_creation_flags(this))
+        answered({
+            let answer = directx_graphics_infrastructure::Factory3::get_creation_flags(this);
+            answers.push(format!(
+                "IDXGIFactory3::GetCreationFlags -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory3::GetCreationFlags on Factory");
     // IDXGIFactory2::IsWindowedStereoEnabled on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Factory2::is_windowed_stereo_enabled(this))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::Factory2::is_windowed_stereo_enabled(this);
+            answers.push(format!(
+                "IDXGIFactory2::IsWindowedStereoEnabled -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory2::IsWindowedStereoEnabled on Factory");
     // IDXGIFactory2::GetSharedResourceAdapterLuid on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory2::get_shared_resource_adapter_luid(
-                this,
-                Default::default(),
-            ),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Factory2::get_shared_resource_adapter_luid(
+                    this,
+                    Default::default(),
+                );
+            answers.push(format!(
+                "IDXGIFactory2::GetSharedResourceAdapterLuid -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIFactory2::GetSharedResourceAdapterLuid on Factory",
+    );
     // IDXGIFactory2::RegisterStereoStatusWindow on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory2::register_stereo_status_window(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Factory2::register_stereo_status_window(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIFactory2::RegisterStereoStatusWindow -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIFactory2::RegisterStereoStatusWindow on Factory",
+    );
     // IDXGIFactory2::RegisterStereoStatusEvent on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory2::register_stereo_status_event(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Factory2::register_stereo_status_event(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIFactory2::RegisterStereoStatusEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory2::RegisterStereoStatusEvent on Factory");
     // IDXGIFactory2::UnregisterStereoStatus on Factory
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
@@ -23089,30 +28622,51 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIFactory2::RegisterOcclusionStatusWindow on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory2::register_occlusion_status_window(
-                this,
-                Default::default(),
-                Default::default(),
-            ),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Factory2::register_occlusion_status_window(
+                    this,
+                    Default::default(),
+                    Default::default(),
+                );
+            answers.push(format!(
+                "IDXGIFactory2::RegisterOcclusionStatusWindow -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIFactory2::RegisterOcclusionStatusWindow on Factory",
+    );
     // IDXGIFactory2::RegisterOcclusionStatusEvent on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory2::register_occlusion_status_event(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Factory2::register_occlusion_status_event(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIFactory2::RegisterOcclusionStatusEvent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIFactory2::RegisterOcclusionStatusEvent on Factory",
+    );
     // IDXGIFactory2::UnregisterOcclusionStatus on Factory
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
@@ -23126,52 +28680,97 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIFactory1::EnumAdapters1 on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Factory1::enum_adapters1(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Factory1::enum_adapters1(this, Default::default());
+            answers.push(format!(
+                "IDXGIFactory1::EnumAdapters1 -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory1::EnumAdapters1 on Factory");
     // IDXGIFactory1::IsCurrent on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Factory1::is_current(this))
+        answered({
+            let answer = directx_graphics_infrastructure::Factory1::is_current(this);
+            answers.push(format!(
+                "IDXGIFactory1::IsCurrent -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory1::IsCurrent on Factory");
     // IDXGIFactory::EnumAdapters on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Factory::enum_adapters(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Factory::enum_adapters(this, Default::default());
+            answers.push(format!(
+                "IDXGIFactory::EnumAdapters -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory::EnumAdapters on Factory");
     // IDXGIFactory::MakeWindowAssociation on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Factory::make_window_association(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Factory::make_window_association(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIFactory::MakeWindowAssociation -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory::MakeWindowAssociation on Factory");
     // IDXGIFactory::GetWindowAssociation on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Factory::get_window_association(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Factory::get_window_association(this);
+            answers.push(format!(
+                "IDXGIFactory::GetWindowAssociation -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory::GetWindowAssociation on Factory");
     // IDXGIFactory::CreateSoftwareAdapter on Factory
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
@@ -23185,29 +28784,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIObject::SetPrivateData on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Factory");
     // IDXGIObject::SetPrivateDataInterface on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Factory");
     // IDXGIObject::GetPrivateData on Factory
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
@@ -23221,28 +28836,45 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Factory
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Factory");
     // IDXGIInfoQueue::SetMessageCountLimit on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::set_message_count_limit(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::set_message_count_limit(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::SetMessageCountLimit -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::SetMessageCountLimit on InfoQueue");
     // IDXGIInfoQueue::ClearStoredMessages on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
@@ -23269,63 +28901,83 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIInfoQueue::GetNumStoredMessagesAllowedByRetrievalFilters on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        answered(directx_graphics_infrastructure::InfoQueue::get_num_stored_messages_allowed_by_retrieval_filters(this, Default::default()))
+        answered({ let answer = directx_graphics_infrastructure::InfoQueue::get_num_stored_messages_allowed_by_retrieval_filters(this, Default::default()); answers.push(format!("IDXGIInfoQueue::GetNumStoredMessagesAllowedByRetrievalFilters -> {}", format!("{:?}", &answer))); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::GetNumStoredMessagesAllowedByRetrievalFilters on InfoQueue",
+    );
     // IDXGIInfoQueue::GetNumStoredMessages on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::get_num_stored_messages(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::get_num_stored_messages(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::GetNumStoredMessages -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::GetNumStoredMessages on InfoQueue");
     // IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        answered(directx_graphics_infrastructure::InfoQueue::get_num_messages_discarded_by_message_count_limit(this, Default::default()))
+        answered({ let answer = directx_graphics_infrastructure::InfoQueue::get_num_messages_discarded_by_message_count_limit(this, Default::default()); answers.push(format!("IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit -> {}", format!("{:?}", &answer))); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit on InfoQueue",
+    );
     // IDXGIInfoQueue::GetMessageCountLimit on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::get_message_count_limit(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::get_message_count_limit(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::GetMessageCountLimit -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::GetMessageCountLimit on InfoQueue");
     // IDXGIInfoQueue::GetNumMessagesAllowedByStorageFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
-        let Some(this) = o.k68.as_ref() else {
-            return false;
-        };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::get_num_messages_allowed_by_storage_filter(
-                this,
-                Default::default(),
-            ),
-        )
+        let Some(this) = o.k68.as_ref() else { return false; };
+        answered({ let answer = directx_graphics_infrastructure::InfoQueue::get_num_messages_allowed_by_storage_filter(this, Default::default()); answers.push(format!("IDXGIInfoQueue::GetNumMessagesAllowedByStorageFilter -> {}", format!("{:?}", &answer))); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::GetNumMessagesAllowedByStorageFilter on InfoQueue",
+    );
     // IDXGIInfoQueue::GetNumMessagesDeniedByStorageFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
-        let Some(this) = o.k68.as_ref() else {
-            return false;
-        };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::get_num_messages_denied_by_storage_filter(
-                this,
-                Default::default(),
-            ),
-        )
+        let Some(this) = o.k68.as_ref() else { return false; };
+        answered({ let answer = directx_graphics_infrastructure::InfoQueue::get_num_messages_denied_by_storage_filter(this, Default::default()); answers.push(format!("IDXGIInfoQueue::GetNumMessagesDeniedByStorageFilter -> {}", format!("{:?}", &answer))); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::GetNumMessagesDeniedByStorageFilter on InfoQueue",
+    );
     // IDXGIInfoQueue::GetStorageFilter on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
@@ -23353,41 +29005,68 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIInfoQueue::PushEmptyStorageFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::push_empty_storage_filter(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::push_empty_storage_filter(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::PushEmptyStorageFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::PushEmptyStorageFilter on InfoQueue");
     // IDXGIInfoQueue::PushDenyAllStorageFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::push_deny_all_storage_filter(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::push_deny_all_storage_filter(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::PushDenyAllStorageFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::PushDenyAllStorageFilter on InfoQueue",
+    );
     // IDXGIInfoQueue::PushCopyOfStorageFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::push_copy_of_storage_filter(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::push_copy_of_storage_filter(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::PushCopyOfStorageFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::PushCopyOfStorageFilter on InfoQueue",
+    );
     // IDXGIInfoQueue::PopStorageFilter on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
@@ -23401,17 +29080,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIInfoQueue::GetStorageFilterStackSize on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::get_storage_filter_stack_size(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::get_storage_filter_stack_size(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::GetStorageFilterStackSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::GetStorageFilterStackSize on InfoQueue",
+    );
     // IDXGIInfoQueue::GetRetrievalFilter on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
@@ -23439,41 +29128,71 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIInfoQueue::PushEmptyRetrievalFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::push_empty_retrieval_filter(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::push_empty_retrieval_filter(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::PushEmptyRetrievalFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::PushEmptyRetrievalFilter on InfoQueue",
+    );
     // IDXGIInfoQueue::PushDenyAllRetrievalFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::push_deny_all_retrieval_filter(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::push_deny_all_retrieval_filter(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::PushDenyAllRetrievalFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::PushDenyAllRetrievalFilter on InfoQueue",
+    );
     // IDXGIInfoQueue::PushCopyOfRetrievalFilter on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::push_copy_of_retrieval_filter(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::push_copy_of_retrieval_filter(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::PushCopyOfRetrievalFilter -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::PushCopyOfRetrievalFilter on InfoQueue",
+    );
     // IDXGIInfoQueue::PopRetrievalFilter on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
@@ -23487,121 +29206,194 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIInfoQueue::GetRetrievalFilterStackSize on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::get_retrieval_filter_stack_size(
+        answered({
+            let answer =
+                directx_graphics_infrastructure::InfoQueue::get_retrieval_filter_stack_size(
+                    this,
+                    Default::default(),
+                );
+            answers.push(format!(
+                "IDXGIInfoQueue::GetRetrievalFilterStackSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
+    });
+    answers.not_called_since(
+        noted,
+        "IDXGIInfoQueue::GetRetrievalFilterStackSize on InfoQueue",
+    );
+    // IDXGIInfoQueue::AddMessage on InfoQueue
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k68.as_ref() else {
+            return false;
+        };
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::add_message(
                 this,
                 Default::default(),
-            ),
-        )
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                c"",
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::AddMessage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
-    // IDXGIInfoQueue::AddMessage on InfoQueue
-    driven.attempt(|| {
-        let Some(this) = o.k68.as_ref() else {
-            return false;
-        };
-        failure_is_negative(directx_graphics_infrastructure::InfoQueue::add_message(
-            this,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            c"",
-        ))
-    });
+    answers.not_called_since(noted, "IDXGIInfoQueue::AddMessage on InfoQueue");
     // IDXGIInfoQueue::AddApplicationMessage on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::add_application_message(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::add_application_message(
                 this,
                 Default::default(),
                 c"",
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::AddApplicationMessage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::AddApplicationMessage on InfoQueue");
     // IDXGIInfoQueue::SetBreakOnCategory on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::set_break_on_category(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_category(
                 this,
                 Default::default(),
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::SetBreakOnCategory -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::SetBreakOnCategory on InfoQueue");
     // IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::InfoQueue::set_break_on_severity(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(
                 this,
                 Default::default(),
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::SetBreakOnSeverity -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue");
     // IDXGIInfoQueue::SetBreakOnID on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::InfoQueue::set_break_on_id(
-            this,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_id(
+                this,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::SetBreakOnID -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::SetBreakOnID on InfoQueue");
     // IDXGIInfoQueue::GetBreakOnCategory on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::get_break_on_category(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::get_break_on_category(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::GetBreakOnCategory -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::GetBreakOnCategory on InfoQueue");
     // IDXGIInfoQueue::GetBreakOnSeverity on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::get_break_on_severity(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::get_break_on_severity(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::GetBreakOnSeverity -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::GetBreakOnSeverity on InfoQueue");
     // IDXGIInfoQueue::GetBreakOnID on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::InfoQueue::get_break_on_id(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::get_break_on_id(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::GetBreakOnID -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::GetBreakOnID on InfoQueue");
     // IDXGIInfoQueue::SetMuteDebugOutput on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
@@ -23616,71 +29408,123 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIInfoQueue::GetMuteDebugOutput on InfoQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::get_mute_debug_output(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::get_mute_debug_output(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIInfoQueue::GetMuteDebugOutput -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::GetMuteDebugOutput on InfoQueue");
     // IDXGIKeyedMutex::AcquireSync on KeyedMutex
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k69.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::KeyedMutex::acquire_sync(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::KeyedMutex::acquire_sync(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIKeyedMutex::AcquireSync -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIKeyedMutex::AcquireSync on KeyedMutex");
     // IDXGIKeyedMutex::ReleaseSync on KeyedMutex
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k69.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::KeyedMutex::release_sync(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::KeyedMutex::release_sync(this, Default::default());
+            answers.push(format!(
+                "IDXGIKeyedMutex::ReleaseSync -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIKeyedMutex::ReleaseSync on KeyedMutex");
     // IDXGIDeviceSubObject::GetDevice on KeyedMutex
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k69.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DeviceSubObject::get_device(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDeviceSubObject::GetDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDeviceSubObject::GetDevice on KeyedMutex");
     // IDXGIObject::SetPrivateData on KeyedMutex
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k69.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on KeyedMutex");
     // IDXGIObject::SetPrivateDataInterface on KeyedMutex
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k69.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on KeyedMutex");
     // IDXGIObject::GetPrivateData on KeyedMutex
     driven.attempt(|| {
         let Some(this) = o.k69.as_ref() else {
@@ -23694,32 +29538,63 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on KeyedMutex
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k69.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on KeyedMutex");
     // IDXGIOutput6::GetDesc1 on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Output6::get_desc1(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output6::get_desc1(this);
+            answers.push(format!(
+                "IDXGIOutput6::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput6::GetDesc1 on Output");
     // IDXGIOutput6::CheckHardwareCompositionSupport on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Output6::check_hardware_composition_support(this),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Output6::check_hardware_composition_support(this);
+            answers.push(format!(
+                "IDXGIOutput6::CheckHardwareCompositionSupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIOutput6::CheckHardwareCompositionSupport on Output",
+    );
     // IDXGIOutput5::DuplicateOutput1 on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
@@ -23765,14 +29640,26 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Output5::duplicate_output1(
-            this,
-            v1,
-            Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output5::duplicate_output1(
+                this,
+                v1,
+                Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIOutput5::DuplicateOutput1 -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput5::DuplicateOutput1 on Output");
     // IDXGIOutput4::CheckOverlayColorSpaceSupport on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
@@ -23818,16 +29705,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Output4::check_overlay_color_space_support(
-                this,
-                Default::default(),
-                Default::default(),
-                v1,
-            ),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Output4::check_overlay_color_space_support(
+                    this,
+                    Default::default(),
+                    Default::default(),
+                    v1,
+                );
+            answers.push(format!(
+                "IDXGIOutput4::CheckOverlayColorSpaceSupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIOutput4::CheckOverlayColorSpaceSupport on Output",
+    );
     // IDXGIOutput3::CheckOverlaySupport on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
@@ -23873,37 +29771,58 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Output3::check_overlay_support(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output3::check_overlay_support(
                 this,
                 Default::default(),
                 v1,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIOutput3::CheckOverlaySupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput3::CheckOverlaySupport on Output");
     // IDXGIOutput2::SupportsOverlays on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Output2::supports_overlays(
-            this,
-        ))
+        answered({
+            let answer = directx_graphics_infrastructure::Output2::supports_overlays(this);
+            answers.push(format!(
+                "IDXGIOutput2::SupportsOverlays -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput2::SupportsOverlays on Output");
     // IDXGIOutput1::GetDisplayModeList1 on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Output1::get_display_mode_list1(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output1::get_display_mode_list1(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIOutput1::GetDisplayModeList1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput1::GetDisplayModeList1 on Output");
     // IDXGIOutput1::GetDisplaySurfaceData1 on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
@@ -23911,11 +29830,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Output1::get_display_surface_data1(this, v1),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Output1::get_display_surface_data1(this, v1);
+            answers.push(format!(
+                "IDXGIOutput1::GetDisplaySurfaceData1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput1::GetDisplaySurfaceData1 on Output");
     // IDXGIOutput1::DuplicateOutput on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
@@ -23961,40 +29888,73 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Output1::duplicate_output(
-            this, v1,
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output1::duplicate_output(this, v1);
+            answers.push(format!(
+                "IDXGIOutput1::DuplicateOutput -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput1::DuplicateOutput on Output");
     // IDXGIOutput::GetDesc on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Output::get_desc(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output::get_desc(this);
+            answers.push(format!(
+                "IDXGIOutput::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::GetDesc on Output");
     // IDXGIOutput::GetDisplayModeList on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Output::get_display_mode_list(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output::get_display_mode_list(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIOutput::GetDisplayModeList -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::GetDisplayModeList on Output");
     // IDXGIOutput::WaitForVBlank on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Output::wait_for_v_blank(
-            this,
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output::wait_for_v_blank(this);
+            answers.push(format!(
+                "IDXGIOutput::WaitForVBlank -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::WaitForVBlank on Output");
     // IDXGIOutput::TakeOwnership on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
@@ -24040,12 +30000,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Output::take_ownership(
-            this,
-            v1,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output::take_ownership(
+                this,
+                v1,
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIOutput::TakeOwnership -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::TakeOwnership on Output");
     // IDXGIOutput::ReleaseOwnership on Output
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
@@ -24056,24 +30024,40 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIOutput::GetGammaControlCapabilities on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Output::get_gamma_control_capabilities(this),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Output::get_gamma_control_capabilities(this);
+            answers.push(format!(
+                "IDXGIOutput::GetGammaControlCapabilities -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::GetGammaControlCapabilities on Output");
     // IDXGIOutput::GetGammaControl on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Output::get_gamma_control(
-            this,
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output::get_gamma_control(this);
+            answers.push(format!(
+                "IDXGIOutput::GetGammaControl -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::GetGammaControl on Output");
     // IDXGIOutput::SetDisplaySurface on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
@@ -24081,9 +30065,18 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k73.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Output::set_display_surface(this, v1))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output::set_display_surface(this, v1);
+            answers.push(format!(
+                "IDXGIOutput::SetDisplaySurface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::SetDisplaySurface on Output");
     // IDXGIOutput::GetDisplaySurfaceData on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
@@ -24091,41 +30084,73 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k73.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Output::get_display_surface_data(this, v1),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Output::get_display_surface_data(this, v1);
+            answers.push(format!(
+                "IDXGIOutput::GetDisplaySurfaceData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::GetDisplaySurfaceData on Output");
     // IDXGIOutput::GetFrameStatistics on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Output::get_frame_statistics(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Output::get_frame_statistics(this);
+            answers.push(format!(
+                "IDXGIOutput::GetFrameStatistics -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::GetFrameStatistics on Output");
     // IDXGIObject::SetPrivateData on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Output");
     // IDXGIObject::SetPrivateDataInterface on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Output");
     // IDXGIObject::GetPrivateData on Output
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
@@ -24139,66 +30164,142 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Output
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Output");
     // IDXGIOutputDuplication::GetDesc on OutputDuplication
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k71.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::OutputDuplication::get_desc(this))
+        answered({
+            let answer = directx_graphics_infrastructure::OutputDuplication::get_desc(this);
+            answers.push(format!(
+                "IDXGIOutputDuplication::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIOutputDuplication::GetDesc on OutputDuplication",
+    );
     // IDXGIOutputDuplication::AcquireNextFrame on OutputDuplication
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k71.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::OutputDuplication::acquire_next_frame(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::OutputDuplication::acquire_next_frame(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIOutputDuplication::AcquireNextFrame -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", {
+                        let (t1_0, t1_1) = v0;
+                        format!("({}, {})", format!("{:?}", t1_0), "an object".to_string())
+                    }),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIOutputDuplication::AcquireNextFrame on OutputDuplication",
+    );
     // IDXGIOutputDuplication::GetFrameDirtyRects on OutputDuplication
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k71.as_ref() else {
             return false;
         };
         let lying = bytes();
-        failure_is_negative(
-            directx_graphics_infrastructure::OutputDuplication::get_frame_dirty_rects(this, &lying),
-        )
-    });
-    // IDXGIOutputDuplication::GetFrameMoveRects on OutputDuplication
-    driven.attempt(|| {
-        let Some(this) = o.k71.as_ref() else {
-            return false;
-        };
-        let lying = bytes();
-        failure_is_negative(
-            directx_graphics_infrastructure::OutputDuplication::get_frame_move_rects(this, &lying),
-        )
-    });
-    // IDXGIOutputDuplication::GetFramePointerShape on OutputDuplication
-    driven.attempt(|| {
-        let Some(this) = o.k71.as_ref() else {
-            return false;
-        };
-        let lying = bytes();
-        failure_is_negative(
-            directx_graphics_infrastructure::OutputDuplication::get_frame_pointer_shape(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::OutputDuplication::get_frame_dirty_rects(
                 this, &lying,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIOutputDuplication::GetFrameDirtyRects -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("IDXGIOutputDuplication::GetFrameDirtyRects", &lying);
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIOutputDuplication::GetFrameDirtyRects on OutputDuplication",
+    );
+    // IDXGIOutputDuplication::GetFrameMoveRects on OutputDuplication
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k71.as_ref() else {
+            return false;
+        };
+        let lying = bytes();
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::OutputDuplication::get_frame_move_rects(
+                this, &lying,
+            );
+            answers.push(format!(
+                "IDXGIOutputDuplication::GetFrameMoveRects -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("IDXGIOutputDuplication::GetFrameMoveRects", &lying);
+            answer
+        })
+    });
+    answers.not_called_since(
+        noted,
+        "IDXGIOutputDuplication::GetFrameMoveRects on OutputDuplication",
+    );
+    // IDXGIOutputDuplication::GetFramePointerShape on OutputDuplication
+    let noted = answers.len();
+    driven.attempt(|| {
+        let Some(this) = o.k71.as_ref() else {
+            return false;
+        };
+        let lying = bytes();
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::OutputDuplication::get_frame_pointer_shape(
+                    this, &lying,
+                );
+            answers.push(format!(
+                "IDXGIOutputDuplication::GetFramePointerShape -> {}",
+                format!("{:?}", &answer)
+            ));
+            answers.bytes("IDXGIOutputDuplication::GetFramePointerShape", &lying);
+            answer
+        })
+    });
+    answers.not_called_since(
+        noted,
+        "IDXGIOutputDuplication::GetFramePointerShape on OutputDuplication",
+    );
     // IDXGIOutputDuplication::MapDesktopSurface on OutputDuplication
     driven.attempt(|| {
         let Some(this) = o.k71.as_ref() else {
@@ -24218,36 +30319,67 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIOutputDuplication::ReleaseFrame on OutputDuplication
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k71.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::OutputDuplication::release_frame(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::OutputDuplication::release_frame(this);
+            answers.push(format!(
+                "IDXGIOutputDuplication::ReleaseFrame -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIOutputDuplication::ReleaseFrame on OutputDuplication",
+    );
     // IDXGIObject::SetPrivateData on OutputDuplication
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k71.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on OutputDuplication");
     // IDXGIObject::SetPrivateDataInterface on OutputDuplication
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k71.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIObject::SetPrivateDataInterface on OutputDuplication",
+    );
     // IDXGIObject::GetPrivateData on OutputDuplication
     driven.attempt(|| {
         let Some(this) = o.k71.as_ref() else {
@@ -24261,27 +30393,50 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on OutputDuplication
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k71.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on OutputDuplication");
     // IDXGIResource1::CreateSubresourceSurface on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource1::create_subresource_surface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource1::create_subresource_surface(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIResource1::CreateSubresourceSurface -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIResource1::CreateSubresourceSurface on Resource",
+    );
     // IDXGIResource1::CreateSharedHandle on Resource
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
@@ -24297,71 +30452,134 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGIResource::GetSharedHandle on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_shared_handle(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_shared_handle(this);
+            answers.push(format!(
+                "IDXGIResource::GetSharedHandle -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetSharedHandle on Resource");
     // IDXGIResource::GetUsage on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_usage(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_usage(this);
+            answers.push(format!(
+                "IDXGIResource::GetUsage -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetUsage on Resource");
     // IDXGIResource::SetEvictionPriority on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Resource::set_eviction_priority(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
-            ),
-        )
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
+            );
+            answers.push(format!(
+                "IDXGIResource::SetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::SetEvictionPriority on Resource");
     // IDXGIResource::GetEvictionPriority on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Resource::get_eviction_priority(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Resource::get_eviction_priority(this);
+            answers.push(format!(
+                "IDXGIResource::GetEvictionPriority -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIResource::GetEvictionPriority on Resource");
     // IDXGIDeviceSubObject::GetDevice on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DeviceSubObject::get_device(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDeviceSubObject::GetDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDeviceSubObject::GetDevice on Resource");
     // IDXGIObject::SetPrivateData on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Resource");
     // IDXGIObject::SetPrivateDataInterface on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Resource");
     // IDXGIObject::GetPrivateData on Resource
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
@@ -24375,25 +30593,48 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k72.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Resource");
     // IDXGISurface2::GetResource on Surface
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k73.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Surface2::get_resource(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Surface2::get_resource(this, &Default::default());
+            answers.push(format!(
+                "IDXGISurface2::GetResource -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", {
+                        let (t1_0, t1_1) = v0;
+                        format!("({}, {})", "an object".to_string(), format!("{:?}", t1_1))
+                    }),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISurface2::GetResource on Surface");
     // IDXGISurface1::GetDC on Surface
     driven.attempt(|| {
         let Some(this) = o.k73.as_ref() else {
@@ -24438,38 +30679,67 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         failure_is_negative(directx_graphics_infrastructure::Surface::unmap(this))
     });
     // IDXGIDeviceSubObject::GetDevice on Surface
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k73.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DeviceSubObject::get_device(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDeviceSubObject::GetDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDeviceSubObject::GetDevice on Surface");
     // IDXGIObject::SetPrivateData on Surface
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k73.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on Surface");
     // IDXGIObject::SetPrivateDataInterface on Surface
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k73.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on Surface");
     // IDXGIObject::GetPrivateData on Surface
     driven.attempt(|| {
         let Some(this) = o.k73.as_ref() else {
@@ -24483,56 +30753,106 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on Surface
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k73.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on Surface");
     // IDXGISwapChain4::SetHDRMetaData on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain4::set_hdr_meta_data(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain4::set_hdr_meta_data(
                 this,
                 Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGISwapChain4::SetHDRMetaData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain4::SetHDRMetaData on SwapChain");
     // IDXGISwapChain3::GetCurrentBackBufferIndex on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::SwapChain3::get_current_back_buffer_index(this))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::SwapChain3::get_current_back_buffer_index(this);
+            answers.push(format!(
+                "IDXGISwapChain3::GetCurrentBackBufferIndex -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGISwapChain3::GetCurrentBackBufferIndex on SwapChain",
+    );
     // IDXGISwapChain3::CheckColorSpaceSupport on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain3::check_color_space_support(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain3::check_color_space_support(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGISwapChain3::CheckColorSpaceSupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGISwapChain3::CheckColorSpaceSupport on SwapChain",
+    );
     // IDXGISwapChain3::SetColorSpace1 on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain3::set_color_space1(this, Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain3::set_color_space1(
+                this,
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGISwapChain3::SetColorSpace1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain3::SetColorSpace1 on SwapChain");
     // IDXGISwapChain3::ResizeBuffers1 on SwapChain
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
@@ -24551,175 +30871,367 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         )
     });
     // IDXGISwapChain2::SetSourceSize on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain2::set_source_size(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain2::set_source_size(
                 this,
                 Default::default(),
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGISwapChain2::SetSourceSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain2::SetSourceSize on SwapChain");
     // IDXGISwapChain2::GetSourceSize on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain2::get_source_size(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain2::get_source_size(this);
+            answers.push(format!(
+                "IDXGISwapChain2::GetSourceSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain2::GetSourceSize on SwapChain");
     // IDXGISwapChain2::SetMaximumFrameLatency on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain2::set_maximum_frame_latency(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain2::set_maximum_frame_latency(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGISwapChain2::SetMaximumFrameLatency -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGISwapChain2::SetMaximumFrameLatency on SwapChain",
+    );
     // IDXGISwapChain2::GetMaximumFrameLatency on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain2::get_maximum_frame_latency(this),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::SwapChain2::get_maximum_frame_latency(this);
+            answers.push(format!(
+                "IDXGISwapChain2::GetMaximumFrameLatency -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGISwapChain2::GetMaximumFrameLatency on SwapChain",
+    );
     // IDXGISwapChain2::GetFrameLatencyWaitableObject on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::SwapChain2::get_frame_latency_waitable_object(this),
-        )
+        answered({
+            let answer =
+                directx_graphics_infrastructure::SwapChain2::get_frame_latency_waitable_object(
+                    this,
+                );
+            answers.push(format!(
+                "IDXGISwapChain2::GetFrameLatencyWaitableObject -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGISwapChain2::GetFrameLatencyWaitableObject on SwapChain",
+    );
     // IDXGISwapChain2::GetMatrixTransform on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain2::get_matrix_transform(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain2::get_matrix_transform(this);
+            answers.push(format!(
+                "IDXGISwapChain2::GetMatrixTransform -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain2::GetMatrixTransform on SwapChain");
     // IDXGISwapChain1::GetDesc1 on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain1::get_desc1(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain1::get_desc1(this);
+            answers.push(format!(
+                "IDXGISwapChain1::GetDesc1 -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain1::GetDesc1 on SwapChain");
     // IDXGISwapChain1::GetFullscreenDesc on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain1::get_fullscreen_desc(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain1::get_fullscreen_desc(this);
+            answers.push(format!(
+                "IDXGISwapChain1::GetFullscreenDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain1::GetFullscreenDesc on SwapChain");
     // IDXGISwapChain1::GetHwnd on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain1::get_hwnd(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain1::get_hwnd(this);
+            answers.push(format!(
+                "IDXGISwapChain1::GetHwnd -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain1::GetHwnd on SwapChain");
     // IDXGISwapChain1::GetCoreWindow on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain1::get_core_window(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGISwapChain1::GetCoreWindow -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain1::GetCoreWindow on SwapChain");
     // IDXGISwapChain1::IsTemporaryMonoSupported on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::SwapChain1::is_temporary_mono_supported(this))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::SwapChain1::is_temporary_mono_supported(this);
+            answers.push(format!(
+                "IDXGISwapChain1::IsTemporaryMonoSupported -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGISwapChain1::IsTemporaryMonoSupported on SwapChain",
+    );
     // IDXGISwapChain1::GetRestrictToOutput on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain1::get_restrict_to_output(this),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain1::get_restrict_to_output(this);
+            answers.push(format!(
+                "IDXGISwapChain1::GetRestrictToOutput -> {}",
+                match &answer {
+                    Ok(v0) => format!(
+                        "Ok({})",
+                        match v0 {
+                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            None => "None".to_string(),
+                        }
+                    ),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain1::GetRestrictToOutput on SwapChain");
     // IDXGISwapChain1::GetBackgroundColor on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain1::get_background_color(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain1::get_background_color(this);
+            answers.push(format!(
+                "IDXGISwapChain1::GetBackgroundColor -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain1::GetBackgroundColor on SwapChain");
     // IDXGISwapChain1::SetRotation on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain1::set_rotation(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::SwapChain1::set_rotation(this, Default::default());
+            answers.push(format!(
+                "IDXGISwapChain1::SetRotation -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain1::SetRotation on SwapChain");
     // IDXGISwapChain1::GetRotation on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain1::get_rotation(
-            this,
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain1::get_rotation(this);
+            answers.push(format!(
+                "IDXGISwapChain1::GetRotation -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain1::GetRotation on SwapChain");
     // IDXGISwapChain::Present on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain::present(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain::present(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGISwapChain::Present -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain::Present on SwapChain");
     // IDXGISwapChain::GetBuffer on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain::get_buffer(
-            this,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::SwapChain::get_buffer(this, Default::default());
+            answers.push(format!(
+                "IDXGISwapChain::GetBuffer -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain::GetBuffer on SwapChain");
     // IDXGISwapChain::SetFullscreenState on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain::set_fullscreen_state(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain::set_fullscreen_state(
                 this,
                 Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGISwapChain::SetFullscreenState -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain::SetFullscreenState on SwapChain");
     // IDXGISwapChain::GetFullscreenState on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain::get_fullscreen_state(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain::get_fullscreen_state(this);
+            answers.push(format!(
+                "IDXGISwapChain::GetFullscreenState -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", {
+                        let (t1_0, t1_1) = v0;
+                        format!("({}, {})", format!("{:?}", t1_0), "an object".to_string())
+                    }),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain::GetFullscreenState on SwapChain");
     // IDXGISwapChain::GetDesc on SwapChain
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
@@ -24728,75 +31240,141 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         failure_is_negative(directx_graphics_infrastructure::SwapChain::get_desc(this))
     });
     // IDXGISwapChain::ResizeBuffers on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain::resize_buffers(
-            this,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain::resize_buffers(
+                this,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "IDXGISwapChain::ResizeBuffers -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain::ResizeBuffers on SwapChain");
     // IDXGISwapChain::GetContainingOutput on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain::get_containing_output(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain::get_containing_output(this);
+            answers.push(format!(
+                "IDXGISwapChain::GetContainingOutput -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain::GetContainingOutput on SwapChain");
     // IDXGISwapChain::GetFrameStatistics on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::SwapChain::get_frame_statistics(this))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain::get_frame_statistics(this);
+            answers.push(format!(
+                "IDXGISwapChain::GetFrameStatistics -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain::GetFrameStatistics on SwapChain");
     // IDXGISwapChain::GetLastPresentCount on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChain::get_last_present_count(this),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChain::get_last_present_count(this);
+            answers.push(format!(
+                "IDXGISwapChain::GetLastPresentCount -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGISwapChain::GetLastPresentCount on SwapChain");
     // IDXGIDeviceSubObject::GetDevice on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::DeviceSubObject::get_device(this, &Default::default()),
-        )
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
+                this,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "IDXGIDeviceSubObject::GetDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDeviceSubObject::GetDevice on SwapChain");
     // IDXGIObject::SetPrivateData on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::set_private_data(
-            this,
-            &Default::default(),
-            &[],
-        ))
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data(
+                this,
+                &Default::default(),
+                &[],
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateData -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateData on SwapChain");
     // IDXGIObject::SetPrivateDataInterface on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::Object::set_private_data_interface(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
                 &Default::default(),
                 None,
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGIObject::SetPrivateDataInterface -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::SetPrivateDataInterface on SwapChain");
     // IDXGIObject::GetPrivateData on SwapChain
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
@@ -24810,48 +31388,90 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         ))
     });
     // IDXGIObject::GetParent on SwapChain
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Object::get_parent(
-            this,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            answers.push(format!(
+                "IDXGIObject::GetParent -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIObject::GetParent on SwapChain");
     // IDXGISwapChainMedia::GetFrameStatisticsMedia on SwapChainMedia
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k75.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChainMedia::get_frame_statistics_media(this),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::SwapChainMedia::get_frame_statistics_media(this);
+            answers.push(format!(
+                "IDXGISwapChainMedia::GetFrameStatisticsMedia -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGISwapChainMedia::GetFrameStatisticsMedia on SwapChainMedia",
+    );
     // IDXGISwapChainMedia::SetPresentDuration on SwapChainMedia
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k75.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChainMedia::set_present_duration(
+        failure_is_negative({
+            let answer = directx_graphics_infrastructure::SwapChainMedia::set_present_duration(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "IDXGISwapChainMedia::SetPresentDuration -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGISwapChainMedia::SetPresentDuration on SwapChainMedia",
+    );
     // IDXGISwapChainMedia::CheckPresentDurationSupport on SwapChainMedia
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k75.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            directx_graphics_infrastructure::SwapChainMedia::check_present_duration_support(
-                this,
-                Default::default(),
-            ),
-        )
+        failure_is_negative({
+            let answer =
+                directx_graphics_infrastructure::SwapChainMedia::check_present_duration_support(
+                    this,
+                    Default::default(),
+                );
+            answers.push(format!(
+                "IDXGISwapChainMedia::CheckPresentDurationSupport -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGISwapChainMedia::CheckPresentDurationSupport on SwapChainMedia",
+    );
     // IDXGraphicsAnalysis::BeginCapture on GraphicsAnalysis
     driven.attempt(|| {
         let Some(this) = o.k76.as_ref() else {
@@ -24867,42 +31487,87 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         answered(directx_graphics_infrastructure::GraphicsAnalysis::end_capture(this))
     });
     // D3D11CreateDevice
+    let noted = answers.len();
     driven.attempt(|| {
-        failure_is_negative(direct3d_11::Direct3D11::create_device(
-            &o.api,
-            None,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            &[],
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Direct3D11::create_device(
+                &o.api,
+                None,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                &[],
+                Default::default(),
+            );
+            answers.push(format!(
+                "D3D11CreateDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", {
+                        let (t1_0, t1_1, t1_2) = v0;
+                        format!(
+                            "({}, {}, {})",
+                            "an object".to_string(),
+                            format!("{:?}", t1_1),
+                            "an object".to_string()
+                        )
+                    }),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "D3D11CreateDevice");
     // D3D11CreateDeviceAndSwapChain
+    let noted = answers.len();
     driven.attempt(|| {
-        failure_is_negative(direct3d_11::Direct3D11::create_device_and_swap_chain(
-            &o.api,
-            None,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            &[],
-            Default::default(),
-            None,
-        ))
+        failure_is_negative({
+            let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(
+                &o.api,
+                None,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                &[],
+                Default::default(),
+                None,
+            );
+            answers.push(format!(
+                "D3D11CreateDeviceAndSwapChain -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", {
+                        let (t1_0, t1_1, t1_2, t1_3) = v0;
+                        format!(
+                            "({}, {}, {}, {})",
+                            "an object".to_string(),
+                            "an object".to_string(),
+                            format!("{:?}", t1_2),
+                            "an object".to_string()
+                        )
+                    }),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "D3D11CreateDeviceAndSwapChain");
     driven
 }
 
 /// The number of methods and exports the suite calls where it holds the objects and can make the arguments.
 const CALLS: usize = 945;
 
+/// The number of answers the suite notes and compares: each answer of a method both glues carry to the
+/// implementation, and the caller's bytes after each such method that writes them.
+const COMPARED: usize = 634;
+
 /// Makes an object of every kind the implementation makes and calls every method of every kind and every export on
 /// them: no method panics, a failure is negative, an object handed out equals its clone.
 pub fn every_method_answers<A: direct3d_11::Direct3D11>(api: A) {
     let mut o = Objects::new(api);
     let kinds = make_all(&mut o);
-    let driven = drive(&o);
+    let driven = drive(&o, &Answers::default());
     println!(
         "SUITE direct3d-11: kinds made {kinds}, calls {CALLS}: called {}, skipped {}, panicked {}",
         driven.called, driven.skipped, driven.panicked
@@ -24915,13 +31580,74 @@ pub fn every_method_answers<A: direct3d_11::Direct3D11>(api: A) {
     );
 }
 
-/// Runs each suite function above as its own test on the value an implementation gives.
+/// Makes an object of every kind and drives every method as `every_method_answers` does, and returns what each
+/// method both glues carry to the implementation answered, in the order called.
+pub fn answers_of<A: direct3d_11::Direct3D11>(api: A) -> Vec<String> {
+    let mut o = Objects::new(api);
+    make_all(&mut o);
+    let answers = Answers::default();
+    drive(&o, &answers);
+    answers.lines()
+}
+
+/// Drives `api` and `reference` alike and compares every answer noted, field by field, in the order called: `api` is
+/// `reference` served and called through both glues, so each answer must be what the implementation gave.
+pub fn every_answer_equals_the_reference<A: direct3d_11::Direct3D11, R: direct3d_11::Direct3D11>(
+    api: A,
+    reference: R,
+) {
+    let got = answers_of(api);
+    let wanted = answers_of(reference);
+    println!(
+        "ANSWERS direct3d-11: the reference answered {} of {COMPARED}, through both glues {}",
+        wanted.len(),
+        got.len()
+    );
+    let differing: Vec<String> = got
+        .iter()
+        .zip(&wanted)
+        .enumerate()
+        .filter(|(_, (got, wanted))| got != wanted)
+        .map(|(at, (got, wanted))| {
+            format!("answer {at}: through both glues {got}, the implementation {wanted}")
+        })
+        .collect();
+    for line in &differing {
+        println!("DIFFERS {line}");
+    }
+    assert_eq!(
+        differing,
+        Vec::<String>::new(),
+        "answers differ through both glues"
+    );
+    assert_eq!(
+        got.len(),
+        wanted.len(),
+        "through both glues, a different number of answers"
+    );
+    assert_eq!(
+        wanted.len(),
+        COMPARED,
+        "the reference answered a different number of answers than the suite notes"
+    );
+}
+
+/// Runs each suite function above as its own test on the value an implementation gives; given a reference, also
+/// compares every answer of the value with the reference's.
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
         #[test]
         fn every_method_answers() {
             $crate::every_method_answers($value);
+        }
+    };
+    ($value:expr, $reference:expr) => {
+        $crate::tests!($value);
+
+        #[test]
+        fn every_answer_equals_the_reference() {
+            $crate::every_answer_equals_the_reference($value, $reference);
         }
     };
 }

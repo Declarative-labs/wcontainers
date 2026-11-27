@@ -59,6 +59,37 @@ pub fn live() -> i64 {
     LIVE.load(Ordering::SeqCst)
 }
 
+/// A known answer's bytes are each one of `KNOWN_SPAN` values from 1: never zero, and never with the top bit set, so no
+/// float read from them is NaN or infinite and every float compares equal to itself.
+const KNOWN_SPAN: usize = 126;
+/// What a known byte moves by from one byte to the next, so that neighboring fields differ.
+const KNOWN_STRIDE: usize = 29;
+/// The most bytes the recorder writes into the caller's bytes.
+const KNOWN_MOST: usize = 1 << 16;
+
+/// The known byte at `at` of an answer of salt `salt`.
+fn known_byte(salt: usize, at: usize) -> u8 {
+    u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
+}
+
+/// The known bytes a structure of the recorder's answers is decoded from.
+#[allow(dead_code, reason = "a recorder answering no structure decodes none")]
+fn known_bytes<const N: usize>(salt: usize) -> [u8; N] {
+    core::array::from_fn(|at| known_byte(salt, at))
+}
+
+/// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
+/// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
+/// directly.
+#[allow(dead_code, reason = "a recorder writing no caller's bytes writes none")]
+fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(bytes: &Bytes, salt: usize) {
+    let length = usize::try_from(bytes.len())
+        .unwrap_or(KNOWN_MOST)
+        .min(KNOWN_MOST);
+    let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
+    let _ = bytes.write(&known);
+}
+
 /// One object alive, counted until its last clone drops.
 #[derive(Debug)]
 struct Live(u64);
@@ -955,8 +986,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter4 for RecordedAdapter<
         component_object_model::structures::HResult,
     > {
         record("IDXGIAdapter4::GetDesc3()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_adapter_desc3(&known_bytes::<320>(157398)))
     }
 }
 
@@ -970,7 +1000,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter3 for RecordedAdapter<
             "IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent(h_event={:?})",
             h_event
         ));
-        Ok(Default::default())
+        Ok(80_u32)
     }
     fn unregister_hardware_content_protection_teardown_status(&self, dw_cookie: u32) {
         let _ = &dw_cookie;
@@ -993,8 +1023,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter3 for RecordedAdapter<
             "IDXGIAdapter3::QueryVideoMemoryInfo(node_index={:?}, memory_segment_group={:?})",
             node_index, memory_segment_group
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_query_video_memory_info(&known_bytes::<32>(355502)))
     }
     fn set_video_memory_reservation(
         &self,
@@ -1020,7 +1049,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter3 for RecordedAdapter<
             "IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent(h_event={:?})",
             h_event
         ));
-        Ok(Default::default())
+        Ok(116_u32)
     }
     fn unregister_video_memory_budget_change_notification(&self, dw_cookie: u32) {
         let _ = &dw_cookie;
@@ -1039,8 +1068,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter2 for RecordedAdapter<
         component_object_model::structures::HResult,
     > {
         record("IDXGIAdapter2::GetDesc2()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_adapter_desc2(&known_bytes::<320>(683444)))
     }
 }
 
@@ -1052,8 +1080,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter1 for RecordedAdapter<
         component_object_model::structures::HResult,
     > {
         record("IDXGIAdapter1::GetDesc1()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_adapter_desc1(&known_bytes::<312>(759030)))
     }
 }
 
@@ -1076,8 +1103,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter for RecordedAdapter<A
         component_object_model::structures::HResult,
     > {
         record("IDXGIAdapter::GetDesc()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_adapter_desc(&known_bytes::<304>(396207)))
     }
     fn check_interface_support(
         &self,
@@ -1085,7 +1111,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter for RecordedAdapter<A
     ) -> Result<i64, component_object_model::structures::HResult> {
         let _ = &interface_name;
         record("IDXGIAdapter::CheckInterfaceSupport()".to_string());
-        Ok(Default::default())
+        Ok(13_i64)
     }
 }
 
@@ -1286,7 +1312,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Debug1 for RecordedDebug<A> {
     }
     fn is_leak_tracking_enabled_for_thread(&self) -> bool {
         record("IDXGIDebug1::IsLeakTrackingEnabledForThread()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -1356,20 +1382,26 @@ impl<A: Recorded> directx_graphics_infrastructure::DecodeSwapChain for RecordedD
     ) -> Result<component_object_model::structures::Rect, component_object_model::structures::HResult>
     {
         record("IDXGIDecodeSwapChain::GetSourceRect()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
+                &known_bytes::<16>(191799),
+            ),
+        )
     }
     fn get_target_rect(
         &self,
     ) -> Result<component_object_model::structures::Rect, component_object_model::structures::HResult>
     {
         record("IDXGIDecodeSwapChain::GetTargetRect()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
+                &known_bytes::<16>(810990),
+            ),
+        )
     }
     fn get_dest_size(&self) -> Result<(u32, u32), component_object_model::structures::HResult> {
         record("IDXGIDecodeSwapChain::GetDestSize()".to_string());
-        Ok((Default::default(), Default::default()))
+        Ok((100_u32, 107_u32))
     }
     fn set_color_space(
         &self,
@@ -1386,7 +1418,7 @@ impl<A: Recorded> directx_graphics_infrastructure::DecodeSwapChain for RecordedD
         &self,
     ) -> directx_graphics_infrastructure::enumerations::MultiplaneOverlayYcbcrFlags {
         record("IDXGIDecodeSwapChain::GetColorSpace()".to_string());
-        Default::default()
+        directx_graphics_infrastructure::enumerations::MultiplaneOverlayYcbcrFlags(108)
     }
 }
 
@@ -1415,7 +1447,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
     > {
         let _ = &resources;
         record("IDXGIDevice4::ReclaimResources1()".to_string());
-        Ok((0..2_u32).map(|_| Default::default()).collect())
+        Ok((0..2_u32)
+            .map(|_| directx_graphics_infrastructure::enumerations::ReclaimResourceResults(53))
+            .collect())
     }
 }
 
@@ -1445,7 +1479,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
     ) -> Result<Vec<bool>, component_object_model::structures::HResult> {
         let _ = &resources;
         record("IDXGIDevice2::ReclaimResources()".to_string());
-        Ok((0..2_u32).map(|_| Default::default()).collect())
+        Ok((0..2_u32).map(|_| true).collect())
     }
     fn enqueue_set_event(
         &self,
@@ -1476,7 +1510,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Device1 for RecordedDevice<A>
         &self,
     ) -> Result<u32, component_object_model::structures::HResult> {
         record("IDXGIDevice1::GetMaximumFrameLatency()".to_string());
-        Ok(Default::default())
+        Ok(38_u32)
     }
 }
 
@@ -1527,7 +1561,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
     }
     fn get_gpu_thread_priority(&self) -> Result<i32, component_object_model::structures::HResult> {
         record("IDXGIDevice::GetGPUThreadPriority()".to_string());
-        Ok(Default::default())
+        Ok(34_i32)
     }
 }
 
@@ -1722,7 +1756,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
 impl<A: Recorded> directx_graphics_infrastructure::DisplayControl for RecordedDisplayControl<A> {
     fn is_stereo_enabled(&self) -> bool {
         record("IDXGIDisplayControl::IsStereoEnabled()".to_string());
-        Default::default()
+        true
     }
     fn set_stereo_enabled(&self, enabled: bool) {
         let _ = &enabled;
@@ -1743,7 +1777,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory7 for RecordedFactory<
             "IDXGIFactory7::RegisterAdaptersChangedEvent(h_event={:?})",
             h_event
         ));
-        Ok(Default::default())
+        Ok(87_u32)
     }
     fn unregister_adapters_changed_event(
         &self,
@@ -1933,6 +1967,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory5 for RecordedFactory<
             "IDXGIFactory5::CheckFeatureSupport(feature={:?})",
             feature
         ));
+        known_fill(feature_support_data, 175431);
         Ok(())
     }
 }
@@ -2111,14 +2146,14 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory3 for RecordedFactory<
         &self,
     ) -> directx_graphics_infrastructure::enumerations::CreateFactoryFlags {
         record("IDXGIFactory3::GetCreationFlags()".to_string());
-        Default::default()
+        directx_graphics_infrastructure::enumerations::CreateFactoryFlags(37)
     }
 }
 
 impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<A> {
     fn is_windowed_stereo_enabled(&self) -> bool {
         record("IDXGIFactory2::IsWindowedStereoEnabled()".to_string());
-        Default::default()
+        true
     }
     fn create_swap_chain_for_hwnd(
         &self,
@@ -2175,8 +2210,11 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::GetSharedResourceAdapterLuid(h_resource={:?})",
             h_resource
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_directx_graphics_infrastructure::decode_windows_win32_foundation_luid(
+                &known_bytes::<8>(257875),
+            ),
+        )
     }
     fn register_stereo_status_window(
         &self,
@@ -2189,7 +2227,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::RegisterStereoStatusWindow(window_handle={:?}, w_msg={:?})",
             window_handle, w_msg
         ));
-        Ok(Default::default())
+        Ok(99_u32)
     }
     fn register_stereo_status_event(
         &self,
@@ -2200,7 +2238,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::RegisterStereoStatusEvent(h_event={:?})",
             h_event
         ));
-        Ok(Default::default())
+        Ok(125_u32)
     }
     fn unregister_stereo_status(&self, dw_cookie: u32) {
         let _ = &dw_cookie;
@@ -2220,7 +2258,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::RegisterOcclusionStatusWindow(window_handle={:?}, w_msg={:?})",
             window_handle, w_msg
         ));
-        Ok(Default::default())
+        Ok(16_u32)
     }
     fn register_occlusion_status_event(
         &self,
@@ -2231,7 +2269,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::RegisterOcclusionStatusEvent(h_event={:?})",
             h_event
         ));
-        Ok(Default::default())
+        Ok(85_u32)
     }
     fn unregister_occlusion_status(&self, dw_cookie: u32) {
         let _ = &dw_cookie;
@@ -2276,7 +2314,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory1 for RecordedFactory<
     }
     fn is_current(&self) -> bool {
         record("IDXGIFactory1::IsCurrent()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -2310,7 +2348,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory for RecordedFactory<A
     ) -> Result<component_object_model::structures::Hwnd, component_object_model::structures::HResult>
     {
         record("IDXGIFactory::GetWindowAssociation()".to_string());
-        Ok(Default::default())
+        Ok(component_object_model::structures::Hwnd(49))
     }
     fn create_swap_chain(
         &self,
@@ -2610,7 +2648,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetNumStoredMessagesAllowedByRetrievalFilters(producer={:?})",
             producer
         ));
-        Default::default()
+        8_u64
     }
     fn get_num_stored_messages(&self, producer: component_object_model::structures::Guid) -> u64 {
         let _ = &producer;
@@ -2618,7 +2656,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetNumStoredMessages(producer={:?})",
             producer
         ));
-        Default::default()
+        54_u64
     }
     fn get_num_messages_discarded_by_message_count_limit(
         &self,
@@ -2629,7 +2667,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit(producer={:?})",
             producer
         ));
-        Default::default()
+        47_u64
     }
     fn get_message_count_limit(&self, producer: component_object_model::structures::Guid) -> u64 {
         let _ = &producer;
@@ -2637,7 +2675,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetMessageCountLimit(producer={:?})",
             producer
         ));
-        Default::default()
+        65_u64
     }
     fn get_num_messages_allowed_by_storage_filter(
         &self,
@@ -2648,7 +2686,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetNumMessagesAllowedByStorageFilter(producer={:?})",
             producer
         ));
-        Default::default()
+        91_u64
     }
     fn get_num_messages_denied_by_storage_filter(
         &self,
@@ -2659,7 +2697,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetNumMessagesDeniedByStorageFilter(producer={:?})",
             producer
         ));
-        Default::default()
+        41_u64
     }
     fn add_storage_filter_entries(
         &self,
@@ -2747,7 +2785,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetStorageFilterStackSize(producer={:?})",
             producer
         ));
-        Default::default()
+        13_u32
     }
     fn add_retrieval_filter_entries(
         &self,
@@ -2835,7 +2873,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetRetrievalFilterStackSize(producer={:?})",
             producer
         ));
-        Default::default()
+        41_u32
     }
     fn add_message(
         &self,
@@ -2925,7 +2963,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetBreakOnCategory(producer={:?}, category={:?})",
             producer, category
         ));
-        Default::default()
+        true
     }
     fn get_break_on_severity(
         &self,
@@ -2938,7 +2976,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetBreakOnSeverity(producer={:?}, severity={:?})",
             producer, severity
         ));
-        Default::default()
+        true
     }
     fn get_break_on_id(&self, producer: component_object_model::structures::Guid, id: i32) -> bool {
         let _ = &producer;
@@ -2947,7 +2985,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetBreakOnID(producer={:?}, id={:?})",
             producer, id
         ));
-        Default::default()
+        true
     }
     fn set_mute_debug_output(
         &self,
@@ -2967,7 +3005,7 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetMuteDebugOutput(producer={:?})",
             producer
         ));
-        Default::default()
+        true
     }
 }
 
@@ -3344,14 +3382,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Output6 for RecordedOutput<A>
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput6::GetDesc1()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_output_desc1(&known_bytes::<152>(467758)))
     }
     fn check_hardware_composition_support(
         &self,
     ) -> Result<u32, component_object_model::structures::HResult> {
         record("IDXGIOutput6::CheckHardwareCompositionSupport()".to_string());
-        Ok(Default::default())
+        Ok(55_u32)
     }
 }
 
@@ -3379,7 +3416,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output4 for RecordedOutput<A>
             "IDXGIOutput4::CheckOverlayColorSpaceSupport(format={:?}, color_space={:?})",
             format, color_space
         ));
-        Ok(Default::default())
+        Ok(26_u32)
     }
 }
 
@@ -3395,14 +3432,14 @@ impl<A: Recorded> directx_graphics_infrastructure::Output3 for RecordedOutput<A>
             "IDXGIOutput3::CheckOverlaySupport(enum_format={:?})",
             enum_format
         ));
-        Ok(Default::default())
+        Ok(64_u32)
     }
 }
 
 impl<A: Recorded> directx_graphics_infrastructure::Output2 for RecordedOutput<A> {
     fn supports_overlays(&self) -> bool {
         record("IDXGIOutput2::SupportsOverlays()".to_string());
-        Default::default()
+        true
     }
 }
 
@@ -3421,7 +3458,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output1 for RecordedOutput<A>
             "IDXGIOutput1::GetDisplayModeList1(enum_format={:?}, flags={:?})",
             enum_format, flags
         ));
-        Ok((0..2_u32).map(|_| data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_mode_desc1(&[u8::MIN; 32])).collect())
+        Ok((0..2_u32).map(|_| data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_mode_desc1(&known_bytes::<32>(157608))).collect())
     }
     fn find_closest_matching_mode1(
         &self,
@@ -3434,8 +3471,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output1 for RecordedOutput<A>
         let _ = &mode_to_match;
         let _ = &concerned_device;
         record("IDXGIOutput1::FindClosestMatchingMode1()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_mode_desc1(&known_bytes::<32>(791281)))
     }
     fn get_display_surface_data1(
         &self,
@@ -3460,8 +3496,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput::GetDesc()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_output_desc(&known_bytes::<96>(591548)))
     }
     fn get_display_mode_list(
         &self,
@@ -3477,7 +3512,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
             "IDXGIOutput::GetDisplayModeList(enum_format={:?}, flags={:?})",
             enum_format, flags
         ));
-        Ok((0..2_u32).map(|_| data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&[u8::MIN; 28])).collect())
+        Ok((0..2_u32).map(|_| data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&known_bytes::<28>(759632))).collect())
     }
     fn find_closest_matching_mode(
         &self,
@@ -3490,8 +3525,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         let _ = &mode_to_match;
         let _ = &concerned_device;
         record("IDXGIOutput::FindClosestMatchingMode()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&known_bytes::<28>(280337)))
     }
     fn wait_for_v_blank(&self) -> Result<(), component_object_model::structures::HResult> {
         record("IDXGIOutput::WaitForVBlank()".to_string());
@@ -3520,8 +3554,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput::GetGammaControlCapabilities()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_gamma_control_capabilities(&known_bytes::<4116>(548744)))
     }
     fn set_gamma_control(
         &self,
@@ -3538,8 +3571,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput::GetGammaControl()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_gamma_control(&known_bytes::<12324>(643)))
     }
     fn set_display_surface(
         &self,
@@ -3564,8 +3596,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput::GetFrameStatistics()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_frame_statistics(&known_bytes::<32>(717735)))
     }
 }
 
@@ -3763,7 +3794,7 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
     fn get_desc(&self) -> directx_graphics_infrastructure::structures::OutduplDesc {
         record("IDXGIOutputDuplication::GetDesc()".to_string());
         data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_outdupl_desc(
-            &[u8::MIN; 36],
+            &known_bytes::<36>(375322),
         )
     }
     fn acquire_next_frame(
@@ -3781,8 +3812,7 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
             "IDXGIOutputDuplication::AcquireNextFrame(timeout_in_milliseconds={:?})",
             timeout_in_milliseconds
         ));
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok((data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_outdupl_frame_info(&known_bytes::<48>(251367)), RecordedResource::new()))
     }
     fn get_frame_dirty_rects(
         &self,
@@ -3790,7 +3820,8 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
     ) -> Result<u32, component_object_model::structures::HResult> {
         let _ = &dirty_rects_buffer;
         record("IDXGIOutputDuplication::GetFrameDirtyRects()".to_string());
-        Ok(Default::default())
+        known_fill(dirty_rects_buffer, 677566);
+        Ok(65_u32)
     }
     fn get_frame_move_rects(
         &self,
@@ -3798,7 +3829,8 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
     ) -> Result<u32, component_object_model::structures::HResult> {
         let _ = &move_rect_buffer;
         record("IDXGIOutputDuplication::GetFrameMoveRects()".to_string());
-        Ok(Default::default())
+        known_fill(move_rect_buffer, 340890);
+        Ok(61_u32)
     }
     fn get_frame_pointer_shape(
         &self,
@@ -3812,8 +3844,8 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
     > {
         let _ = &pointer_shape_buffer;
         record("IDXGIOutputDuplication::GetFramePointerShape()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        known_fill(pointer_shape_buffer, 322244);
+        Ok((63_u32, data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_outdupl_pointer_shape_info(&known_bytes::<24>(322251))))
     }
     fn map_desktop_surface(
         &self,
@@ -4062,7 +4094,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedResource
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetSharedHandle()".to_string());
-        Ok(Default::default())
+        Ok(component_object_model::structures::Handle(54))
     }
     fn get_usage(
         &self,
@@ -4071,7 +4103,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedResource
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetUsage()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::Usage(113))
     }
     fn set_eviction_priority(
         &self,
@@ -4091,7 +4123,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedResource
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetEvictionPriority()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::ResourcePriority(94))
     }
 }
 
@@ -4594,7 +4626,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface2 for RecordedSurface<
             } else {
                 return Err(E_NOINTERFACE);
             },
-            Default::default(),
+            57_u32,
         ))
     }
 }
@@ -4607,7 +4639,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface1 for RecordedSurface<
     {
         let _ = &discard;
         record(format!("IDXGISurface1::GetDC(discard={:?})", discard));
-        Ok(Default::default())
+        Ok(component_object_model::structures::Hdc(15))
     }
     fn release_dc(
         &self,
@@ -4627,8 +4659,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface for RecordedSurface<A
         component_object_model::structures::HResult,
     > {
         record("IDXGISurface::GetDesc()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_surface_desc(&known_bytes::<20>(481648)))
     }
     fn map(
         &self,
@@ -5010,7 +5041,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain4 for RecordedSwapCh
 impl<A: Recorded> directx_graphics_infrastructure::SwapChain3 for RecordedSwapChain<A> {
     fn get_current_back_buffer_index(&self) -> u32 {
         record("IDXGISwapChain3::GetCurrentBackBufferIndex()".to_string());
-        Default::default()
+        70_u32
     }
     fn check_color_space_support(
         &self,
@@ -5021,7 +5052,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain3 for RecordedSwapCh
             "IDXGISwapChain3::CheckColorSpaceSupport(color_space={:?})",
             color_space
         ));
-        Ok(Default::default())
+        Ok(76_u32)
     }
     fn set_color_space1(
         &self,
@@ -5070,7 +5101,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain2 for RecordedSwapCh
     }
     fn get_source_size(&self) -> Result<(u32, u32), component_object_model::structures::HResult> {
         record("IDXGISwapChain2::GetSourceSize()".to_string());
-        Ok((Default::default(), Default::default()))
+        Ok((1_u32, 8_u32))
     }
     fn set_maximum_frame_latency(
         &self,
@@ -5087,11 +5118,11 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain2 for RecordedSwapCh
         &self,
     ) -> Result<u32, component_object_model::structures::HResult> {
         record("IDXGISwapChain2::GetMaximumFrameLatency()".to_string());
-        Ok(Default::default())
+        Ok(55_u32)
     }
     fn get_frame_latency_waitable_object(&self) -> component_object_model::structures::Handle {
         record("IDXGISwapChain2::GetFrameLatencyWaitableObject()".to_string());
-        Default::default()
+        component_object_model::structures::Handle(5)
     }
     fn set_matrix_transform(
         &self,
@@ -5108,8 +5139,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain2 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain2::GetMatrixTransform()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_matrix_3_x2_f(&known_bytes::<24>(315579)))
     }
 }
 
@@ -5121,8 +5151,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain1::GetDesc1()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&known_bytes::<48>(672333)))
     }
     fn get_fullscreen_desc(
         &self,
@@ -5131,15 +5160,14 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain1::GetFullscreenDesc()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_fullscreen_desc(&known_bytes::<20>(803423)))
     }
     fn get_hwnd(
         &self,
     ) -> Result<component_object_model::structures::Hwnd, component_object_model::structures::HResult>
     {
         record("IDXGISwapChain1::GetHwnd()".to_string());
-        Ok(Default::default())
+        Ok(component_object_model::structures::Hwnd(47))
     }
     fn get_core_window(
         &self,
@@ -5308,7 +5336,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
     }
     fn is_temporary_mono_supported(&self) -> bool {
         record("IDXGISwapChain1::IsTemporaryMonoSupported()".to_string());
-        Default::default()
+        true
     }
     fn get_restrict_to_output(
         &self,
@@ -5336,8 +5364,11 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain1::GetBackgroundColor()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(
+            data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_rgba(
+                &known_bytes::<16>(366446),
+            ),
+        )
     }
     fn set_rotation(
         &self,
@@ -5357,7 +5388,9 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain1::GetRotation()".to_string());
-        Ok(Default::default())
+        Ok(directx_graphics_infrastructure::enumerations::ModeRotation(
+            119,
+        ))
     }
 }
 
@@ -5412,7 +5445,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain::GetFullscreenState()".to_string());
-        Ok((Default::default(), RecordedOutput::new()))
+        Ok((true, RecordedOutput::new()))
     }
     fn get_desc(
         &self,
@@ -5421,8 +5454,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain::GetDesc()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc(&known_bytes::<72>(105791)))
     }
     fn resize_buffers(
         &self,
@@ -5467,12 +5499,11 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain::GetFrameStatistics()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_frame_statistics(&known_bytes::<32>(983786)))
     }
     fn get_last_present_count(&self) -> Result<u32, component_object_model::structures::HResult> {
         record("IDXGISwapChain::GetLastPresentCount()".to_string());
-        Ok(Default::default())
+        Ok(8_u32)
     }
 }
 
@@ -5828,8 +5859,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChainMedia for RecordedSw
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChainMedia::GetFrameStatisticsMedia()".to_string());
-        // A structure or a bound object: the recorder makes none.
-        Err(E_NOTIMPL)
+        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_frame_statistics_media(&known_bytes::<40>(565301)))
     }
     fn set_present_duration(
         &self,
@@ -5851,7 +5881,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChainMedia for RecordedSw
             "IDXGISwapChainMedia::CheckPresentDurationSupport(desired_present_duration={:?})",
             desired_present_duration
         ));
-        Ok((Default::default(), Default::default()))
+        Ok((59_u32, 66_u32))
     }
 }
 

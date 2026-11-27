@@ -26022,7 +26022,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k44.as_ref()?;
                     let answer = direct3d_11::VideoDevice::create_authenticated_channel(
                         this,
-                        Default::default(),
+                        direct3d_11::enumerations::D3D11_AUTHENTICATED_CHANNEL_D3D11,
                     );
                     answer.ok()
                 })
@@ -32131,7 +32131,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
             );
             true
         });
@@ -33701,7 +33701,7 @@ pub fn drive_where(
             let _ = directx_graphics_infrastructure::Device2::offer_resources(
                 this,
                 &[],
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             );
             true
         });
@@ -33748,7 +33748,7 @@ pub fn drive_where(
             let _ = directx_graphics_infrastructure::Device4::offer_resources1(
                 this,
                 &[],
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
                 Default::default(),
             );
             true
@@ -34475,7 +34475,7 @@ pub fn drive_where(
                 this,
                 v1,
                 Default::default(),
-                Default::default(),
+                direct3d_11::enumerations::D3D11_MAP_READ,
                 Default::default(),
             );
             true
@@ -37384,7 +37384,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
             );
             true
         });
@@ -37588,7 +37588,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
             );
             true
         });
@@ -37843,7 +37843,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
             );
             true
         });
@@ -39550,8 +39550,10 @@ pub fn drive_where(
             let Some(this) = o.k44.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::VideoDevice::create_authenticated_channel(this, Default::default());
+            let _ = direct3d_11::VideoDevice::create_authenticated_channel(
+                this,
+                direct3d_11::enumerations::D3D11_AUTHENTICATED_CHANNEL_D3D11,
+            );
             true
         });
     }
@@ -40465,7 +40467,7 @@ pub fn drive_where(
             let _ = directx_graphics_infrastructure::Device4::offer_resources1(
                 this,
                 &[],
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
                 Default::default(),
             );
             true
@@ -40500,7 +40502,7 @@ pub fn drive_where(
             let _ = directx_graphics_infrastructure::Device2::offer_resources(
                 this,
                 &[],
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             );
             true
         });
@@ -42102,7 +42104,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
             );
             true
         });

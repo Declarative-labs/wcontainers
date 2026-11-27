@@ -17,6 +17,8 @@
     clippy::option_map_unit_fn,
     clippy::bool_assert_comparison,
     clippy::eq_op,
+    clippy::format_in_format_args,
+    clippy::to_string_in_format_args,
     reason = "generated: every call has the same shape"
 )]
 
@@ -142,6 +144,51 @@ fn answered<T>(answer: T) -> bool {
     true
 }
 
+/// What each method both glues carry to the implementation answered, in the order called: the place and the answer's
+/// every field (`Debug`), an object in it named only as one (its identity is no value); and the caller's bytes after a
+/// method that writes them. The same drive made on an implementation directly and through both glues must give the same.
+#[derive(Debug, Default)]
+struct Answers(std::sync::Mutex<Vec<String>>);
+
+impl Answers {
+    fn push(&self, line: String) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(line);
+    }
+
+    /// The caller's bytes after the method.
+    fn bytes(&self, place: &str, bytes: &SuiteBytes) {
+        let held = bytes
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        self.push(format!("{place} wrote {held:?}"));
+    }
+
+    fn len(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Notes a call that noted nothing since `noted` answers (skipped for want of an object, or panicked).
+    fn not_called_since(&self, noted: usize, place: &str) {
+        if self.len() == noted {
+            self.push(format!("{place}: not called, or panicked"));
+        }
+    }
+
+    fn lines(self) -> Vec<String> {
+        self.0
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// One object of each kind the suite made, by kind.
 struct Objects<A: direct3d_common::Direct3DCommon> {
     api: A,
@@ -177,8 +224,9 @@ fn make_all<A: direct3d_common::Direct3DCommon>(o: &mut Objects<A>) -> usize {
     o.kinds_held()
 }
 
-/// Calls every method on every object held, and the exports, each answer checked.
-fn drive<A: direct3d_common::Direct3DCommon>(o: &Objects<A>) -> Driven {
+/// Calls every method on every object held, and the exports, each answer checked, and notes in `answers` what each
+/// method both glues carry to the implementation answered.
+fn drive<A: direct3d_common::Direct3DCommon>(o: &Objects<A>, answers: &Answers) -> Driven {
     let mut driven = Driven::default();
     // ID3DBlob::GetBufferPointer on Blob
     driven.attempt(|| {
@@ -188,12 +236,21 @@ fn drive<A: direct3d_common::Direct3DCommon>(o: &Objects<A>) -> Driven {
         answered(direct3d_common::Blob::get_buffer_pointer(this))
     });
     // ID3DBlob::GetBufferSize on Blob
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k0.as_ref() else {
             return false;
         };
-        answered(direct3d_common::Blob::get_buffer_size(this))
+        answered({
+            let answer = direct3d_common::Blob::get_buffer_size(this);
+            answers.push(format!(
+                "ID3DBlob::GetBufferSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3DBlob::GetBufferSize on Blob");
     // ID3DDestructionNotifier::RegisterDestructionCallback on DestructionNotifier
     driven.attempt(|| {
         let Some(this) = o.k1.as_ref() else {
@@ -209,29 +266,43 @@ fn drive<A: direct3d_common::Direct3DCommon>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on DestructionNotifier
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k1.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on DestructionNotifier",
+    );
     driven
 }
 
 /// The number of methods and exports the suite calls where it holds the objects and can make the arguments.
 const CALLS: usize = 4;
 
+/// The number of answers the suite notes and compares: each answer of a method both glues carry to the
+/// implementation, and the caller's bytes after each such method that writes them.
+const COMPARED: usize = 2;
+
 /// Makes an object of every kind the implementation makes and calls every method of every kind and every export on
 /// them: no method panics, a failure is negative, an object handed out equals its clone.
 pub fn every_method_answers<A: direct3d_common::Direct3DCommon>(api: A) {
     let mut o = Objects::new(api);
     let kinds = make_all(&mut o);
-    let driven = drive(&o);
+    let driven = drive(&o, &Answers::default());
     println!(
         "SUITE direct3d-common: kinds made {kinds}, calls {CALLS}: called {}, skipped {}, panicked {}",
         driven.called, driven.skipped, driven.panicked
@@ -244,13 +315,77 @@ pub fn every_method_answers<A: direct3d_common::Direct3DCommon>(api: A) {
     );
 }
 
-/// Runs each suite function above as its own test on the value an implementation gives.
+/// Makes an object of every kind and drives every method as `every_method_answers` does, and returns what each
+/// method both glues carry to the implementation answered, in the order called.
+pub fn answers_of<A: direct3d_common::Direct3DCommon>(api: A) -> Vec<String> {
+    let mut o = Objects::new(api);
+    make_all(&mut o);
+    let answers = Answers::default();
+    drive(&o, &answers);
+    answers.lines()
+}
+
+/// Drives `api` and `reference` alike and compares every answer noted, field by field, in the order called: `api` is
+/// `reference` served and called through both glues, so each answer must be what the implementation gave.
+pub fn every_answer_equals_the_reference<
+    A: direct3d_common::Direct3DCommon,
+    R: direct3d_common::Direct3DCommon,
+>(
+    api: A,
+    reference: R,
+) {
+    let got = answers_of(api);
+    let wanted = answers_of(reference);
+    println!(
+        "ANSWERS direct3d-common: the reference answered {} of {COMPARED}, through both glues {}",
+        wanted.len(),
+        got.len()
+    );
+    let differing: Vec<String> = got
+        .iter()
+        .zip(&wanted)
+        .enumerate()
+        .filter(|(_, (got, wanted))| got != wanted)
+        .map(|(at, (got, wanted))| {
+            format!("answer {at}: through both glues {got}, the implementation {wanted}")
+        })
+        .collect();
+    for line in &differing {
+        println!("DIFFERS {line}");
+    }
+    assert_eq!(
+        differing,
+        Vec::<String>::new(),
+        "answers differ through both glues"
+    );
+    assert_eq!(
+        got.len(),
+        wanted.len(),
+        "through both glues, a different number of answers"
+    );
+    assert_eq!(
+        wanted.len(),
+        COMPARED,
+        "the reference answered a different number of answers than the suite notes"
+    );
+}
+
+/// Runs each suite function above as its own test on the value an implementation gives; given a reference, also
+/// compares every answer of the value with the reference's.
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
         #[test]
         fn every_method_answers() {
             $crate::every_method_answers($value);
+        }
+    };
+    ($value:expr, $reference:expr) => {
+        $crate::tests!($value);
+
+        #[test]
+        fn every_answer_equals_the_reference() {
+            $crate::every_answer_equals_the_reference($value, $reference);
         }
     };
 }

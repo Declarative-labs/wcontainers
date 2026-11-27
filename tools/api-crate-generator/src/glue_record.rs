@@ -19,6 +19,25 @@ pub(super) fn recorder_alias(folder: &str) -> String {
 /// The length of the bytes the recorder lends for each Map, and the pitches it answers: one 64 KiB page, rows of 4 KiB.
 pub(super) const MAPPED: (u32, u32, u32) = (1 << 16, 1 << 12, 1 << 16);
 
+/// The Rust integer types a known answer is written for as a literal.
+const INTEGERS: [&str; 10] = ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"];
+/// A known integer answer is one of `KNOWN_SPAN` values from `KNOWN_LEAST`: never zero, and within every integer type.
+const KNOWN_LEAST: usize = 1;
+const KNOWN_SPAN: usize = 126;
+/// What a known answer's salt moves by from one part of an answer to the next.
+const KNOWN_STEP: usize = 7;
+/// Stands in the recorder's answer list for a known value of the answer's type, until the types are split (followed
+/// by the element count of a list).
+const KNOWN_MARK: &str = "@KNOWN@";
+
+/// A method's salt: its place's bytes folded (FNV-1a), so that different methods answer different known values.
+pub(super) fn salt_of(place: &str) -> usize {
+    const OFFSET: u32 = 0x811c_9dc5;
+    const PRIME: u32 = 0x0100_0193;
+    let folded = place.bytes().fold(OFFSET, |hash, byte| (hash ^ u32::from(byte)).wrapping_mul(PRIME));
+    usize::try_from(folded % 1_000_003).unwrap_or(0)
+}
+
 /// The recorder's log, objects, bytes and helpers, the same in every recorder crate.
 pub(super) const RECORDER_BASE: &str = r#"use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -52,6 +71,35 @@ pub fn logged() -> usize {
 /// Returns how many objects of this crate are alive.
 pub fn live() -> i64 {
     LIVE.load(Ordering::SeqCst)
+}
+
+/// A known answer's bytes are each one of `KNOWN_SPAN` values from 1: never zero, and never with the top bit set, so no
+/// float read from them is NaN or infinite and every float compares equal to itself.
+const KNOWN_SPAN: usize = 126;
+/// What a known byte moves by from one byte to the next, so that neighboring fields differ.
+const KNOWN_STRIDE: usize = 29;
+/// The most bytes the recorder writes into the caller's bytes.
+const KNOWN_MOST: usize = 1 << 16;
+
+/// The known byte at `at` of an answer of salt `salt`.
+fn known_byte(salt: usize, at: usize) -> u8 {
+    u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
+}
+
+/// The known bytes a structure of the recorder's answers is decoded from.
+#[allow(dead_code, reason = "a recorder answering no structure decodes none")]
+fn known_bytes<const N: usize>(salt: usize) -> [u8; N] {
+    core::array::from_fn(|at| known_byte(salt, at))
+}
+
+/// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
+/// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
+/// directly.
+#[allow(dead_code, reason = "a recorder writing no caller's bytes writes none")]
+fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(bytes: &Bytes, salt: usize) {
+    let length = usize::try_from(bytes.len()).unwrap_or(KNOWN_MOST).min(KNOWN_MOST);
+    let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
+    let _ = bytes.write(&known);
 }
 
 /// One object alive, counted until its last clone drops.
@@ -172,6 +220,43 @@ impl Writer<'_, '_> {
         Some("Default::default()".to_string())
     }
 
+    /// The recorder's known answer of type `ty`: never the type's default where the type has another value, so that a
+    /// glue dropping, zeroing or mixing up what the implementation gave is seen (the conformance suite compares every
+    /// answer through both glues with the recorder's own). Each integer is `salt` folded into 1 to 126; a structure is
+    /// decoded from known bytes (each 1 to 126, see `known_bytes`); `true`; an object or a list of objects as before.
+    pub(super) fn known_value(&self, ty: &str, salt: usize) -> Option<String> {
+        let ty = ty.trim();
+        let number = KNOWN_LEAST + salt % KNOWN_SPAN;
+        if INTEGERS.contains(&ty) {
+            return Some(format!("{number}_{ty}"));
+        }
+        if ["f32", "f64"].contains(&ty) {
+            return Some(format!("{number}.5_{ty}"));
+        }
+        if ty == "bool" {
+            return Some("true".to_string());
+        }
+        if let Some(element) = ty.strip_prefix("Vec<").and_then(|rest| rest.strip_suffix('>')) {
+            let first = self.known_value(element, salt)?;
+            let second = self.known_value(element, salt + 1)?;
+            return Some(format!("vec![{first}, {second}]"));
+        }
+        if let Some(inner) = ty.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
+            let parts: Option<Vec<String>> = split_types(inner).iter().enumerate().map(|(at, part)| self.known_value(part, salt + KNOWN_STEP * (at + 1))).collect();
+            return parts.map(|parts| format!("({})", parts.join(", ")));
+        }
+        if let Some((element, _)) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).and_then(|inner| inner.rsplit_once(';')) {
+            return self.known_value(element, salt).map(|value| format!("core::array::from_fn(|_| {value})"));
+        }
+        if let Some(value) = self.known_structs.borrow().get(ty) {
+            return Some(value.replace("@SALT@", &salt.to_string()));
+        }
+        if self.newtypes.borrow().contains(ty) {
+            return Some(format!("{ty}({number})"));
+        }
+        self.made_value(ty)
+    }
+
     /// A value of an array's element the recorder answers with: zero bytes decoded, or zero.
     fn element_value(&self, element: &Part) -> String {
         match element {
@@ -242,9 +327,28 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "        {none}\n    }}");
             return text;
         };
+        // The recorder answers known values (`known_value`), the hostile implementation zeros and its lies.
+        let known = !self.hostile.get();
+        let salt = salt_of(place);
+        // The caller's bytes are written only where the recorder answers success (on failure COM promises nothing of
+        // them, and the calling glue gives nothing back).
+        let mut fills = String::new();
+        if known {
+            for (name, ty) in inputs.iter().filter(|(_, ty)| ty.contains("VolatileBytes")) {
+                if ty.trim_start().starts_with("Option<") {
+                    let _ = writeln!(fills, "        if let Some(bytes) = {name} {{ known_fill(bytes, {}); }}", salt + KNOWN_STEP);
+                } else {
+                    let _ = writeln!(fills, "        known_fill({name}, {});", salt + KNOWN_STEP);
+                }
+            }
+        }
+        // The type of the answer at a position of the result's tuple (or the whole result's).
+        let inner = result.strip_prefix("Result<").and_then(|rest| rest.strip_suffix('>')).map_or(result.to_string(), |rest| split_types(rest).first().cloned().unwrap_or_default());
+        let tuple_types = inner.trim().strip_prefix('(').and_then(|rest| rest.strip_suffix(')')).map(split_types).unwrap_or_default();
+        let type_at = |at: usize| if tuple_types.len() > 1 { tuple_types.get(at).cloned().unwrap_or_default() } else { inner.clone() };
         let mut answers: Vec<String> = Vec::new();
         if glued.returned.is_some() {
-            answers.push("Default::default()".to_string());
+            answers.push(if known { KNOWN_MARK.to_string() } else { "Default::default()".to_string() });
         }
         let one_of = self.g.exceptions().find_map(|exception| match exception {
             Exception::OneOf { method: m, value, list, default } if *m == place => Some((*value, *list, *default)),
@@ -269,7 +373,7 @@ impl Writer<'_, '_> {
                         let list = crate::names::value_name(list);
                         answers.push(format!("{list}.first().copied().unwrap_or({rust}({}))", default.first().copied().unwrap_or(0)));
                     }
-                    _ => answers.push("Default::default()".to_string()),
+                    _ => answers.push(if known { KNOWN_MARK.to_string() } else { "Default::default()".to_string() }),
                 },
                 Part::LentOut { coded, fields: [data, row, depth], .. } => {
                     let path = coded.path.trim_end_matches("<usize>");
@@ -281,14 +385,14 @@ impl Writer<'_, '_> {
                 }
                 Part::FixedOut { element, .. } => {
                     let value = self.element_value(element);
-                    answers.push(format!("core::array::from_fn(|_| {value})"));
+                    answers.push(if known { KNOWN_MARK.to_string() } else { format!("core::array::from_fn(|_| {value})") });
                 }
                 Part::ValuesOut { element, count, by_pointer, .. } => {
                     let value = self.element_value(element);
                     // A few elements: the room C gave (or asked how many of) is the glue's to respect, not the recorder's.
                     // A count the trait drops (it is an array in's length) is not the recorder's to read.
                     let number = if *by_pointer || !matches!(glued.parts[*count].1, Part::Value { .. }) { "2_u32".to_string() } else { format!("{}.min(4)", glued.parts[*count].0) };
-                    answers.push(format!("(0..{number}).map(|_| {value}).collect()"));
+                    answers.push(if known { format!("{KNOWN_MARK}{number}") } else { format!("(0..{number}).map(|_| {value}).collect()") });
                 }
                 Part::ObjectsOut { kind, count } => {
                     let new = format!("{}::new()", self.recorded_type(*kind, from));
@@ -307,9 +411,15 @@ impl Writer<'_, '_> {
                     let _ = write!(arms, "{{ return Err(E_NOINTERFACE); }}");
                     answers.push(arms);
                 }
+                Part::StructOut { .. } if known && self.known_value(&type_at(answers.len()), salt).is_some() => {
+                    // A structure out among the answers: a known one.
+                    answers.push(KNOWN_MARK.to_string());
+                    let _ = name;
+                }
                 Part::StructOut { .. } if fallback == "Default::default()" && self.made_value(result).is_some() => {
-                    // A structure the recorder can make: zero bytes decoded, or its default.
-                    let value = self.made_value(result).unwrap_or_default();
+                    // A structure the recorder can make: known bytes decoded (the hostile implementation: zero bytes), or its
+                    // default.
+                    let value = if known { self.known_value(result, salt) } else { self.made_value(result) }.unwrap_or_default();
                     let _ = writeln!(text, "        {value}\n    }}");
                     let _ = name;
                     return text;
@@ -328,6 +438,25 @@ impl Writer<'_, '_> {
                 _ => {}
             }
         }
+        // Each known answer's type: the result's, or its tuple's part.
+        if answers.iter().any(|answer| answer.starts_with(KNOWN_MARK)) {
+            let types = if answers.len() == 1 { vec![inner.clone()] } else { tuple_types.clone() };
+            for (at, answer) in answers.iter_mut().enumerate() {
+                let Some(number) = answer.strip_prefix(KNOWN_MARK) else { continue };
+                let ty = types.get(at).cloned().unwrap_or_default();
+                let part_salt = salt + KNOWN_STEP * (at + 1);
+                let made = if number.is_empty() {
+                    self.known_value(&ty, part_salt)
+                } else {
+                    let element = ty.trim().strip_prefix("Vec<").and_then(|rest| rest.strip_suffix('>')).unwrap_or_default().to_string();
+                    self.known_value(&element, part_salt).map(|value| format!("(0..{number}).map(|_| {value}).collect()"))
+                };
+                *answer = made.unwrap_or_else(|| {
+                    self.failures.borrow_mut().push(format!("PANIC BODY recorder {place}: no known value of {ty}"));
+                    "Default::default()".to_string()
+                });
+            }
+        }
         let value = match answers.len() {
             // A not-yet exception line: the recorder's data is always ready, the hostile implementation's never (it has
             // touched the bytes all the same), so that both answers cross both glues.
@@ -336,6 +465,7 @@ impl Writer<'_, '_> {
             1 => answers.remove(0),
             _ => format!("({})", answers.join(", ")),
         };
+        text.push_str(&fills);
         if glued.status {
             let _ = writeln!(text, "        Ok({value})\n    }}");
         } else if value == "()" {

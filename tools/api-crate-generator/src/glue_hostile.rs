@@ -6,11 +6,13 @@
 //! generated driver calls every method the calling glue carries, of every kind of object it can make, through both glues
 //! (`served`): the hostile tests run it under each lie.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
 use super::{Part, Writer, direct_alias, snake};
+use crate::api::Exception;
 use crate::emit::{alias, package};
 
 /// The crate alias of an API's hostile implementation.
@@ -730,6 +732,9 @@ impl Writer<'_, '_> {
         if bare.contains("Foreign") || bare.contains("impl ") || bare.contains("dyn ") {
             return None;
         }
+        if let Some(first) = codecs.first_values.get(bare) {
+            return Some(format!("{reference}{first}"));
+        }
         let _ = name;
         Some(format!("{reference}Default::default()"))
     }
@@ -1150,6 +1155,11 @@ fn split_top(list: &str) -> Vec<String> {
 pub(super) struct Codecs {
     decoders: BTreeMap<String, (String, String, u64)>,
     defaults: BTreeSet<String>,
+    /// The structures of one public integer field (`pub struct Handle(pub usize);`), by path.
+    newtypes: BTreeSet<String>,
+    /// The first value of each enumeration that has no value 0, by the enumeration's path: what the suite passes for
+    /// it (0 would be refused by the glue before the implementation sees it, as no value of the enumeration).
+    first_values: BTreeMap<String, String>,
     /// The data modules the hostile crate includes: module name and path from the crate.
     modules: Vec<(String, String)>,
 }
@@ -1166,6 +1176,12 @@ pub(super) fn struct_values(writer: &Writer<'_, '_>, crates: &Path, api: usize) 
     for (path, (module, ident, size)) in &codecs.decoders {
         values.entry(path.clone()).or_insert_with(|| format!("{module}::decode_{ident}(&[u8::MIN; {size}])"));
     }
+    let mut known = writer.known_structs.borrow_mut();
+    known.clear();
+    for (path, (module, ident, size)) in &codecs.decoders {
+        known.insert(path.clone(), format!("{module}::decode_{ident}(&known_bytes::<{size}>(@SALT@))"));
+    }
+    *writer.newtypes.borrow_mut() = codecs.newtypes.clone();
     codecs.modules
 }
 
@@ -1174,8 +1190,47 @@ fn codecs(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Codecs {
     let g = writer.g;
     let mut decoders = BTreeMap::new();
     let mut defaults = BTreeSet::new();
+    let mut newtypes = BTreeSet::new();
+    let mut first_values = BTreeMap::new();
     let mut modules = Vec::new();
     for spec in g.apis.iter() {
+        if let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join("enumerations.rs")) {
+            let mut firsts: BTreeMap<String, String> = BTreeMap::new();
+            let mut zeros: BTreeSet<String> = BTreeSet::new();
+            // A flag set's 0 is no flag, a value of its own: only a selector without 0 is given its first value.
+            let mut header_name = "";
+            for line in text.lines() {
+                if let Some(rest) = line.strip_prefix("/// The header's `") {
+                    header_name = rest.split('`').next().unwrap_or_default();
+                } else if let Some(rest) = line.strip_prefix("pub struct ") {
+                    let flags = g.read.records.iter().any(|(key, record)| key.1 == header_name && crate::metadata::attribute_named(&record.attributes, "Flags").is_some());
+                    if flags {
+                        zeros.insert(rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect());
+                    }
+                }
+            }
+            for rest in text.lines().filter_map(|line| line.strip_prefix("pub const ")) {
+                let Some((name, rest)) = rest.split_once(": ") else { continue };
+                let Some((ty, value)) = rest.split_once(" = ") else { continue };
+                if value.trim_end_matches(';') == format!("{ty}(0)") {
+                    zeros.insert(ty.to_string());
+                }
+                firsts.entry(ty.to_string()).or_insert_with(|| name.to_string());
+            }
+            for (ty, name) in firsts.into_iter().filter(|(ty, _)| !zeros.contains(ty)) {
+                first_values.insert(format!("{}::enumerations::{ty}", alias(spec)), format!("{}::enumerations::{name}", alias(spec)));
+            }
+        }
+        for (file, module) in [("structures.rs", "structures"), ("enumerations.rs", "enumerations")] {
+            let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join(file)) else { continue };
+            for rest in text.lines().filter_map(|line| line.strip_prefix("pub struct ")) {
+                let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                let field = rest[name.len()..].trim_start_matches("(pub ").trim_end_matches(");");
+                if rest[name.len()..].starts_with("(pub ") && ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"].contains(&field) {
+                    newtypes.insert(format!("{}::{module}::{name}", alias(spec)));
+                }
+            }
+        }
         if let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join("structures.rs")) {
             let mut derives_default = false;
             for line in text.lines() {
@@ -1215,7 +1270,7 @@ fn codecs(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Codecs {
             modules.push((module, from));
         }
     }
-    Codecs { decoders, defaults, modules }
+    Codecs { decoders, defaults, newtypes, first_values, modules }
 }
 
 /// Writes API `api`'s hostile crate under its folder, and returns the report's line.
@@ -1389,13 +1444,46 @@ fn answered<T>(answer: T) -> bool {
     drop(answer);
     true
 }
+
+/// What each method both glues carry to the implementation answered, in the order called: the place and the answer's
+/// every field (`Debug`), an object in it named only as one (its identity is no value); and the caller's bytes after a
+/// method that writes them. The same drive made on an implementation directly and through both glues must give the same.
+#[derive(Debug, Default)]
+struct Answers(std::sync::Mutex<Vec<String>>);
+
+impl Answers {
+    fn push(&self, line: String) {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(line);
+    }
+
+    /// The caller's bytes after the method.
+    fn bytes(&self, place: &str, bytes: &SuiteBytes) {
+        let held = bytes.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        self.push(format!("{place} wrote {held:?}"));
+    }
+
+    fn len(&self) -> usize {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+    }
+
+    /// Notes a call that noted nothing since `noted` answers (skipped for want of an object, or panicked).
+    fn not_called_since(&self, noted: usize, place: &str) {
+        if self.len() == noted {
+            self.push(format!("{place}: not called, or panicked"));
+        }
+    }
+
+    fn lines(self) -> Vec<String> {
+        self.0.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
 "#;
 
 impl Writer<'_, '_> {
     /// The conformance suite of API `api`: generic over any implementation of its top trait, it makes an object of
     /// every kind it can and calls every method of every kind and every export on them, checking each answer as the
     /// interface promises (a failure negative, an object equal to its clone).
-    fn suite(&self, api: usize, codecs: &Codecs) -> Option<String> {
+    fn suite(&self, api: usize, codecs: &Codecs) -> Option<(String, String)> {
         let g = self.g;
         let spec = g.apis[api];
         let top_name = spec.top_trait?;
@@ -1407,7 +1495,7 @@ impl Writer<'_, '_> {
         };
         let mut text = String::new();
         let _ = writeln!(text, "//! {}\n//!\n//! The conformance suite of {}, written against the traits alone (src/glue_hostile.rs): an object of every kind\n//! the implementation makes, every method of every kind and every export called on them, each answer checked as the\n//! interface promises.\n", crate::emit::HEADER, spec.folder);
-        text.push_str("#![allow(unused_variables, unused_imports, dead_code, unreachable_code, clippy::let_unit_value, clippy::unit_arg, clippy::redundant_closure_call, clippy::too_many_lines, clippy::unnecessary_lazy_evaluations, clippy::option_map_unit_fn, clippy::bool_assert_comparison, clippy::eq_op, reason = \"generated: every call has the same shape\")]\n\n");
+        text.push_str("#![allow(unused_variables, unused_imports, dead_code, unreachable_code, clippy::let_unit_value, clippy::unit_arg, clippy::redundant_closure_call, clippy::too_many_lines, clippy::unnecessary_lazy_evaluations, clippy::option_map_unit_fn, clippy::bool_assert_comparison, clippy::eq_op, clippy::format_in_format_args, clippy::to_string_in_format_args, reason = \"generated: every call has the same shape\")]\n\n");
         text.push_str("@IMPORTS@\n");
         text.push_str(SUITE_BASE);
         let _ = writeln!(text, "\n/// One object of each kind the suite made, by kind.\nstruct Objects<A: {top}> {{\n    api: A,");
@@ -1431,6 +1519,40 @@ impl Writer<'_, '_> {
                 format!("answered({call})")
             }
         };
+        // Which answers the suite compares (`Answers`): those of a method both glues carry to the implementation, never
+        // one a glue answers from its own record; by what each answer holds.
+        let tally: RefCell<BTreeMap<&'static str, BTreeSet<String>>> = RefCell::new(BTreeMap::new());
+        let count = |what: &'static str, place: &str| {
+            tally.borrow_mut().entry(what).or_default().insert(place.to_string());
+        };
+        let compared = |place: &str, glued: bool, result: &str, prelude: &str, call: &str| -> String {
+            let carried = self.outcomes.borrow().get(place).is_some_and(|outcome| outcome.serving.iter().any(|what| what.starts_with("glued")) && outcome.calling.iter().any(|what| what.starts_with("glued")));
+            let rowed = self.g.exceptions().any(|exception| matches!(exception, Exception::Recorded { getter, .. } | Exception::Derived { getter, .. } if *getter == place));
+            if !glued {
+                count("not glued: refused by both glues, nothing asked of the implementation", place);
+                return call.to_string();
+            }
+            if !carried || rowed {
+                count("answered by a glue from its own record or row, never asking the implementation", place);
+                return call.to_string();
+            }
+            let bytes = prelude.contains("let lying = bytes();");
+            let mut lines = String::new();
+            if result != "()" {
+                let (summary, what) = answer_summary(result, "&answer", 0);
+                count(what, place);
+                let _ = write!(lines, "answers.push(format!(\"{place} -> {{}}\", {summary})); ");
+            } else if bytes {
+                count("returns nothing: compared, the caller's bytes it writes", place);
+            } else {
+                count("returns nothing and writes nothing: no value to compare", place);
+            }
+            if bytes {
+                let _ = write!(lines, "answers.bytes(\"{place}\", &lying); ");
+                count("of all compared, also the caller's bytes they write", place);
+            }
+            if lines.is_empty() { call.to_string() } else { format!("{{ let answer = {call}; {lines}answer }}") }
+        };
         for &k in &scope {
             for (interface_key, trait_path, sig_api, method, glued) in self.kind_methods(k) {
                 let place = format!("{}::{}", interface_key.1, method.name);
@@ -1439,7 +1561,8 @@ impl Writer<'_, '_> {
                 self.current.set(saved);
                 let rust_name = Self::method_name(method);
                 if let Some((prelude, call)) = self.driven_call(Some(k), &generic(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", None) {
-                    calls.push((format!("{place} on {}", g.kinds[k].name), prelude, check(&result, &call, &scope)));
+                    let logged = compared(&place, glued.is_some(), &result, &prelude, &call);
+                    calls.push((format!("{place} on {}", g.kinds[k].name), prelude, check(&result, &logged, &scope)));
                 }
                 if let Some(glued) = glued {
                     makers.extend(self.makers_of(&place, Some(k), &generic(k), &trait_path, &rust_name, &inputs, &result, &glued, &scope, codecs));
@@ -1452,7 +1575,8 @@ impl Writer<'_, '_> {
             renamed.name = crate::names::strip_first(&function.name, spec.function_prefixes).to_string();
             let (inputs, result) = self.trait_signature(&renamed, api, "Self", &function.name);
             if let Some((prelude, call)) = self.driven_call(None, "A", &top, &rust_name, &inputs, &scope, codecs, "false", None) {
-                calls.push((function.name.clone(), prelude, check(&result, &call, &scope)));
+                let logged = compared(&function.name, self.glue_of(function, &function.name).is_ok(), &result, &prelude, &call);
+                calls.push((function.name.clone(), prelude, check(&result, &logged, &scope)));
             }
             if let Ok(glued) = self.glue_of(function, &function.name) {
                 makers.extend(self.makers_of(&function.name, None, "A", &top, &rust_name, &inputs, &result, &glued, &scope, codecs));
@@ -1474,14 +1598,23 @@ impl Writer<'_, '_> {
             }
         }
         let _ = writeln!(text, "        if o.kinds_held() == before {{\n            break;\n        }}\n    }}\n    o.kinds_held()\n}}\n");
-        let _ = writeln!(text, "/// Calls every method on every object held, and the exports, each answer checked.\nfn drive<A: {top}>(o: &Objects<A>) -> Driven {{\n    let mut driven = Driven::default();");
+        let _ = writeln!(text, "/// Calls every method on every object held, and the exports, each answer checked, and notes in `answers` what each\n/// method both glues carry to the implementation answered.\nfn drive<A: {top}>(o: &Objects<A>, answers: &Answers) -> Driven {{\n    let mut driven = Driven::default();");
         for (place, prelude, call) in &calls {
-            let _ = writeln!(text, "    // {place}\n    driven.attempt(|| {{\n{prelude}        {call}\n    }});");
+            if call.contains("answers.") {
+                // A compared call that was skipped or panicked is noted too, so that both drives line up.
+                let _ = writeln!(text, "    // {place}\n    let noted = answers.len();\n    driven.attempt(|| {{\n{prelude}        {call}\n    }});\n    answers.not_called_since(noted, \"{place}\");");
+            } else {
+                let _ = writeln!(text, "    // {place}\n    driven.attempt(|| {{\n{prelude}        {call}\n    }});");
+            }
         }
         let _ = writeln!(text, "    driven\n}}\n");
         let _ = writeln!(text, "/// The number of methods and exports the suite calls where it holds the objects and can make the arguments.\nconst CALLS: usize = {};\n", calls.len());
-        let _ = writeln!(text, "/// Makes an object of every kind the implementation makes and calls every method of every kind and every export on\n/// them: no method panics, a failure is negative, an object handed out equals its clone.\npub fn every_method_answers<A: {top}>(api: A) {{\n    let mut o = Objects::new(api);\n    let kinds = make_all(&mut o);\n    let driven = drive(&o);\n    println!(\"SUITE {}: kinds made {{kinds}}, calls {{CALLS}}: called {{}}, skipped {{}}, panicked {{}}\", driven.called, driven.skipped, driven.panicked);\n    assert_eq!(driven.panicked, 0, \"a method panicked\");\n    assert_eq!(driven.called + driven.skipped, CALLS, \"a call was neither made nor skipped\");\n}}\n", spec.folder);
-        let _ = writeln!(text, "/// Runs each suite function above as its own test on the value an implementation gives.\n#[macro_export]\nmacro_rules! tests {{\n    ($value:expr) => {{\n        #[test]\n        fn every_method_answers() {{\n            $crate::every_method_answers($value);\n        }}\n    }};\n}}");
+        let noted: usize = calls.iter().map(|(_, _, call)| call.matches("answers.").count()).sum();
+        let _ = writeln!(text, "/// The number of answers the suite notes and compares: each answer of a method both glues carry to the\n/// implementation, and the caller's bytes after each such method that writes them.\nconst COMPARED: usize = {noted};\n");
+        let _ = writeln!(text, "/// Makes an object of every kind the implementation makes and calls every method of every kind and every export on\n/// them: no method panics, a failure is negative, an object handed out equals its clone.\npub fn every_method_answers<A: {top}>(api: A) {{\n    let mut o = Objects::new(api);\n    let kinds = make_all(&mut o);\n    let driven = drive(&o, &Answers::default());\n    println!(\"SUITE {}: kinds made {{kinds}}, calls {{CALLS}}: called {{}}, skipped {{}}, panicked {{}}\", driven.called, driven.skipped, driven.panicked);\n    assert_eq!(driven.panicked, 0, \"a method panicked\");\n    assert_eq!(driven.called + driven.skipped, CALLS, \"a call was neither made nor skipped\");\n}}\n", spec.folder);
+        let _ = writeln!(text, "/// Makes an object of every kind and drives every method as `every_method_answers` does, and returns what each\n/// method both glues carry to the implementation answered, in the order called.\npub fn answers_of<A: {top}>(api: A) -> Vec<String> {{\n    let mut o = Objects::new(api);\n    make_all(&mut o);\n    let answers = Answers::default();\n    drive(&o, &answers);\n    answers.lines()\n}}\n");
+        let _ = writeln!(text, "/// Drives `api` and `reference` alike and compares every answer noted, field by field, in the order called: `api` is\n/// `reference` served and called through both glues, so each answer must be what the implementation gave.\npub fn every_answer_equals_the_reference<A: {top}, R: {top}>(api: A, reference: R) {{\n    let got = answers_of(api);\n    let wanted = answers_of(reference);\n    println!(\"ANSWERS {}: the reference answered {{}} of {{COMPARED}}, through both glues {{}}\", wanted.len(), got.len());\n    let differing: Vec<String> = got.iter().zip(&wanted).enumerate().filter(|(_, (got, wanted))| got != wanted).map(|(at, (got, wanted))| format!(\"answer {{at}}: through both glues {{got}}, the implementation {{wanted}}\")).collect();\n    for line in &differing {{\n        println!(\"DIFFERS {{line}}\");\n    }}\n    assert_eq!(differing, Vec::<String>::new(), \"answers differ through both glues\");\n    assert_eq!(got.len(), wanted.len(), \"through both glues, a different number of answers\");\n    assert_eq!(wanted.len(), COMPARED, \"the reference answered a different number of answers than the suite notes\");\n}}\n", spec.folder);
+        let _ = writeln!(text, "/// Runs each suite function above as its own test on the value an implementation gives; given a reference, also\n/// compares every answer of the value with the reference's.\n#[macro_export]\nmacro_rules! tests {{\n    ($value:expr) => {{\n        #[test]\n        fn every_method_answers() {{\n            $crate::every_method_answers($value);\n        }}\n    }};\n    ($value:expr, $reference:expr) => {{\n        $crate::tests!($value);\n\n        #[test]\n        fn every_answer_equals_the_reference() {{\n            $crate::every_answer_equals_the_reference($value, $reference);\n        }}\n    }};\n}}");
         let mut imports: Vec<String> = Vec::new();
         for other in g.apis.iter() {
             let named = text.lines().any(|line| !line.starts_with("//") && line.contains(&format!("{}::", alias(other))));
@@ -1489,7 +1622,8 @@ impl Writer<'_, '_> {
                 imports.push(format!("use {} as {};", package(other).replace('-', "_"), alias(other)));
             }
         }
-        Some(text.replace("@IMPORTS@", &imports.join("\n")))
+        let summary: Vec<String> = tally.borrow().iter().map(|(what, places)| format!("{} {what}", places.len())).collect();
+        Some((text.replace("@IMPORTS@", &imports.join("\n")), format!("ANSWERS {}: {}\n", spec.folder, summary.join("; "))))
     }
 }
 
@@ -1503,7 +1637,7 @@ pub(in crate::emit) fn write_suite(writer: &Writer<'_, '_>, api: usize, crate_fo
     // The suite names no implementation: structures it cannot default are not made, and their calls skipped.
     codecs.decoders.clear();
     codecs.modules.clear();
-    let Some(text) = writer.suite(api, &codecs) else { return Ok(String::new()) };
+    let Some((text, answers)) = writer.suite(api, &codecs) else { return Ok(String::new()) };
     writer.current.set(api);
     let folder = crate_folder.join("conformance");
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
@@ -1534,7 +1668,14 @@ pub(in crate::emit) fn write_suite(writer: &Writer<'_, '_>, api: usize, crate_fo
         let direct_crate = format!("{}_direct", package(spec).replace('-', "_"));
         let serve_text = std::fs::read_to_string(crate_folder.join("implementation").join("direct").join("serve.rs")).unwrap_or_default();
         if serve_text.contains("pub fn served") {
-            std::fs::write(place.join("conformance_through_glues.rs"), format!("//! {}\n//!\n//! The conformance suite of {}, run on this implementation through both glues (`served`).\n\n{suite_crate}::tests!({direct_crate}::served({value}));\n", crate::emit::HEADER, spec.folder)).map_err(|error| error.to_string())?;
+            // The recorder's every answer through both glues is compared with the recorder's own (its answers are known
+            // values, never a type's default); the hostile implementation's answers are its lies, so only checked.
+            let run = if implementation == "recorder" {
+                format!("//! The conformance suite of {}, run on this implementation through both glues (`served`), every answer compared\n//! with the same call made on the implementation directly.\n\n{suite_crate}::tests!({direct_crate}::served({value}), {value});\n", spec.folder)
+            } else {
+                format!("//! The conformance suite of {}, run on this implementation through both glues (`served`).\n\n{suite_crate}::tests!({direct_crate}::served({value}));\n", spec.folder)
+            };
+            std::fs::write(place.join("conformance_through_glues.rs"), format!("//! {}\n//!\n{run}", crate::emit::HEADER)).map_err(|error| error.to_string())?;
             test.push_str("\n[[test]]\nname = \"conformance_through_glues\"\npath = \"conformance_through_glues.rs\"\n");
             if !manifest.contains(&format!("{}-direct = ", package(spec))) {
                 runs.push("(no direct dependency)");
@@ -1557,5 +1698,42 @@ pub(in crate::emit) fn write_suite(writer: &Writer<'_, '_>, api: usize, crate_fo
         std::fs::write(&manifest_path, manifest).map_err(|error| error.to_string())?;
         runs.push(implementation);
     }
-    Ok(format!("SUITE {}: written; run by {}\n", spec.folder, if runs.is_empty() { "none".to_string() } else { runs.join(", ") }))
+    Ok(format!("SUITE {}: written; run by {}\n{answers}", spec.folder, if runs.is_empty() { "none".to_string() } else { runs.join(", ") }))
+}
+
+/// A Rust expression of a `String` that shows every value in an answer of type `ty` held by reference at `expr`: plain
+/// data by `Debug`, every field; an object (or a structure holding one) as `an object`, its identity being no value; a
+/// result, option, list or tuple by its parts. With what the answer holds, for the report.
+fn answer_summary(ty: &str, expr: &str, depth: usize) -> (String, &'static str) {
+    let ty = ty.trim();
+    if !ty.contains("Self") {
+        let what = if ty.starts_with("Result<()") { "a status only: compared" } else { "plain data: compared, every field" };
+        return (format!("format!(\"{{:?}}\", {expr})"), what);
+    }
+    let v = format!("v{depth}");
+    let holding = "holds objects: compared, every value but an object's identity";
+    if let Some(inner) = ty.strip_prefix("Result<").and_then(|rest| rest.strip_suffix('>')) {
+        let parts = super::record::split_types(inner);
+        let (ok, what) = answer_summary(parts.first().map_or("", String::as_str), &v, depth + 1);
+        let what = if what.starts_with("an object only") { "an object, or a failure: compared, its success and the failure's code" } else { what };
+        return (format!("match {expr} {{ Ok({v}) => format!(\"Ok({{}})\", {ok}), Err({v}) => format!(\"Err({{:#x}})\", {v}.0) }}"), what);
+    }
+    if let Some(inner) = ty.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
+        let (some, what) = answer_summary(inner, &v, depth + 1);
+        let what = if what.starts_with("an object only") { "an object or none: compared, whether there is one" } else { what };
+        return (format!("match {expr} {{ Some({v}) => format!(\"Some({{}})\", {some}), None => \"None\".to_string() }}"), what);
+    }
+    if let Some(inner) = ty.strip_prefix("Vec<").and_then(|rest| rest.strip_suffix('>')) {
+        let (each, what) = answer_summary(inner, &v, depth + 1);
+        let what = if what.starts_with("an object") { "a list of objects: compared, its length and which are none" } else { holding };
+        return (format!("format!(\"[{{}}]\", {expr}.iter().map(|{v}| {each}).collect::<Vec<String>>().join(\", \"))"), what);
+    }
+    if let Some(inner) = ty.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
+        let parts = super::record::split_types(inner);
+        let names: Vec<String> = (0..parts.len()).map(|at| format!("t{depth}_{at}")).collect();
+        let shown: Vec<String> = parts.iter().zip(&names).map(|(part, name)| answer_summary(part, name, depth + 1).0).collect();
+        let holes = vec!["{}"; parts.len()].join(", ");
+        return (format!("{{ let ({}) = {expr}; format!(\"({holes})\", {}) }}", names.join(", "), shown.join(", ")), holding);
+    }
+    ("\"an object\".to_string()".to_string(), "an object only: its identity is no value to compare")
 }

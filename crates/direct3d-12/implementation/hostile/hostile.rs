@@ -4380,7 +4380,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
                     );
                     answer.ok()
@@ -4400,7 +4400,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
                     );
                     answer.ok()
@@ -4420,7 +4420,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
                     );
                     answer.ok()
@@ -4440,7 +4440,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_DEVICE,
                     );
                     answer.ok()
@@ -4460,7 +4460,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_FENCE,
                     );
                     answer.ok()
@@ -4480,7 +4480,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
                     );
                     answer.ok()
@@ -4500,7 +4500,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
                     );
                     answer.ok()
@@ -4520,7 +4520,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
                     );
                     answer.ok()
@@ -4540,7 +4540,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_RESOURCE,
                     );
                     answer.ok()
@@ -4560,7 +4560,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
                     );
                     answer.ok()
@@ -5045,7 +5045,7 @@ pub fn drive_where(
             let _ = direct3d_12::Direct3D12::create_device(
                 &o.api,
                 None,
-                Default::default(),
+                direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                 &Default::default(),
             );
             true

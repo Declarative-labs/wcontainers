@@ -17,6 +17,8 @@
     clippy::option_map_unit_fn,
     clippy::bool_assert_comparison,
     clippy::eq_op,
+    clippy::format_in_format_args,
+    clippy::to_string_in_format_args,
     reason = "generated: every call has the same shape"
 )]
 
@@ -141,6 +143,51 @@ fn equals_its_clone<T: Clone + Eq>(object: T) -> bool {
 fn answered<T>(answer: T) -> bool {
     drop(answer);
     true
+}
+
+/// What each method both glues carry to the implementation answered, in the order called: the place and the answer's
+/// every field (`Debug`), an object in it named only as one (its identity is no value); and the caller's bytes after a
+/// method that writes them. The same drive made on an implementation directly and through both glues must give the same.
+#[derive(Debug, Default)]
+struct Answers(std::sync::Mutex<Vec<String>>);
+
+impl Answers {
+    fn push(&self, line: String) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(line);
+    }
+
+    /// The caller's bytes after the method.
+    fn bytes(&self, place: &str, bytes: &SuiteBytes) {
+        let held = bytes
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        self.push(format!("{place} wrote {held:?}"));
+    }
+
+    fn len(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Notes a call that noted nothing since `noted` answers (skipped for want of an object, or panicked).
+    fn not_called_since(&self, noted: usize, place: &str) {
+        if self.len() == noted {
+            self.push(format!("{place}: not called, or panicked"));
+        }
+    }
+
+    fn lines(self) -> Vec<String> {
+        self.0
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// One object of each kind the suite made, by kind.
@@ -1072,7 +1119,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
                     );
                     answer.ok()
@@ -1092,7 +1139,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
                     );
                     answer.ok()
@@ -1112,7 +1159,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
                     );
                     answer.ok()
@@ -1132,7 +1179,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_DEVICE,
                     );
                     answer.ok()
@@ -1152,7 +1199,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_FENCE,
                     );
                     answer.ok()
@@ -1172,7 +1219,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
                     );
                     answer.ok()
@@ -1192,7 +1239,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
                     );
                     answer.ok()
@@ -1212,7 +1259,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
                     );
                     answer.ok()
@@ -1232,7 +1279,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_RESOURCE,
                     );
                     answer.ok()
@@ -1252,7 +1299,7 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
                         None,
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
                     );
                     answer.ok()
@@ -1271,8 +1318,9 @@ fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
     o.kinds_held()
 }
 
-/// Calls every method on every object held, and the exports, each answer checked.
-fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
+/// Calls every method on every object held, and the exports, each answer checked, and notes in `answers` what each
+/// method both glues carry to the implementation answered.
+fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Driven {
     let mut driven = Driven::default();
     // ID3DBlob::GetBufferPointer on Blob
     driven.attempt(|| {
@@ -1282,12 +1330,21 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
         answered(direct3d_common::Blob::get_buffer_pointer(this))
     });
     // ID3DBlob::GetBufferSize on Blob
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k0.as_ref() else {
             return false;
         };
-        answered(direct3d_common::Blob::get_buffer_size(this))
+        answered({
+            let answer = direct3d_common::Blob::get_buffer_size(this);
+            answers.push(format!(
+                "ID3DBlob::GetBufferSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3DBlob::GetBufferSize on Blob");
     // ID3DDestructionNotifier::RegisterDestructionCallback on DestructionNotifier
     driven.attempt(|| {
         let Some(this) = o.k1.as_ref() else {
@@ -1303,24 +1360,43 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on DestructionNotifier
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k1.as_ref() else {
             return false;
         };
-        failure_is_negative(
-            direct3d_common::DestructionNotifier::unregister_destruction_callback(
+        failure_is_negative({
+            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
                 this,
                 Default::default(),
-            ),
-        )
+            );
+            answers.push(format!(
+                "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DDestructionNotifier::UnregisterDestructionCallback on DestructionNotifier",
+    );
     // ID3D12CommandAllocator::Reset on CommandAllocator
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k51.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_12::CommandAllocator::reset(this))
+        failure_is_negative({
+            let answer = direct3d_12::CommandAllocator::reset(this);
+            answers.push(format!(
+                "ID3D12CommandAllocator::Reset -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12CommandAllocator::Reset on CommandAllocator");
     // ID3D12CommandQueue::ExecuteCommandLists on CommandQueue
     driven.attempt(|| {
         let Some(this) = o.k52.as_ref() else {
@@ -1329,6 +1405,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
         answered(direct3d_12::CommandQueue::execute_command_lists(this, &[]))
     });
     // ID3D12CommandQueue::Signal on CommandQueue
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k52.as_ref() else {
             return false;
@@ -1336,19 +1413,32 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k55.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_12::CommandQueue::signal(
-            this,
-            v1,
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_12::CommandQueue::signal(this, v1, Default::default());
+            answers.push(format!(
+                "ID3D12CommandQueue::Signal -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12CommandQueue::Signal on CommandQueue");
     // ID3D12DescriptorHeap::GetDesc on DescriptorHeap
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k53.as_ref() else {
             return false;
         };
-        answered(direct3d_12::DescriptorHeap::get_desc(this))
+        answered({
+            let answer = direct3d_12::DescriptorHeap::get_desc(this);
+            answers.push(format!(
+                "ID3D12DescriptorHeap::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12DescriptorHeap::GetDesc on DescriptorHeap");
     // ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart on DescriptorHeap
     driven.attempt(|| {
         let Some(this) = o.k53.as_ref() else {
@@ -1364,17 +1454,30 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
         answered(direct3d_12::DescriptorHeap::get_gpu_descriptor_handle_for_heap_start(this))
     });
     // ID3D12Device::CreateCommandAllocator on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k54.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_12::Device::create_command_allocator(
-            this,
-            Default::default(),
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_12::Device::create_command_allocator(
+                this,
+                Default::default(),
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D12Device::CreateCommandAllocator -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12Device::CreateCommandAllocator on Device");
     // ID3D12Device::CreateCommandList on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k54.as_ref() else {
             return false;
@@ -1382,75 +1485,151 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k51.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_12::Device::create_command_list(
-            this,
-            Default::default(),
-            Default::default(),
-            v1,
-            None,
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_12::Device::create_command_list(
+                this,
+                Default::default(),
+                Default::default(),
+                v1,
+                None,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D12Device::CreateCommandList -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12Device::CreateCommandList on Device");
     // ID3D12Device::GetDescriptorHandleIncrementSize on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k54.as_ref() else {
             return false;
         };
-        answered(direct3d_12::Device::get_descriptor_handle_increment_size(
-            this,
-            Default::default(),
-        ))
+        answered({
+            let answer =
+                direct3d_12::Device::get_descriptor_handle_increment_size(this, Default::default());
+            answers.push(format!(
+                "ID3D12Device::GetDescriptorHandleIncrementSize -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D12Device::GetDescriptorHandleIncrementSize on Device",
+    );
     // ID3D12Device::CreateRootSignature on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k54.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_12::Device::create_root_signature(
-            this,
-            Default::default(),
-            &[],
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_12::Device::create_root_signature(
+                this,
+                Default::default(),
+                &[],
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D12Device::CreateRootSignature -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12Device::CreateRootSignature on Device");
     // ID3D12Device::CreateFence on Device
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k54.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_12::Device::create_fence(
-            this,
-            Default::default(),
-            Default::default(),
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_12::Device::create_fence(
+                this,
+                Default::default(),
+                Default::default(),
+                &Default::default(),
+            );
+            answers.push(format!(
+                "ID3D12Device::CreateFence -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12Device::CreateFence on Device");
     // ID3D12Fence::GetCompletedValue on Fence
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k55.as_ref() else {
             return false;
         };
-        answered(direct3d_12::Fence::get_completed_value(this))
+        answered({
+            let answer = direct3d_12::Fence::get_completed_value(this);
+            answers.push(format!(
+                "ID3D12Fence::GetCompletedValue -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12Fence::GetCompletedValue on Fence");
     // ID3D12Fence::SetEventOnCompletion on Fence
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k55.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_12::Fence::set_event_on_completion(
-            this,
-            Default::default(),
-            Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_12::Fence::set_event_on_completion(
+                this,
+                Default::default(),
+                Default::default(),
+            );
+            answers.push(format!(
+                "ID3D12Fence::SetEventOnCompletion -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12Fence::SetEventOnCompletion on Fence");
     // ID3D12GraphicsCommandList::Close on GraphicsCommandList
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k56.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_12::GraphicsCommandList::close(this))
+        failure_is_negative({
+            let answer = direct3d_12::GraphicsCommandList::close(this);
+            answers.push(format!(
+                "ID3D12GraphicsCommandList::Close -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D12GraphicsCommandList::Close on GraphicsCommandList",
+    );
     // ID3D12GraphicsCommandList::Reset on GraphicsCommandList
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k56.as_ref() else {
             return false;
@@ -1458,8 +1637,19 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
         let Some(v1) = o.k51.as_ref() else {
             return false;
         };
-        failure_is_negative(direct3d_12::GraphicsCommandList::reset(this, v1, None))
+        failure_is_negative({
+            let answer = direct3d_12::GraphicsCommandList::reset(this, v1, None);
+            answers.push(format!(
+                "ID3D12GraphicsCommandList::Reset -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D12GraphicsCommandList::Reset on GraphicsCommandList",
+    );
     // ID3D12GraphicsCommandList::DrawInstanced on GraphicsCommandList
     driven.attempt(|| {
         let Some(this) = o.k56.as_ref() else {
@@ -1730,12 +1920,21 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
         answered(direct3d_12::Resource::unmap(this, Default::default(), None))
     });
     // ID3D12Resource::GetDesc on Resource
+    let noted = answers.len();
     driven.attempt(|| {
         let Some(this) = o.k59.as_ref() else {
             return false;
         };
-        answered(direct3d_12::Resource::get_desc(this))
+        answered({
+            let answer = direct3d_12::Resource::get_desc(this);
+            answers.push(format!(
+                "ID3D12Resource::GetDesc -> {}",
+                format!("{:?}", &answer)
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12Resource::GetDesc on Resource");
     // ID3D12Resource::GetGPUVirtualAddress on Resource
     driven.attempt(|| {
         let Some(this) = o.k59.as_ref() else {
@@ -1744,26 +1943,42 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>) -> Driven {
         answered(direct3d_12::Resource::get_gpu_virtual_address(this))
     });
     // D3D12CreateDevice
+    let noted = answers.len();
     driven.attempt(|| {
-        failure_is_negative(direct3d_12::Direct3D12::create_device(
-            &o.api,
-            None,
-            Default::default(),
-            &Default::default(),
-        ))
+        failure_is_negative({
+            let answer = direct3d_12::Direct3D12::create_device(
+                &o.api,
+                None,
+                direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                &Default::default(),
+            );
+            answers.push(format!(
+                "D3D12CreateDevice -> {}",
+                match &answer {
+                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Err(v0) => format!("Err({:#x})", v0.0),
+                }
+            ));
+            answer
+        })
     });
+    answers.not_called_since(noted, "D3D12CreateDevice");
     driven
 }
 
 /// The number of methods and exports the suite calls where it holds the objects and can make the arguments.
 const CALLS: usize = 44;
 
+/// The number of answers the suite notes and compares: each answer of a method both glues carry to the
+/// implementation, and the caller's bytes after each such method that writes them.
+const COMPARED: usize = 16;
+
 /// Makes an object of every kind the implementation makes and calls every method of every kind and every export on
 /// them: no method panics, a failure is negative, an object handed out equals its clone.
 pub fn every_method_answers<A: direct3d_12::Direct3D12>(api: A) {
     let mut o = Objects::new(api);
     let kinds = make_all(&mut o);
-    let driven = drive(&o);
+    let driven = drive(&o, &Answers::default());
     println!(
         "SUITE direct3d-12: kinds made {kinds}, calls {CALLS}: called {}, skipped {}, panicked {}",
         driven.called, driven.skipped, driven.panicked
@@ -1776,13 +1991,74 @@ pub fn every_method_answers<A: direct3d_12::Direct3D12>(api: A) {
     );
 }
 
-/// Runs each suite function above as its own test on the value an implementation gives.
+/// Makes an object of every kind and drives every method as `every_method_answers` does, and returns what each
+/// method both glues carry to the implementation answered, in the order called.
+pub fn answers_of<A: direct3d_12::Direct3D12>(api: A) -> Vec<String> {
+    let mut o = Objects::new(api);
+    make_all(&mut o);
+    let answers = Answers::default();
+    drive(&o, &answers);
+    answers.lines()
+}
+
+/// Drives `api` and `reference` alike and compares every answer noted, field by field, in the order called: `api` is
+/// `reference` served and called through both glues, so each answer must be what the implementation gave.
+pub fn every_answer_equals_the_reference<A: direct3d_12::Direct3D12, R: direct3d_12::Direct3D12>(
+    api: A,
+    reference: R,
+) {
+    let got = answers_of(api);
+    let wanted = answers_of(reference);
+    println!(
+        "ANSWERS direct3d-12: the reference answered {} of {COMPARED}, through both glues {}",
+        wanted.len(),
+        got.len()
+    );
+    let differing: Vec<String> = got
+        .iter()
+        .zip(&wanted)
+        .enumerate()
+        .filter(|(_, (got, wanted))| got != wanted)
+        .map(|(at, (got, wanted))| {
+            format!("answer {at}: through both glues {got}, the implementation {wanted}")
+        })
+        .collect();
+    for line in &differing {
+        println!("DIFFERS {line}");
+    }
+    assert_eq!(
+        differing,
+        Vec::<String>::new(),
+        "answers differ through both glues"
+    );
+    assert_eq!(
+        got.len(),
+        wanted.len(),
+        "through both glues, a different number of answers"
+    );
+    assert_eq!(
+        wanted.len(),
+        COMPARED,
+        "the reference answered a different number of answers than the suite notes"
+    );
+}
+
+/// Runs each suite function above as its own test on the value an implementation gives; given a reference, also
+/// compares every answer of the value with the reference's.
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
         #[test]
         fn every_method_answers() {
             $crate::every_method_answers($value);
+        }
+    };
+    ($value:expr, $reference:expr) => {
+        $crate::tests!($value);
+
+        #[test]
+        fn every_answer_equals_the_reference() {
+            $crate::every_answer_equals_the_reference($value, $reference);
         }
     };
 }

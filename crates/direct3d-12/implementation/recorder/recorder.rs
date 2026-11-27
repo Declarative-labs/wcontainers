@@ -61,6 +61,37 @@ pub fn live() -> i64 {
     LIVE.load(Ordering::SeqCst)
 }
 
+/// A known answer's bytes are each one of `KNOWN_SPAN` values from 1: never zero, and never with the top bit set, so no
+/// float read from them is NaN or infinite and every float compares equal to itself.
+const KNOWN_SPAN: usize = 126;
+/// What a known byte moves by from one byte to the next, so that neighboring fields differ.
+const KNOWN_STRIDE: usize = 29;
+/// The most bytes the recorder writes into the caller's bytes.
+const KNOWN_MOST: usize = 1 << 16;
+
+/// The known byte at `at` of an answer of salt `salt`.
+fn known_byte(salt: usize, at: usize) -> u8 {
+    u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
+}
+
+/// The known bytes a structure of the recorder's answers is decoded from.
+#[allow(dead_code, reason = "a recorder answering no structure decodes none")]
+fn known_bytes<const N: usize>(salt: usize) -> [u8; N] {
+    core::array::from_fn(|at| known_byte(salt, at))
+}
+
+/// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
+/// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
+/// directly.
+#[allow(dead_code, reason = "a recorder writing no caller's bytes writes none")]
+fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(bytes: &Bytes, salt: usize) {
+    let length = usize::try_from(bytes.len())
+        .unwrap_or(KNOWN_MOST)
+        .min(KNOWN_MOST);
+    let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
+    let _ = bytes.write(&known);
+}
+
 /// One object alive, counted until its last clone drops.
 #[derive(Debug)]
 struct Live(u64);
@@ -672,7 +703,7 @@ impl<A: Recorded> direct3d_12::DescriptorHeap for RecordedDescriptorHeap<A> {
     fn get_desc(&self) -> direct3d_12::structures::DescriptorHeapDesc {
         record("ID3D12DescriptorHeap::GetDesc()".to_string());
         data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(
-            &[u8::MIN; 16],
+            &known_bytes::<16>(315878),
         )
     }
     fn get_cpu_descriptor_handle_for_heap_start(
@@ -1153,7 +1184,7 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
             "ID3D12Device::GetDescriptorHandleIncrementSize(descriptor_heap_type={:?})",
             descriptor_heap_type
         ));
-        Default::default()
+        34_u32
     }
     fn create_root_signature(
         &self,
@@ -1524,7 +1555,7 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
             "ID3D12Device::GetCopyableFootprints(first_subresource={:?}, num_subresources={:?}, base_offset={:?})",
             first_subresource, num_subresources, base_offset
         ));
-        ((0..num_subresources.min(4)).map(|_| data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_placed_subresource_footprint(&[u8::MIN; 32])).collect(), (0..num_subresources.min(4)).map(|_| Default::default()).collect(), (0..num_subresources.min(4)).map(|_| Default::default()).collect(), Default::default())
+        ((0..num_subresources.min(4)).map(|_| data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_placed_subresource_footprint(&known_bytes::<32>(700276))).collect(), (0..num_subresources.min(4)).map(|_| 102_u32).collect(), (0..num_subresources.min(4)).map(|_| 109_u64).collect(), 116_u64)
     }
     fn create_query_heap(
         &self,
@@ -1637,7 +1668,7 @@ impl<A: Recorded> direct3d_12::Object for RecordedDevice<A> {
 impl<A: Recorded> direct3d_12::Fence for RecordedFence<A> {
     fn get_completed_value(&self) -> u64 {
         record("ID3D12Fence::GetCompletedValue()".to_string());
-        Default::default()
+        41_u64
     }
     fn set_event_on_completion(
         &self,
@@ -1993,7 +2024,7 @@ impl<A: Recorded> direct3d_12::Resource for RecordedResource<A> {
     fn get_desc(&self) -> direct3d_12::structures::ResourceDesc {
         record("ID3D12Resource::GetDesc()".to_string());
         data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(
-            &[u8::MIN; 56],
+            &known_bytes::<56>(716928),
         )
     }
     fn get_gpu_virtual_address(&self) -> u64 {

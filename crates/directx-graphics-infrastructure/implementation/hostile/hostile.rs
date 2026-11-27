@@ -14287,7 +14287,7 @@ pub fn drive_where(
             let _ = directx_graphics_infrastructure::Device4::offer_resources1(
                 this,
                 &[],
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
                 Default::default(),
             );
             true
@@ -14322,7 +14322,7 @@ pub fn drive_where(
             let _ = directx_graphics_infrastructure::Device2::offer_resources(
                 this,
                 &[],
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             );
             true
         });
@@ -15924,7 +15924,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Resource::set_eviction_priority(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_RESOURCE_PRIORITY_MINIMUM,
             );
             true
         });
