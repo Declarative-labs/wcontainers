@@ -301,11 +301,11 @@ pub struct SystemRegisterChoices {
     /// Whether MRS and MSR reach PSTATE.TCO; where not, as on a chip whose hypervisor gives its guest no FEAT_MTE, they
     /// read zero and write nothing while PSTATE.TCO keeps its value.
     pub tag_check_override: bool,
-    /// Whether the chip has PSTATE.SSBS, [FEAT_SSBS](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-5-architecture-extension#:~:text=FEAT_SSBS); without it an access is undefined.
+    /// Whether the chip has FEAT_SSBS, without which an MRS or MSR of PSTATE's SSBS is undefined.
     pub speculative_store_bypass_safe: bool,
-    /// Whether the chip has PSTATE.DIT, [FEAT_DIT](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_DIT); without it an access is undefined.
+    /// Whether the chip has FEAT_DIT, without which an MRS or MSR of PSTATE's DIT is undefined.
     pub data_independent_timing: bool,
-    /// Whether the chip has PSTATE.TCO, [FEAT_MTE](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-5-architecture-extension#:~:text=FEAT_MTE); without it an access is undefined.
+    /// Whether the chip has FEAT_MTE, without which an MRS or MSR of PSTATE's TCO is undefined.
     pub memory_tagging: bool,
 }
 
@@ -341,9 +341,11 @@ pub const OTHER_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterChoices 
     memory_tagging: true,
 };
 
-/// What a chip without FEAT_SSBS, FEAT_DIT, FEAT_MTE, FEAT_RNG, FEAT_FP16 and AArch32 shows, as the WebAssembly
-/// translator presents it: unicorn's cache type, a 64-byte zero block, TPIDRRO_EL0 zero as Linux leaves it for a 64-bit
-/// program, FPCR's AHP, DN, FZ and RMode and FPSR's QC and cumulative flags.
+/// What a chip without FEAT_SSBS, FEAT_DIT, FEAT_MTE, FEAT_RNG, FEAT_FP16 and AArch32 shows, as the translator presents it.
+///
+/// Its [CTR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register)
+/// is unicorn's, its zero block 64 bytes, its TPIDRRO_EL0 zero as Linux leaves it for a 64-bit program; FPCR holds AHP,
+/// DN, FZ and RMode, and FPSR QC and the cumulative flags.
 pub const PRESENTED_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterChoices {
     cache_type: 0x8444_C004,
     zero_block_size: 0x4,
@@ -462,7 +464,7 @@ pub fn simulate_system_register_move<LevelSpecific>(
     Ok(())
 }
 
-/// Whether the chip has the register, false only for a PSTATE control whose feature it lacks.
+/// Returns whether the chip has the register, false only for a PSTATE control whose feature it lacks.
 fn has_process_state_control(register: HeldRegister, choices: SystemRegisterChoices) -> bool {
     match register {
         HeldRegister::SpeculativeStoreBypassSafe => choices.speculative_store_bypass_safe,
