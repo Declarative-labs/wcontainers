@@ -1296,8 +1296,7 @@ fn query_slot<O: OpenGlEs>(gpu: &mut Gl<O>, set: &QuerySetRef, index: u32) -> Op
     slot.as_deref().copied()
 }
 
-/// Why the device was lost where a query's result waits for a turn of the browser that the host does not
-/// give (no JSPI).
+/// Why the device is lost where a query's result needs a turn the host does not give (no JSPI).
 #[cfg(target_arch = "wasm32")]
 const NO_TURN: &str =
     "webgl: a query's result waits for a turn of the browser, which this host does not give";

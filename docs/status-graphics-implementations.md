@@ -1409,6 +1409,151 @@ twelfth run pushed four commits and ended before writing them here; this section
   (GI8 part B's bar) on AC8; GI4 and the window question on the owner; GI6's removal on question 1.
 - Not done: the hostile-guest suite (none exists; the thread-test design review is still owed to the owner).
 
+## The fourteenth run (2026-11-27): the Mesa compiler without candidate A and with shaders typed by stage, webgl's browser wait, the unsafe lines' needs, the Gallium plan read against opengl
+
+Logs in the scratch folder graphics-implementations/r14/ (at-<commit>-arm.log and -x86.log are the measurements at
+pushed commits; dev-*.log the work; base-1873c5569/ the corpus before the change; at-17faff388-x86/ the linter and
+page outputs). Jobs: r14/tools/r14-job.sh (STEPS) and r14/tools/r14-corpus.sh; the lists r14/tools/unsafe_lines.py,
+classify_lines.py, gallium_review.py. Every x86 job passed `--jobs 12`.
+
+### His main
+
+- `git fetch /Users/thomaseaton/Documents/GitHub/wcontainers main` gives ac696ea19; `git merge-base --is-ancestor
+  FETCH_HEAD HEAD` exit 0: nothing to merge (MEASURED). The day's instruction-interface changes are in it; no
+  graphics crate names those interfaces (READ). No owner interface file changed: the run's commits touch no
+  `crates/*/interface.rs` but the API track's crates/mesa-compiler/interface.rs, taken byte for byte (`git ls-tree
+  FETCH_HEAD crates/mesa-compiler crates/opengl-es`: empty, so they are not his files).
+
+### Commits (all pushed; tip below)
+
+- 1bd5577bc: crates/mesa-compiler and crates/opengl-es from origin/graphics-api-crates ce6ec529a byte for byte
+  (d2f7afc6c's geometry and tessellation stages in `glsl_to_nir`, then ce6ec529a: `spirv_common_to_spirv` removed and
+  the received and prepared shaders typed by stage); nir follows: `Stage` has the six stages, `mesa::Staged` holds
+  the compiler's type for each, `Prepared::variant` no longer takes a stage (the set follows the program's own),
+  `points_as_squares` refuses a stage other than vertex or tessellation evaluation and `geometry_points_as_squares`
+  one other than geometry, by name; candidate A removed (below). New tests in tests/route.rs: a geometry program
+  from GLSL through route B and the stage helper, one writing a point size drawn as squares naming its layer, a
+  tessellation pair through `hull` and `domain`, and the stage refusals.
+- 374bb31a8: the two crates at 0e473154c (the glue makes stage-typed shaders by a function; fuzzing and probe as
+  programs).
+- 70b478872: nir's new summaries say what each function does; the refusals and the patch size are named constants
+  (the linter's findings on this run's own lines).
+- 17faff388: the two crates at 3d6d06865 (the OpenGL ES suite's EGL-free forms, run in Chrome on WebGL, and the
+  WebGL implementation giving the browser turns while a query's result or a fence is not yet there); webgl reads a
+  query's results through that wait: in the browser `wait_read` asks each query's QUERY_RESULT once (which waits)
+  and loses the device by name only where the host gave no turn (no JSPI); the pages drop the importmap of the old
+  `wcontainers-device` host import and its device.js, which no Rust code imported any more. gpu-webgl declares no
+  host import (READ: no `extern` block, no `wasm_bindgen(module` in the crate). Cargo.lock: one line, the WebGL
+  implementation's new dev-dependency on the OpenGL ES conformance crate (hash a13195fd6d21d7bc to
+  ee279c2c1aa4481c, the same on both machines).
+- The status commit after these: this section and a one-line comment in webgl (the linter's summary_not_one_line on
+  `NO_TURN`), which changes no code.
+
+### Measured at the pushed 17faff388 (x86-64 job gi-r14 20261127-081012, ARM64 20261127-081005; both alike unless named)
+
+| | x86-64 | ARM64 |
+|---|---|---|
+| check `--all-targets`, Mesa on, `forbid`: mesa-compiler, -direct, -conformance, opengl-es, -direct, -conformance, egl, -direct, gpu, -conformance, -recording, -trace, -webgl, -webgpu, shaders | exit 0 each | exit 0 each |
+| the same: nir | exit 101, 43 unsafe errors, all in the corpus tests' llvmpipe.rs and lavapipe.rs (A6, A7) | the same |
+| the same: opengl (never under `forbid`; AC8) | exit 101, 1,506 errors (1,497 unsafe; the rest the removed `Nir`, `compiler_options`, `route_patches`) | 1,505 (1,496) |
+| nir `--lib`, Mesa on, `forbid` | exit 0 | exit 0 |
+| check without Mesa: nir, opengl, mesa-compiler-direct | exit 0 | exit 0 |
+| wasm32: the libraries, webgl's `browser` and `draw-cost`, trace's `replay`; clippy of the page | exit 0 each | exit 0 each |
+| nir `--lib --test route --test hostile_compiler`, `forbid` | 42 passed (39 at the last run) | 42 passed |
+| nir whole package, old table in the scratch copy | 55 passed, 2 ignored (52 before) | the same |
+| mesa-compiler-direct's own tests | 5 passed | 5 passed |
+| gpu-webgl on Mesa's EGL (lib 17, shared suite 75) | 92 passed | 92 passed |
+| opengl-es-direct | 18 passed | 18 passed |
+| gpu-webgpu on lavapipe | 157 passed, 3 failed, 4 ignored (the three known: BC7 decoder, 16-bit floats, the window read) | the same |
+| shaders | 158 passed, 5 ignored | the same |
+| recording, gpu, trace | 349 passed | 349 passed |
+| clippy `-D warnings` (gpu-webgl, -webgpu, -conformance, -trace all targets; nir, mesa-compiler, -direct) | exit 0 | exit 0 |
+| `cargo fmt --check` (nir, gpu-webgl, -webgpu, -conformance, -trace) | exit 0 | exit 0 |
+| **the shared suite on webgl in headless Chrome 155.0.8059.39 (SwiftShader)** | **75 passed, 0 not run, 0 failed** (74 at the last run) | **75 passed, 0 not run, 0 failed** |
+| the API track's OpenGL ES suite page, EGL-free forms, same Chrome | 12 passed, 0 failed; "query_results_wait without JSPI" fails as that page means it to (no turn: 0 samples) | the same |
+| its query measurement, 200 queries read as soon as ended | each passed 200; 1.769 ms a draw in a query, 0.182 ms a plain draw read back; 106.45 turns a query | each passed 200; 1.711 ms, 0.289 ms; 55.73 turns a query |
+
+- The bar the order set (75 of 75 in headless Chrome, both machines): held. `occlusion_queries_answer_whether_
+  samples_passed` and `the_occlusion_counter_counts_every_sample_that_passes`: ok on both (r14/at-17faff388-arm/
+  browser-suite.txt).
+- INFERRED from the measurement: a query read as soon as it ended costs about 1.5 ms more than a plain read back in
+  Chrome on SwiftShader, the browser's turns the wait takes; a front that reads queries a frame later pays none.
+
+### What went with candidate A (MEASURED: the corpus before and after, x86-64, the same seeded sample)
+
+`r14-corpus.sh`: the pinned Mesa, `crates/nir/corpus/fetch`, then `cargo test --release -p wcontainers-nir --test
+corpus` with WC_NIR_SHADERS=2000 (seed 0x5eed, 2,000 of 17,648 items), 12 at once, nir's old lints table in the
+scratch copy only (A6 and A7).
+
+| | before, 1873c5569 (both routes) | after, 17faff388 (route B only) |
+|---|---|---|
+| shaders; reached no route | 2,000; 670 | 2,000; 670 |
+| candidate A (zink-spirv-naga) | 1,313 of 1,328 converted, 83 match the reference, 0 differ, 1,230 not compared (every GLSL program: "candidate A takes only programs read from SPIR-V") | not run |
+| route B (nir-naga) | 1,306 of 1,328 converted, 1,287 match, 19 differ, 0 not compared | the same: 1,306, 1,287, 19, 0; the route B outcome of every one of the 2,000 shaders identical (the two result files compared shader by shader) |
+| shaders A matched and B did not | 0 | |
+| wall time of the run (12 children) | 732 s | 367 s |
+| shaders B matched and A failed | 8 | |
+| the 83 both match: median, mean conversion | A 357.8 us, 423.9 us; B 334.7 us, 365.0 us | |
+
+So the coverage that went: candidate A's own conversion of SPIR-V programs (its 83 compared matches are all matched
+by route B as well) and the time comparison between the two routes; the corpus's `WC_NIR_DUMP` of Zink's SPIR-V;
+two route tests' cross-check of bindings between the routes. No program route B converts or matches is lost, and
+no product code called candidate A (opengl uses only route B).
+
+### The unsafe policy, the four crates: every line and what it waits on (READ)
+
+Written in full to NEEDED-FROM-API-CRATES.md, "Fourteenth run" (every one of the 107 lines with the calls in its
+block). Summary: no API crate for any of these outside APIs is on origin/graphics-api-crates at 3d6d06865 (its
+crates/ holds egl, opengl-es and mesa-compiler; the Direct3D 11, DXGI, d3dcommon and COM crates are generator output
+in job folders, not under crates/; there is no Direct3D 12, Win32-windowing, AppKit or ScreenCaptureKit crate, and
+the owner's `win32` trait has no window calls). So nothing moved this run and the count stayed at 517; each line
+waits as follows.
+
+| crate | lines | outside API | waits on |
+|---|---|---|---|
+| gpu-webgpu tests/direct3d.rs | 18 | Direct3D 11 | D1: the generated Direct3D 11 crate in crates/ with its calling glue (GetData's S_FALSE, CreateQuery, Map as a copy, initial data) |
+| gpu-webgpu tests/direct3d.rs:612 | 1 | d3dcompiler_47 (D3DCompile) | D2: a crate for the HLSL compiler, or DXBC bytes made once on the desktop (this track; needs the desktop) |
+| shaders tests | 52 | Direct3D 11 | D1 |
+| shaders tests | 19 | Direct3D 12 | D3: a Direct3D 12 crate (none exists) |
+| test-window win32 (marked) | 4 | Win32 windows and GDI | W1: a windowing crate or the owner's `Win32` trait growing window calls; and the window question |
+| test-window appkit (marked) | 8 | AppKit, ScreenCaptureKit | K1: AppKit and ScreenCaptureKit crates; and the window question |
+| shader-converters linked (marked) | 5 | our C boundary over dxbc-spirv and dxil-spirv | Q1 (owner's question 1) |
+
+The Direct3D tests are `cfg(windows)` and the Windows desktop is not used in this run, so none of them was run here;
+shaders and gpu-webgpu build under `forbid` on Linux with all targets (table above).
+
+### opengl prepared for AC8: the Gallium plan, pointer by pointer (READ)
+
+The API track's plan (tools/api-crate-generator/src/gallium.rs and inputs/gallium/in-scope.txt, unchanged from
+d2f7afc6c to 3d6d06865) read against crates/opengl as it is at 17faff388: of 98 pointers, 74 fit as planned; 24 need
+a change in the plan or a condition kept. Every pointer's row and the nine disagreements (G1 TGSI programs, G2 four
+pointers that are Mesa's own functions and two transfer-vtbl entries the plan lacks, G3 counted objects the driver
+keeps past the call, G4 the 25 Mesa helpers and their nested calls into our context, G5 fields the driver fills, G6
+a failed begin_query, G7 flush_frontbuffer's drawable read on WGL, G8 absent objects, G9 bytes read through
+user_buffer and index.user) are in NEEDED-FROM-API-CRATES.md, "Fourteenth run", each with the lines of our code that
+show it. No unsafe was written; opengl's 354 lines are unchanged and move with the Gallium trait (AC8).
+
+### Linter (da55b9d7, x86-64, no model key)
+
+At 1bd5577bc and 17faff388 against 07e3baae7 (r13): 84,968 to 85,111 to 85,330 (r13/tools/lint_table.py). Ours:
+nir 922 to 931 to 925 (the new items' summaries, then fixed in 70b478872: function_summary_not_third_person 252 to
+244; summary_unanswered 28 to 38 waits on the model's answers); gpu 16,402 to 16,403 (webgl's `NO_TURN` summary on
+two lines, made one line in the status commit). The API track's crates, byte for byte: mesa-compiler 782 to 955,
+opengl-es 2,042 to 2,225 (their new suite forms and glue). direct3d-11 2,131 to 2,133: constant_defined_twice, its
+stage constants now equal the Mesa compiler suite's `GEOMETRY`/`STAGES` (crates the fronts cannot name).
+
+### Milestones
+
+- Reached, by the bars the order set: (1) the API track's Mesa compiler taken at each tip as it landed (d2f7afc6c,
+  ce6ec529a, 0e473154c, 3d6d06865), nir on the stage-typed trait, candidate A removed with its coverage stated;
+  (3) the browser occlusion test: 75 of 75 in headless Chrome on both machines through the API track's WebGL wait,
+  no host import in gpu-webgl; (2) and (4): every one of the four crates' 107 lines and every Gallium pointer
+  written with what it waits on. The count did not go down: 517 (no API crate exists for these APIs).
+- Next: D1 (the Direct3D 11 crate under crates/) moves 70 lines, D3 19, D2 1 (or DXBC bytes from the desktop), W1/K1
+  12 with the window question, Q1 5 on the owner; opengl's 354 and the GLES lists (GI8 part B's bar) on AC8 with
+  the G1 to G9 answers; nir's 56 on A6 and A7; GI4 and the window question on the owner.
+- Not done: the hostile-guest suite (none exists; the thread-test design review is still owed to the owner).
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
@@ -1473,3 +1618,14 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   New dependencies: none (Cargo.lock hash a13195fd6d21d7bc before and after every job on both machines; the page
   harness's wasm-bindgen-cli, playwright-core and Chromium are tools on the machines, not in the lock). No
   hostile-guest suite exists, none was run.
+- Fourteenth run (1bd5577bc to 17faff388): the track's crates hold the same 517 lines (MEASURED with count-unsafe.sh
+  at 1873c5569 and 1bd5577bc, and unchanged in the later commits, which touch only webgl's library (0 lines) and the
+  API track's crates: webgpu 19, shaders 71, shader-converters 5, nir 56 (corpus llvmpipe.rs 39, lavapipe.rs 17),
+  opengl 354, test-window 12, the rest 0). Every one of the 107 lines of webgpu, shaders, test-window and
+  shader-converters is written with its outside API and what it waits on (NEEDED-FROM-API-CRATES.md); none could move,
+  since no API crate for those APIs exists. No marked exception written here. Brought in, not written here:
+  crates/mesa-compiler/implementation/direct 37 to 67 lines naming `unsafe` (66 in implementation.rs, 1 in its
+  Cargo.toml's deny table), 66 `#[expect(unsafe_code, reason)]` marks, in a crate whose own table denies unsafe code;
+  crates/opengl-es/implementation/webgl 0 (its browser wait is a wasm-bindgen `suspending` import, no `unsafe`).
+  New dependencies: none from outside the workspace (Cargo.lock: one edge, opengl-es-webgl to opengl-es-conformance;
+  hash ee279c2c1aa4481c on both machines). No hostile-guest suite exists, none was run.
