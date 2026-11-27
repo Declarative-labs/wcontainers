@@ -1216,6 +1216,49 @@ at 3d6d06865 (not run by this track: their page and suite are on their branch). 
 shape: nir's calls move to the stage methods (`received_<stage>_prepare`, `prepared_<stage>_variant`, the three square
 methods) and `GlslProgram`'s six fields; candidate A and nir's route tests through `into_spirv` go.
 
+## AC8, the trait layer written (2026-11-27, cc210998a; log wcontainers-scratch/graphics-api-crates/r14/gallium/)
+
+`api-crate-generator gallium <in-scope> <headers...> <out>` (src/gallium_interface.rs) writes `crates/gallium/interface.rs`
+from the plan (src/gallium.rs, checked first: it fails where the plan does) and Mesa 26.3.1's headers:
+- `trait Gallium` (the screen, the library): `type Compiler: wcontainers_mesa_compiler::MesaCompiler` and one associated
+  type per kind (20: Context bound `GalliumContext<Screen = Self>`, Fence `Clone`, Resource, the five states, the six
+  shader kinds, SamplerView, StreamOutputTarget, Query, ActiveQuery, EndOnlyQuery, Mapping), and the screen's 10
+  pointers; `trait GalliumContext` (`type Screen: Gallium<Context = Self>`) with the context's and the transfer helper's
+  (`helper_transfer_map` ...). 100 methods for the 98 planned pointers: a pointer taking several kinds is one method
+  per kind (create_query and `create_query_end_only_query`, destroy_query for Query, EndOnlyQuery and ActiveQuery,
+  get_query_result and render_condition for both query kinds); the three counts (fence_reference, resource_release,
+  sampler_view_release) are no methods (the glue's clone and drop).
+- **Stages as types**: `create_vs_state(program: <Compiler>::ReceivedVertex, ...)` ... `create_compute_state(program:
+  ReceivedCompute, ...)`, each returning its own shader kind, each bound only by its own `bind_*` (ruling 3's types reach
+  the driver interface).
+- **Kinds as associated types, each handle a reference of its kind**: objects made are returned (`Option<K>`), given back
+  by value, read by `&K`, bound as `Option<&K>`, slots as `&[Option<&K>]`; begin_query turns a Query into an
+  ActiveQuery and end_query back.
+- **Plain structures as owned data** (43 structures, from p_state.h): numbers as their types, bit-fields as their declared
+  type (the glue refuses a value past the width), enumerations as `u32` (checked by the glue), nested structures and
+  fixed arrays (also of arrays: `ucp[PIPE_MAX_CLIP_PLANES][4]`), pipe_color_union as its four words, each handle a field
+  `Option<&'a K>` with the structure generic over the kinds it names (`FramebufferState<'a, Resource>`,
+  `DrawIndirectInfo<'a, Resource, StreamOutputTarget>`). 22 fields not carried, each with its reason in
+  `FIELDS_LEFT_OUT` (counts, back pointers, client memory as index, vertex or constant buffers, OpenCL's grid inputs,
+  the shader state's IR fields: the program is the method's received program). Six parameters Mesa passes as NULL
+  are `Option` (`NULLABLE`, each with its caller); a list's count is its slice's length, kept only where the list may be
+  NULL (None unbinds that many slots).
+- Mapping: `buffer_map`/`texture_map`/`helper_transfer_map` return `Mapped { mapping, bytes, stride, layer_stride }`
+  (a copy the glue lends Mesa); the unmaps and flushes take the mapping and the bytes Mesa wrote.
+
+MEASURED at cc210998a (x86-64 job gac-s): generator build status 0; `GALLIUM INTERFACE: 100 methods, 43 structures, 21
+kinds; left out 22 fields`; written twice IDENTICAL; SAME AS WRITTEN (interface.rs, Cargo.toml); `cargo check` and
+`cargo clippy -- -D warnings` of wcontainers-gallium status 0 under the workspace lints (`forbid`); lines naming `unsafe`
+0; linter on crates/gallium 244 (summary_unanswered 164 and name_unanswered 29, the model rule sets with no key on the
+machine; magic_literal 22, the array lengths; verb_not_first 12; conformance_missing 1: no suite yet; the rest below 6).
+
+Open in the trait (INFERRED, to settle with the serving glue): C unions held by value inside the structures
+(pipe_sampler_view's `u`, pipe_image_view's `u`) are written as structures of all their members, the glue filling the
+one the resource's target selects; the parameters still named `argN` are C's unnamed ones. Left of AC8: the serving glue
+in `gallium/implementation/direct` (Mesa's handles onto the kinds, bindgen's layouts), the hostile C caller of the 98
+pointers, the fuzzing under AddressSanitizer, the suite; moving crates/opengl's logic onto the trait (the implementations
+track's, GI8 part B).
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
