@@ -7210,7 +7210,10 @@ fn depth_copies_through_buffers<B: Gpu>(b: &mut B, format: Format) {
             }
         }
     }
-    assert!(wrong.is_empty(), "{format:?} words in the buffer: {wrong:?}");
+    assert!(
+        wrong.is_empty(),
+        "{format:?} words in the buffer: {wrong:?}"
+    );
     assert_eq!(got, expected, "{format:?}: bytes outside the words");
     // The texture: the region holds the words, the texels around it a quarter.
     let mut wrong = Vec::new();
