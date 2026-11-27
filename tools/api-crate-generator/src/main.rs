@@ -11,6 +11,7 @@ mod cheader;
 mod mesacompiler;
 mod emit;
 mod gallium;
+mod gallium_interface;
 mod khronos;
 mod layout;
 mod mapping;
@@ -114,6 +115,19 @@ fn main() -> ExitCode {
         };
     }
     // Gallium's driver interface (AC8): the function pointers of p_screen.h and p_context.h.
+    if let ("gallium", [in_scope, headers @ .., out]) = (command.as_str(), rest) {
+        let texts: Result<Vec<String>, String> = std::iter::once(in_scope).chain(headers).map(|path| std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))).collect();
+        return match texts.and_then(|texts| gallium_interface::generate(&texts[0], &texts[1..], std::path::Path::new(out))) {
+            Ok(report) => {
+                print!("{report}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("api-crate-generator: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if command == "gallium-census" {
         let texts: Result<Vec<String>, String> = rest.iter().map(|path| std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))).collect();
         return match texts {

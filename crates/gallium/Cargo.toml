@@ -1,0 +1,18 @@
+[package]
+name = "wcontainers-gallium"
+description = "Gallium, the driver interface Mesa's OpenGL calls, as safe traits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+wcontainers-mesa-compiler = { path = "../mesa-compiler" }
+
+[lints]
+workspace = true
