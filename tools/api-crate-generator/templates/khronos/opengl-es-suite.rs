@@ -965,8 +965,9 @@ fn egl_call<E: Egl>(egl: &E, handles: &mut Handles<E>, which: u64, state: &mut u
 
 /// A hostile caller: `calls` calls picked by the seed over every OpenGL ES method (on two contexts, with this
 /// context's live fence, a deleted one and the other context's) and every EGL method (with this library's handles,
-/// another library's, and destroyed ones). Nothing may end the process; returns the calls made.
-pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64) -> u64 {
+/// another library's, and destroyed ones). Nothing may end the process; returns the calls made, and how many of them
+/// the implementation refused itself (OpenGL ES's, EGL's): the rest reached the library.
+pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64, counts: &Counts<E, G>) -> [u64; 3] {
     let mut state = seed | 1;
     let made = reached::<E, G>(folder);
     let other = reached::<E, G>(folder);
@@ -1004,16 +1005,70 @@ pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64) -
         call_one(gl, &fence, which, usize::try_from(next(&mut state) >> 1).unwrap_or(0));
     }
     let _ = made.egl.make_current(&made.display, None, None, None);
-    calls
+    [calls, (counts.gl)(&made.gl) + (counts.gl)(&other.gl), (counts.egl)(&made.egl)]
 }
 
 /// Runs `fuzz` with the seed and call count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS name; nothing when
 /// they name none.
-pub fn fuzz_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>) {
+pub fn fuzz_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
     let number = |name: &str| std::env::var(name).ok().and_then(|value| value.parse::<u64>().ok());
     if let (Some(seed), Some(calls)) = (number("WCONTAINERS_FUZZ_SEED"), number("WCONTAINERS_FUZZ_CALLS")) {
-        let made = fuzz::<E, G>(folder, seed, calls);
-        println!("FUZZ seed {seed} calls {made}");
+        let [made, refused, egl_refused] = fuzz::<E, G>(folder, seed, calls, counts);
+        println!("FUZZ seed {seed} calls {made}, refused by the implementation itself: OpenGL ES {refused}, EGL {egl_refused}");
+    }
+}
+
+/// The nanoseconds each of `times` calls takes, timed together.
+fn timed(times: u32, mut call: impl FnMut()) -> f64 {
+    let start = std::time::Instant::now();
+    for _ in 0..times {
+        call();
+    }
+    start.elapsed().as_secs_f64() * 1e9 / f64::from(times)
+}
+
+/// What a draw costs: a triangle drawn `draws` times over the 4 by 4 pixel buffer with one enabled attribute, against
+/// a call the library answers at once (glGetError) and a read of one attribute's state (glGetVertexAttribiv, which
+/// the per-draw check makes twice per enabled attribute and once per other one).
+pub fn draw_costs<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, draws: u32) -> [f64; 3] {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    let vertex = compiled(gl, gl::VERTEX_SHADER, "#version 300 es\nlayout(location = 0) in vec2 at;\nvoid main() { gl_Position = vec4(at, 0.0, 1.0); }\n");
+    let fragment = compiled(gl, gl::FRAGMENT_SHADER, "#version 300 es\nprecision mediump float;\nout vec4 drawn;\nvoid main() { drawn = vec4(1.0); }\n");
+    let program = gl.create_program();
+    gl.attach_shader(program, vertex);
+    gl.attach_shader(program, fragment);
+    gl.link_program(program);
+    gl.use_program(program);
+    let mut buffers = [0_u32];
+    gl.gen_buffers(&mut buffers);
+    gl.bind_buffer(gl::ARRAY_BUFFER, buffers[0]);
+    let triangle: Vec<u8> = [-1.0_f32, -1.0, 3.0, -1.0, -1.0, 3.0].iter().flat_map(|value| value.to_ne_bytes()).collect();
+    gl.buffer_data(gl::ARRAY_BUFFER, i64::try_from(triangle.len()).unwrap_or(0), Some(&triangle), gl::STATIC_DRAW);
+    gl.enable_vertex_attrib_array(0);
+    gl.vertex_attrib_pointer(0, 2, gl::FLOAT, false, 0, 0);
+    gl.viewport(0, 0, SIDE, SIDE);
+    gl.finish();
+    let draw = timed(draws, || gl.draw_arrays(gl::TRIANGLES, 0, 3));
+    gl.finish();
+    assert_eq!(gl.get_error(), gl::NO_ERROR);
+    let answered = timed(draws, || {
+        let _ = gl.get_error();
+    });
+    let mut room = [0_i32; 4];
+    let state = timed(draws, || gl.get_vertex_attribiv(0, gl::VERTEX_ATTRIB_ARRAY_ENABLED, &mut room));
+    [draw, answered, state]
+}
+
+/// Prints `draw_costs` for WCONTAINERS_MEASURE_DRAWS draws, five times; nothing when it names none.
+pub fn measure_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>) {
+    let Some(draws) = std::env::var("WCONTAINERS_MEASURE_DRAWS").ok().and_then(|value| value.parse::<u32>().ok()) else { return };
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let mut most = [0_i32];
+    made.gl.get_integerv(gl::MAX_VERTEX_ATTRIBS, &mut most);
+    for round in 0..5 {
+        let [draw, answered, state] = draw_costs::<E, G>(folder, draws);
+        println!("MEASURE round {round} draws {draws} attributes {}: draw {draw:.0} ns, glGetError {answered:.0} ns, glGetVertexAttribiv {state:.0} ns", most[0]);
     }
 }
 
@@ -1076,7 +1131,12 @@ macro_rules! tests {
 
         #[test]
         fn fuzz_from_the_environment() {
-            $crate::fuzz_from_the_environment::<$egl, $gl>($folder.as_deref());
+            $crate::fuzz_from_the_environment::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
+        fn measure_from_the_environment() {
+            $crate::measure_from_the_environment::<$egl, $gl>($folder.as_deref());
         }
 
         #[test]
