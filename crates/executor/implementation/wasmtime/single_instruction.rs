@@ -73,6 +73,13 @@ pub(crate) struct Scratch {
 /// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const SCRATCH_STEPS: u32 = 1 << 10;
 
+/// Returns whether a scratch space that ran `steps` instructions and gave `windows_given` windows runs the next one.
+///
+/// A space holds only so many windows, so one a state gave windows past window 0 is made anew.
+fn reusable(steps: u32, windows_given: u64) -> bool {
+    steps < SCRATCH_STEPS && windows_given == 1
+}
+
 impl BehaviorSource for WasmtimeExecutor {
     type Architecture = Arm64<User>;
     type Error = WasmtimeError;
@@ -86,11 +93,8 @@ impl BehaviorSource for WasmtimeExecutor {
         memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), WasmtimeError> {
-        // A space holds only so many windows, so one a state gave windows past window 0 is made anew.
         let mut scratch = match self.scratch.take() {
-            Some(scratch)
-                if scratch.steps < SCRATCH_STEPS && scratch.memory.space.windows_given() == 1 =>
-            {
+            Some(scratch) if reusable(scratch.steps, scratch.memory.space.windows_given()) => {
                 scratch
             }
             old => {
@@ -215,5 +219,19 @@ impl WasmtimeExecutor {
         }
         space.space.drop_every_load();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SCRATCH_STEPS, reusable};
+
+    #[test]
+    fn a_scratch_space_is_made_anew_after_its_steps_or_once_it_gave_a_window_past_window_0() {
+        assert!(reusable(u32::MIN, 1));
+        assert!(reusable(SCRATCH_STEPS - 1, 1));
+        assert!(!reusable(SCRATCH_STEPS, 1));
+        assert!(!reusable(u32::MIN, 2));
+        assert!(!reusable(SCRATCH_STEPS - 1, 8));
     }
 }

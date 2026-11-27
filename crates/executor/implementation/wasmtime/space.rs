@@ -32,8 +32,6 @@ use crate::state_memory::StateMemory;
 
 /// The bytes of address a space has: those of a 48-bit virtual address.
 pub(crate) const SPACE_BYTES: u64 = 1 << VIRTUAL_ADDRESS_BITS;
-/// The pages of address a space has.
-const SPACE_PAGES: u64 = SPACE_BYTES / PAGE_SIZE;
 /// The pages of address one window holds.
 const WINDOW_PAGES: u64 = WINDOW_BYTES / PAGE_SIZE;
 /// Tuning number: the windows of addresses a space's guest memory holds at once, window 0 among them.
@@ -439,12 +437,13 @@ impl Space {
     }
 
     /// Returns the run of pages around the address that allow running code, if its own page does.
+    ///
+    /// A page past the space has no record, so it allows nothing and ends the run.
     pub(crate) fn find_executable_run(&self, address: u64) -> Option<Range<u64>> {
         let pages = lock(&self.pages);
         let executable = |page: u64| {
-            page < SPACE_PAGES
-                && Permissions::from_bits_truncate(pages.record(page) & PERMISSION_BITS)
-                    .contains(Permissions::EXECUTE)
+            Permissions::from_bits_truncate(pages.record(page) & PERMISSION_BITS)
+                .contains(Permissions::EXECUTE)
         };
         let page = address / PAGE_SIZE;
         if !executable(page) {
@@ -455,7 +454,7 @@ impl Space {
             .take_while(|&p| executable(p))
             .last()
             .unwrap_or(page);
-        let last = (page + 1..SPACE_PAGES)
+        let last = (page + 1..)
             .take_while(|&p| executable(p))
             .last()
             .unwrap_or(page);
@@ -528,9 +527,11 @@ impl Space {
     ///
     /// Each byte says what the page after it allows too: for a window's last page, what the next window's first page
     /// allows, which the guest memory shows after the window's place.
+    ///
+    /// The pages lie in the space, and the page past the space has no record, so it allows nothing.
     pub(crate) fn write_permission_bytes(&self, pages: Range<u64>) {
         let first = pages.start.saturating_sub(1);
-        let end = pages.end.min(SPACE_PAGES);
+        let end = pages.end;
         if first >= end {
             return;
         }
@@ -539,12 +540,10 @@ impl Space {
             (first..end)
                 .filter_map(|page| {
                     let place = records.place(page)?;
-                    let next = if page + 1 < SPACE_PAGES {
-                        records.effective(page + 1)
-                    } else {
-                        Permissions::empty()
-                    };
-                    Some((place, permission_byte(records.effective(page), next)))
+                    Some((
+                        place,
+                        permission_byte(records.effective(page), records.effective(page + 1)),
+                    ))
                 })
                 .collect()
         };
