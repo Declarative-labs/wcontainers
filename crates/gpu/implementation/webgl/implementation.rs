@@ -4,8 +4,9 @@
 //! context of an EGL library (ANGLE's or Mesa's; a test tool only), and in the browser WebGL 2 once the OpenGL ES
 //! crate has an implementation on it. Blocks are applied by difference:
 //! a block is looked at only when its handle changed, and then only GL values that differ are set. The
-//! interface's row 0 is the top: with EXT_clip_control the device draws upper-left; without it, programs
-//! negate y and the front face is swapped.
+//! interface's row 0 is the top: with EXT_clip_control the device draws upper-left where its rasterizer then
+//! keeps Direct3D's top-left rule (a probe at creation); otherwise programs negate y under GL's lower-left
+//! origin and the front face is swapped.
 
 mod caps;
 mod capture;
@@ -687,9 +688,11 @@ pub struct Gl<O: OpenGlEs> {
     next_id: Id,
     /// Frames presented, for [`FRAME_REPORT`].
     presented: u64,
-    /// How shaders are written; without EXT_clip_control programs negate y and the front face is
-    /// swapped.
+    /// How shaders are written; where programs negate y the front face is swapped.
     glsl: shader::GlslSettings,
+    /// Whether EXT_clip_control is there: it sets the clip depth per raster block, and the window
+    /// origin is upper-left where programs write y as given, lower-left where they negate it.
+    clip_control: bool,
     values: GlValues,
     applied: Applied,
     /// The live shaders by their text, so shaders of equal text are one.
@@ -725,6 +728,9 @@ pub struct Gl<O: OpenGlEs> {
     point_sampler: Option<u32>,
     /// Whether blits between textures of one float format keep every bit (the probe at creation).
     float_blits: bool,
+    /// How the device samples 24-bit depth, for [`depth::UNORM24`]: 0 for the nearest float, else the
+    /// float it multiplies the stored value by (the probe at creation).
+    depth24_reciprocal: f32,
     /// The objects the handles name.
     objects: Objects<O::Fence>,
     /// The EGL objects the context lives in, destroyed after every field above.
@@ -732,8 +738,9 @@ pub struct Gl<O: OpenGlEs> {
     held: Option<platform::Held>,
 }
 
-/// A program of `copy_by_draw`, with its uniforms `at` and, into unorm depth, `unit`.
-type CopyProgram = (u32, i32, Option<i32>);
+/// A program of `copy_by_draw`, with its uniforms `at`, into unorm depth `unit`, and from 24-bit depth
+/// `reciprocal24`.
+type CopyProgram = (u32, i32, Option<i32>, Option<i32>);
 
 /// What the back end's own fetch draws read: depth or stencil of a 2D or 2D array texture, or depth
 /// of a cube.
@@ -785,14 +792,8 @@ impl<O: OpenGlEs> Gl<O> {
             extensions.contains("EXT_disjoint_timer_query_webgl2")
                 && platform::timestamp_bits(&gl) > 0,
         );
-        let flip_y = !extensions.contains("EXT_clip_control");
+        let clip_control = extensions.contains("EXT_clip_control");
         let noperspective = extensions.contains(platform::NOPERSPECTIVE_INTERPOLATION);
-        let clip_depth = if flip_y {
-            gles::NEGATIVE_ONE_TO_ONE_EXT
-        } else {
-            let _ = gl.clip_control_ext(gles::UPPER_LEFT_EXT, gles::ZERO_TO_ONE_EXT);
-            gles::ZERO_TO_ONE_EXT
-        };
         gl.pixel_storei(gles::PACK_ALIGNMENT, 1);
         gl.pixel_storei(gles::UNPACK_ALIGNMENT, 1);
         // WebGL 2 always restarts strips at the largest index; GLES has it as a switch.
@@ -800,6 +801,25 @@ impl<O: OpenGlEs> Gl<O> {
         gl.enable(gles::PRIMITIVE_RESTART_FIXED_INDEX);
         let vao = platform::one(|n| gl.gen_vertex_arrays(n)).expect("a vertex array object");
         gl.bind_vertex_array(vao);
+        // With the upper-left origin programs write y as given, unless the rasterizer then follows
+        // the bottom-left rule (the probe); otherwise they negate y under GL's lower-left origin.
+        let edge_probe = if clip_control {
+            probe_upper_left(&gl)
+        } else {
+            Ok(false)
+        };
+        let flip_y = !matches!(edge_probe, Ok(true));
+        let clip_depth = if clip_control {
+            let origin = if flip_y {
+                gles::LOWER_LEFT_EXT
+            } else {
+                gles::UPPER_LEFT_EXT
+            };
+            let _ = gl.clip_control_ext(origin, gles::ZERO_TO_ONE_EXT);
+            gles::ZERO_TO_ONE_EXT
+        } else {
+            gles::NEGATIVE_ONE_TO_ONE_EXT
+        };
         let empty_fragment = gl.create_shader(gles::FRAGMENT_SHADER);
         gl.shader_source(empty_fragment, &[b"#version 300 es\nvoid main() {}\n"]);
         gl.compile_shader(empty_fragment);
@@ -818,6 +838,7 @@ impl<O: OpenGlEs> Gl<O> {
                 flip_y,
                 noperspective,
             },
+            clip_control,
             values: GlValues::initial(clip_depth),
             applied: Applied::new(),
             shaders: HashMap::new(),
@@ -837,14 +858,29 @@ impl<O: OpenGlEs> Gl<O> {
             copy_programs: HashMap::new(),
             point_sampler: None,
             float_blits: false,
+            depth24_reciprocal: 0.0,
             objects: Objects::default(),
             #[cfg(not(target_arch = "wasm32"))]
             held: None,
         };
+        if let Err(log) = edge_probe {
+            own_program_failed(&mut b, format!("webgl: the edge rule probe: {log}"));
+        }
         match probe_depth24(&mut b) {
             Ok(unorm) => b.caps.features.set(Features::DEPTH24_UNORM, unorm),
             Err(log) => {
                 own_program_failed(&mut b, format!("webgl: the 24-bit depth probe: {log}"));
+            }
+        }
+        if b.caps.features.contains(Features::DEPTH24_UNORM) {
+            match probe_depth24_sampling(&mut b) {
+                Ok(reciprocal) => b.depth24_reciprocal = reciprocal,
+                Err(log) => {
+                    own_program_failed(
+                        &mut b,
+                        format!("webgl: the 24-bit depth sampling probe: {log}"),
+                    );
+                }
             }
         }
         match probe_fractional_bias(&mut b) {
@@ -1015,6 +1051,68 @@ fn probe_depth24<O: OpenGlEs>(gpu: &mut Gl<O>) -> Result<bool, String> {
             f32::from_bits(bits[0])
         ))
     }
+}
+
+/// The 24-bit depth sampling probe: a triangle at depth 0.45 drawn into a 1 by 1 `depth24plus` texture
+/// stores some k between 2^22 1.5 and 2^23, fetched as float bits. There v / (2^24 - 1) lies more than
+/// half and at most one float step above k 2^-24, whose last bit is 0, so the nearest float's last bit is
+/// 1; k times the float nearest 1 / (2^24 - 1), which is 2^-24 (1 + 2^-23), lies 1.5 to 2 steps above,
+/// so that product's last bit is 0. Gives [`Gl::depth24_reciprocal`]: 0 for the nearest float, else
+/// that float.
+fn probe_depth24_sampling<O: OpenGlEs>(gpu: &mut Gl<O>) -> Result<f32, String> {
+    let [bits, _] = probe_bias(gpu, Format::Depth24Plus, 0.45, [0.0, 0.0])?;
+    let d = f32::from_bits(bits);
+    if !(0.375..0.5).contains(&d) {
+        return Err(format!("depth {d} for 0.45"));
+    }
+    Ok(if bits & 1 == 1 {
+        0.0
+    } else {
+        (1.0 / 16_777_215.0f64) as f32
+    })
+}
+
+/// The edge rule probe: [`depth::build_edge_probe`]'s triangle drawn with the upper-left origin into a
+/// 4 by 4 `rgba8` renderbuffer. True when it covers texel (0, 0), Direct3D's top-left rule; false when
+/// the rasterizer follows the bottom-left rule there (Mesa's state tracker sets it for an upper-left
+/// origin, st_atom_rasterizer.c). Leaves the program, the framebuffer, the renderbuffer and the
+/// viewport unbound or unknown to the back end's state; the caller sets the origin after.
+fn probe_upper_left<O: OpenGlEs>(gl: &O) -> Result<bool, String> {
+    const N: i32 = 4;
+    let program = depth::build_edge_probe(gl)?;
+    let renderbuffer = platform::one(|n| gl.gen_renderbuffers(n)).ok_or("no renderbuffer")?;
+    gl.bind_renderbuffer(gles::RENDERBUFFER, renderbuffer);
+    gl.renderbuffer_storage(gles::RENDERBUFFER, gles::RGBA8, N, N);
+    let framebuffer = platform::one(|n| gl.gen_framebuffers(n)).ok_or("no framebuffer")?;
+    gl.bind_framebuffer(gles::FRAMEBUFFER, framebuffer);
+    gl.framebuffer_renderbuffer(
+        gles::FRAMEBUFFER,
+        gles::COLOR_ATTACHMENT0,
+        gles::RENDERBUFFER,
+        renderbuffer,
+    );
+    gl.clear_bufferfv(gles::COLOR, 0, &[0.0; 4]);
+    gl.viewport(0, 0, N, N);
+    gl.use_program(program);
+    let _ = gl.clip_control_ext(gles::UPPER_LEFT_EXT, gles::ZERO_TO_ONE_EXT);
+    gl.draw_arrays(gles::TRIANGLES, 0, 3);
+    let mut texel = [0u8; 4];
+    gl.read_pixels(
+        0,
+        0,
+        1,
+        1,
+        gles::RGBA,
+        gles::UNSIGNED_BYTE,
+        PixelPack::Bytes(&mut texel),
+    );
+    gl.use_program(0);
+    gl.delete_program(program);
+    gl.bind_framebuffer(gles::FRAMEBUFFER, 0);
+    gl.delete_framebuffers(&[framebuffer]);
+    gl.bind_renderbuffer(gles::RENDERBUFFER, 0);
+    gl.delete_renderbuffers(&[renderbuffer]);
+    Ok(texel[0] == u8::MAX)
 }
 
 /// The fractional bias probe: a triangle at 0.45 of a step above step 1000 of a 1 by 1
@@ -1585,11 +1683,12 @@ fn copy_by_draw<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent
             return false;
         };
         let built = depth::link(&gpu.gl, &source).and_then(|p| {
-            let (at, unit) = (
+            let (at, unit, reciprocal) = (
                 platform::location(&gpu.gl, p, "at"),
                 platform::location(&gpu.gl, p, "unit"),
+                platform::location(&gpu.gl, p, "reciprocal24"),
             );
-            at.map(|at| (p, at, unit))
+            at.map(|at| (p, at, unit, reciprocal))
                 .ok_or_else(|| "the copy program has no uniform at".to_string())
         });
         match built {
@@ -1617,8 +1716,11 @@ fn copy_by_draw<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent
     ];
     for i in 0..extent.depth_or_layers {
         let fb = texture_framebuffer(gpu, &dst.texture, dst.mip, read_layer(dst, i));
-        let (program, at, unit) = &gpu.copy_programs[&key];
+        let (program, at, unit, reciprocal) = &gpu.copy_programs[&key];
         gpu.gl.use_program(*program);
+        if let Some(r) = reciprocal {
+            gpu.gl.uniform1f(*r, gpu.depth24_reciprocal);
+        }
         gpu.gl.uniform3i(
             *at,
             src.origin.x as i32 - rect[0],
@@ -2112,6 +2214,9 @@ fn fetch<O: OpenGlEs>(
     gpu.gl.use_program(program.program);
     if let Some(location) = &program.scale {
         gpu.gl.uniform1ui(*location, scale);
+    }
+    if let Some(location) = &program.reciprocal {
+        gpu.gl.uniform1f(*location, gpu.depth24_reciprocal);
     }
     gpu.gl.uniform3i(program.at, at[0], at[1], at[2]);
     own_draw_into(gpu, target, [0, 0, size.0, size.1]);
@@ -3403,10 +3508,7 @@ fn draw_from<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, drawn: &D
     if gpu.applied.depth_stencil != drawn.depth_stencil.0.0
         || gpu.applied.stencil_reference != reference
     {
-        if let Err(what) = state::depth_stencil(gl, v, &drawn.depth_stencil.0.1, reference) {
-            unbuilt(gpu, what);
-            return;
-        }
+        state::depth_stencil(gl, v, &drawn.depth_stencil.0.1, reference);
         gpu.applied.depth_stencil = drawn.depth_stencil.0.0;
         gpu.applied.stencil_reference = reference;
     }
@@ -3675,7 +3777,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             AddressMode::Clamp => Ok(gles::CLAMP_TO_EDGE),
             AddressMode::Border => Err(GpuError::Absent(Features::BORDER_COLOR)),
             AddressMode::MirrorOnce if self.caps.features.contains(Features::MIRROR_ONCE) => {
-                Ok(crate::platform::MIRROR_CLAMP_TO_EDGE)
+                Ok(gles::MIRROR_CLAMP_TO_EDGE_EXT)
             }
             AddressMode::MirrorOnce => Err(GpuError::Absent(Features::MIRROR_ONCE)),
         };
@@ -3725,7 +3827,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             // Above 1 only where EXT_texture_filter_anisotropic raised the limit.
             if desc.anisotropy > 1 {
                 let a = f32::from(desc.anisotropy);
-                gl.sampler_parameterf(raw, crate::platform::TEXTURE_MAX_ANISOTROPY_EXT, a);
+                gl.sampler_parameterf(raw, gles::TEXTURE_MAX_ANISOTROPY_EXT, a);
             }
             Ok(raw)
         };
@@ -3897,7 +3999,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             (f(desc.line_width) != 1.0, Features::WIDE_LINES),
             (desc.sample_mask != u32::MAX, Features::SAMPLE_MASK),
             (
-                !desc.depth_minus_one && self.glsl.flip_y,
+                !desc.depth_minus_one && !self.clip_control,
                 Features::CLIP_DEPTH_ZERO_ONE,
             ),
         ];
@@ -3907,7 +4009,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         let number = id(self);
         let made = Handle(Rc::new((
             number,
-            state::GlRaster::new(desc, self.glsl.flip_y),
+            state::GlRaster::new(desc, self.glsl.flip_y, self.clip_control),
         )));
         self.objects.rasters.insert(number, made);
         Ok(Raster(number))

@@ -19,7 +19,32 @@ pub(crate) struct DepthRead {
     /// What a depth of 1 is stored as (65535, 16777215), or 0 to keep a float's bits; None for
     /// stencil.
     pub(crate) scale: Option<i32>,
+    /// The device's conversion of 24-bit depth to a float ([`UNORM24`]); None for stencil.
+    pub(crate) reciprocal: Option<i32>,
 }
+
+/// The 24-bit value stored for depth `d` as sampled, by the device's own conversion: the uniform
+/// `reciprocal24` is 0 where the device samples a stored k as the float nearest k / (2^24 - 1) (as Direct3D
+/// asks), else the float it multiplies k by (llvmpipe: the float nearest 1 / (2^24 - 1)); the back end's
+/// probe at creation sets it. Rounding d (2^24 - 1) alone can be one off either way: in the upper part of
+/// each binade the two conversions give one float for neighbouring values, and the product itself rounds.
+/// So the rounded value and its two neighbours are each converted as the device does, the one giving d's
+/// bits kept (the rounded value where none does). v 2^-24 is exact and v / (2^24 - 1) more than half and
+/// at most one of its float steps above it, so the nearest float is its bits plus one.
+pub(crate) const UNORM24: &str = "uniform highp float reciprocal24;
+uint sampled24(uint c) {
+    if (reciprocal24 != 0.0) return floatBitsToUint(float(c) * reciprocal24);
+    return c == 0u ? 0u : floatBitsToUint(float(c) * exp2(-24.0)) + 1u;
+}
+uint unorm24(float d) {
+    uint e = min(uint(round(d * 16777215.0)), 16777215u);
+    uint bits = floatBitsToUint(d);
+    if (sampled24(e) == bits) return e;
+    if (e > 0u && sampled24(e - 1u) == bits) return e - 1u;
+    if (e < 16777215u && sampled24(e + 1u) == bits) return e + 1u;
+    return e;
+}
+";
 
 /// A triangle covering the target, from the vertex number alone.
 const VERTEX: &str = "#version 300 es
@@ -70,8 +95,10 @@ fn fragment(shape: Shape, stencil: bool) -> String {
         "FETCH.r"
     } else {
         // The product rounds once to the nearest float, which from 2^23 up is the nearest integer:
-        // adding 0.5 before truncating would round again (or not at all, fused).
-        "scale == 0u ? floatBitsToUint(d) : min(uint(round(d * float(scale))), scale)"
+        // adding 0.5 before truncating would round again (or not at all, fused). 24-bit depth is
+        // checked against the device's conversion ([`UNORM24`]).
+        "scale == 0u ? floatBitsToUint(d) : scale == 16777215u ? unorm24(d) \
+         : min(uint(round(d * float(scale))), scale)"
     }
     .replace("FETCH", &fetch);
     format!(
@@ -82,7 +109,7 @@ uniform highp {sampler} src;
 uniform ivec3 at;
 uniform uint scale;
 out highp uvec4 o;
-{towards}void main() {{
+{unorm24}{towards}void main() {{
     ivec2 p = ivec2(gl_FragCoord.xy) + at.xy;
     {fetch}
     o = uvec4({value}, 0u, 0u, 0u);
@@ -93,6 +120,7 @@ out highp uvec4 o;
         } else {
             ""
         },
+        unorm24 = if stencil { "" } else { UNORM24 },
         fetch = if stencil {
             String::new()
         } else {
@@ -116,7 +144,13 @@ pub(crate) fn build(gl: &impl OpenGlEs, shape: Shape, stencil: bool) -> Result<D
     let at =
         platform::location(gl, program, "at").ok_or("the depth read program has no uniform at")?;
     let scale = platform::location(gl, program, "scale");
-    Ok(DepthRead { program, at, scale })
+    let reciprocal = platform::location(gl, program, "reciprocal24");
+    Ok(DepthRead {
+        program,
+        at,
+        scale,
+        reciprocal,
+    })
 }
 
 /// The program writing stencil from an `r8uint` texture, and its uniforms.
@@ -175,6 +209,22 @@ pub(crate) fn build_probe(gl: &impl OpenGlEs) -> Result<(u32, i32), String> {
     let program = link_with(gl, PROBE, ONE)?;
     let z = platform::location(gl, program, "z");
     Ok((program, z.ok_or("the probe program has no uniform z")?))
+}
+
+/// Triangle A of the suite's top-left rule test (in pixels of a 4 by 4 target, (0.5, 0.5), (3.5, 0.5),
+/// (0.5, 3.5) with y down): a top edge and a left edge through pixel centres, drawn as the interface's
+/// row 0 at the top. Under Direct3D's top-left rule it covers texel (0, 0); under the bottom-left rule a
+/// rasterizer may take with GL's upper-left origin, it does not.
+const EDGE_PROBE: &str = "#version 300 es
+void main() {
+    const vec2 corners[3] = vec2[3](vec2(-0.75, 0.75), vec2(0.75, 0.75), vec2(-0.75, -0.75));
+    gl_Position = vec4(corners[gl_VertexID], 0.0, 1.0);
+}
+";
+
+/// Builds the edge rule probe's program, writing 1 into every channel. Err holds GL's log.
+pub(crate) fn build_edge_probe(gl: &impl OpenGlEs) -> Result<u32, String> {
+    link_with(gl, EDGE_PROBE, ONE)
 }
 
 /// Builds the program the stencil bit draws use. Err holds GL's log.

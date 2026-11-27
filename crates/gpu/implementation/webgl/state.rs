@@ -290,15 +290,15 @@ impl GlDepthStencil {
 }
 
 /// The depth and stencil block, with the draw's stencil reference (one for both faces, as WebGL
-/// requires). Err names what is missing where the faces' compare or operations differ: the OpenGL ES
-/// crate has neither glStencilFuncSeparate nor glStencilOpSeparate yet (NEEDED-FROM-API-CRATES.md), so
-/// only both faces at once can be set.
+/// requires). Each face's compare and operations are set apart where they differ
+/// (glStencilFuncSeparate, glStencilOpSeparate); GL's front face is the interface's (the raster block
+/// sets the winding).
 pub(crate) fn depth_stencil(
     gl: &impl OpenGlEs,
     v: &mut GlValues,
     d: &GlDepthStencil,
     reference: u8,
-) -> Result<(), &'static str> {
+) {
     set_if!(v.depth_test, d.depth_func.is_some(), |on| enable(
         gl,
         gles::DEPTH_TEST,
@@ -315,20 +315,28 @@ pub(crate) fn depth_stencil(
         on
     ));
     if let Some(s) = &d.stencil {
-        if s.compare[0] != s.compare[1] || s.ops[0] != s.ops[1] {
-            return Err(
-                "faces of differing stencil compare or operations (glStencilFuncSeparate, glStencilOpSeparate)",
-            );
-        }
-        let func = (s.compare[0], reference, s.read_mask);
-        set_if!(v.stencil_func, [func; 2], |f: [(u32, u8, u8); 2]| gl
-            .stencil_func(f[0].0, i32::from(f[0].1), u32::from(f[0].2)));
-        set_if!(v.stencil_op, [s.ops[0]; 2], |o: [[u32; 3]; 2]| gl
-            .stencil_op(o[0][0], o[0][1], o[0][2]));
+        let funcs = s.compare.map(|c| (c, reference, s.read_mask));
+        set_if!(v.stencil_func, funcs, |f: [(u32, u8, u8); 2]| {
+            if f[0] == f[1] {
+                gl.stencil_func(f[0].0, i32::from(f[0].1), u32::from(f[0].2));
+            } else {
+                for (face, f) in [gles::FRONT, gles::BACK].into_iter().zip(f) {
+                    gl.stencil_func_separate(face, f.0, i32::from(f.1), u32::from(f.2));
+                }
+            }
+        });
+        set_if!(v.stencil_op, s.ops, |o: [[u32; 3]; 2]| {
+            if o[0] == o[1] {
+                gl.stencil_op(o[0][0], o[0][1], o[0][2]);
+            } else {
+                for (face, o) in [gles::FRONT, gles::BACK].into_iter().zip(o) {
+                    gl.stencil_op_separate(face, o[0], o[1], o[2]);
+                }
+            }
+        });
         set_if!(v.stencil_write_mask, s.write_mask, |m: u8| gl
             .stencil_mask(u32::from(m)));
     }
-    Ok(())
 }
 
 /// A raster block as the GL values it stands for.
@@ -341,15 +349,16 @@ pub struct GlRaster {
     fill_lines: bool,
     depth_clamp: bool,
     scissor_test: bool,
-    /// The clip depth convention, where EXT_clip_control sets it.
-    clip_depth: Option<u32>,
+    /// The window origin and the clip depth convention, where EXT_clip_control sets them.
+    clip: Option<(u32, u32)>,
     provoking: u32,
 }
 
 impl GlRaster {
-    /// `flipped` says programs negate y (no EXT_clip_control), which reverses every triangle's winding
-    /// in window space. `create_raster` has refused what the context lacks.
-    pub fn new(d: &RasterDesc, flipped: bool) -> GlRaster {
+    /// `flipped` says programs negate y (under GL's lower-left origin), which reverses every triangle's
+    /// winding in window space; `clip_control` that EXT_clip_control sets the origin and the clip depth.
+    /// `create_raster` has refused what the context lacks.
+    pub fn new(d: &RasterDesc, flipped: bool, clip_control: bool) -> GlRaster {
         let ccw = (d.front == FrontFace::CounterClockwise) != flipped;
         let bias = f32::from_bits(d.depth_bias);
         let slope = f32::from_bits(d.depth_bias_slope);
@@ -365,11 +374,18 @@ impl GlRaster {
             fill_lines: d.fill == FillMode::Line,
             depth_clamp: !d.depth_clip,
             scissor_test: d.scissor,
-            clip_depth: (!flipped).then_some(if d.depth_minus_one {
-                gles::NEGATIVE_ONE_TO_ONE_EXT
-            } else {
-                gles::ZERO_TO_ONE_EXT
-            }),
+            clip: clip_control.then_some((
+                if flipped {
+                    gles::LOWER_LEFT_EXT
+                } else {
+                    gles::UPPER_LEFT_EXT
+                },
+                if d.depth_minus_one {
+                    gles::NEGATIVE_ONE_TO_ONE_EXT
+                } else {
+                    gles::ZERO_TO_ONE_EXT
+                },
+            )),
             provoking: match d.provoking {
                 ProvokingVertex::First => gles::FIRST_VERTEX_CONVENTION,
                 ProvokingVertex::Last => gles::LAST_VERTEX_CONVENTION,
@@ -442,9 +458,9 @@ pub(crate) fn raster(gl: &impl OpenGlEs, v: &mut GlValues, r: &GlRaster) {
         gles::SCISSOR_TEST,
         on
     ));
-    if let Some(depth) = r.clip_depth {
+    if let Some((origin, depth)) = r.clip {
         set_if!(v.clip_depth, depth, |depth| {
-            let _ = gl.clip_control_ext(gles::UPPER_LEFT_EXT, depth);
+            let _ = gl.clip_control_ext(origin, depth);
         });
     }
     set_if!(v.provoking, r.provoking, |mode| {
@@ -552,7 +568,7 @@ pub(crate) fn plain(gl: &impl OpenGlEs, v: &mut GlValues, rect: [i32; 4]) {
 pub(crate) fn clip_distances(gl: &impl OpenGlEs, v: &mut GlValues, n: u8) {
     let held = v.clip_distances;
     for i in n.min(held)..n.max(held) {
-        enable(gl, crate::platform::CLIP_DISTANCE0 + u32::from(i), i < n);
+        enable(gl, gles::CLIP_DISTANCE0_EXT + u32::from(i), i < n);
     }
     v.clip_distances = n;
 }
@@ -645,10 +661,10 @@ pub(crate) fn factor(f: BlendFactor) -> u32 {
         BlendFactor::OneMinusConstant => gles::ONE_MINUS_CONSTANT_COLOR,
         BlendFactor::ConstantAlpha => gles::CONSTANT_ALPHA,
         BlendFactor::OneMinusConstantAlpha => gles::ONE_MINUS_CONSTANT_ALPHA,
-        BlendFactor::Src1 => crate::platform::SRC1_COLOR,
-        BlendFactor::OneMinusSrc1 => crate::platform::ONE_MINUS_SRC1_COLOR,
-        BlendFactor::Src1Alpha => crate::platform::SRC1_ALPHA,
-        BlendFactor::OneMinusSrc1Alpha => crate::platform::ONE_MINUS_SRC1_ALPHA,
+        BlendFactor::Src1 => gles::SRC1_COLOR_EXT,
+        BlendFactor::OneMinusSrc1 => gles::ONE_MINUS_SRC1_COLOR_EXT,
+        BlendFactor::Src1Alpha => gles::SRC1_ALPHA_EXT,
+        BlendFactor::OneMinusSrc1Alpha => gles::ONE_MINUS_SRC1_ALPHA_EXT,
     }
 }
 

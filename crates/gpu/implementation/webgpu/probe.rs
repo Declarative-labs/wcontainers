@@ -42,6 +42,15 @@ pub(crate) enum Depth24 {
 }
 
 impl Depth24 {
+    /// Whether the device samples stored 24-bit depth k as k times the float nearest 1 / (2^24 - 1),
+    /// 2^-24 (1 + 2^-23), rather than as the float nearest k / (2^24 - 1). The biased probe stores k
+    /// between 2^20 1.5 and 2^21, where k 2^-24's last bit is 0: the quotient lies more than half and
+    /// at most one float step above it, so the nearest float's last bit is 1; the product lies 1.5 to 2
+    /// steps above, so its last bit is 0.
+    pub(crate) fn sampled_by_product(self) -> bool {
+        matches!(self, Depth24::Unorm(read) if read.to_bits() & 1 == 0)
+    }
+
     /// Reads the answer: the depth 0.1 lands on, biased by one unit.
     pub(crate) fn of(read: f32) -> Depth24 {
         let base = PROBE_DEPTH;

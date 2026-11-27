@@ -992,14 +992,15 @@ fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource
             SIGNED_BITS_TEXTURE,
             depth_of_float_bits("bitcast<u32>(v.x)"),
         ),
-        // x / (2^24 - 1) is x 2^-24 (1 + 2^-24 + ...): both products are exact and their sum
-        // rounds once, nearest to the quotient, where WGSL's division may be 2.5 ulp off.
+        // x / (2^24 - 1) is x 2^-24 (exact) and a remainder of more than half and at most one of
+        // that float's steps, so the nearest float is x 2^-24's bits plus one (zero stays zero). In
+        // integers, so that no compiler regroups a sum of products (Mesa makes x (2^-24 + 2^-48) of
+        // one, whose sum rounds to 2^-24, one step low); WGSL's division may be 2.5 ulp off.
         DepthSource::Unorm24 => (
             "texture_2d<u32>",
             format!(
-                "f32(v.x & {UNORM24_MAX}u) * 0x1p-{UNORM24_BITS}f \
-                 + f32(v.x & {UNORM24_MAX}u) * 0x1p-{}f",
-                2 * UNORM24_BITS
+                "bitcast<f32>(bitcast<u32>(f32(v.x & {UNORM24_MAX}u) * 0x1p-{UNORM24_BITS}f) \
+                 + select(0u, 1u, (v.x & {UNORM24_MAX}u) != 0u))"
             ),
         ),
         DepthSource::Unorm16 => ("texture_2d<u32>", format!("f32(v.x) / {}.0", u16::MAX)),
@@ -1260,25 +1261,61 @@ pub(crate) fn aspect_by_draw(
     }
 }
 
+/// The 24-bit value stored for a sampled depth `d`, by the device's own conversion: `{SAMPLED}` is the
+/// float the device gives for a stored `c`. Rounding d (2^24 - 1) alone can be one off either way: in the
+/// upper part of each binade the nearest float and a product with the rounded reciprocal give one float
+/// for neighbouring values, and the product itself rounds. So the rounded value and its two neighbours
+/// are each converted as the device does, the one giving d's bits kept (the rounded value where none does).
+const UNORM24_READ: &str = "fn sampled24(c: u32) -> u32 {
+    return {SAMPLED};
+}
+fn unorm24(d: f32) -> u32 {
+    let e = min(u32(round(d * {MAX}.0)), {MAX}u);
+    let bits = bitcast<u32>(d);
+    if (sampled24(e) == bits) { return e; }
+    if (e > 0u && sampled24(e - 1u) == bits) { return e - 1u; }
+    if (e < {MAX}u && sampled24(e + 1u) == bits) { return e + 1u; }
+    return e;
+}
+";
+
+/// The float a device sampling stored 24-bit depth `c` as the float nearest c / (2^24 - 1) gives (as
+/// Direct3D asks): c 2^-24 is exact and the quotient more than half and at most one of its float steps
+/// above it, so the nearest float is its bits plus one.
+const SAMPLED_NEAREST: &str = "select(bitcast<u32>(f32(c) * 0x1p-24f) + 1u, 0u, c == 0u)";
+/// The float a device sampling stored 24-bit depth `c` as c times the float nearest 1 / (2^24 - 1),
+/// 2^-24 (1 + 2^-23), gives (llvmpipe and lavapipe).
+const SAMPLED_PRODUCT: &str = "bitcast<u32>(f32(c) * 0x1.000002p-24f)";
+
 fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat) -> DepthProgram {
     let cover = cover(gpu);
     // The conversions are exact: a unorm value stored as the nearest float is within half a
-    // step of its integer after one correctly rounded multiply.
+    // step of its integer after one correctly rounded multiply; 24-bit depth is checked against
+    // the device's own conversion, which the probe at creation found.
+    let mut functions = String::new();
     let (texture, value) = match read {
         AspectRead::Unorm16 => (
             "texture_2d<f32>",
             format!("u32(round(v.x * {}.0))", u16::MAX),
         ),
-        AspectRead::Unorm24 => (
-            "texture_2d<f32>",
-            format!("u32(round(v.x * {UNORM24_MAX}.0))"),
-        ),
+        AspectRead::Unorm24 => {
+            let sampled = if gpu.depth24_by_product {
+                SAMPLED_PRODUCT
+            } else {
+                SAMPLED_NEAREST
+            };
+            functions = UNORM24_READ
+                .replace("{SAMPLED}", sampled)
+                .replace("{MAX}", &UNORM24_MAX.to_string());
+            ("texture_2d<f32>", "unorm24(v.x)".to_string())
+        }
         AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)".into()),
         AspectRead::Stencil => ("texture_2d<u32>", "v.x".into()),
     };
     let source = format!(
         "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
          @group(0) @binding(1) var src: {texture};\n\
+         {functions}\
          @fragment fn read(@builtin(position) p: vec4f) -> @location(0) vec4<u32> {{\n\
              let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
              return vec4<u32>({value}, 0u, 0u, 0u);\n\

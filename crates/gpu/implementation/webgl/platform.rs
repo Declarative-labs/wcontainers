@@ -76,19 +76,6 @@ pub const SAMPLE_VARIABLES: &str = "OES_sample_variables";
 /// The WebGL extension giving GLSL's `sample` qualifier.
 pub const MULTISAMPLE_INTERPOLATION: &str = "OES_shader_multisample_interpolation";
 
-/// Values of extensions the back end uses that the OpenGL ES crate's constants do not carry yet, from Khronos's
-/// gl.xml (asked of that crate in NEEDED-FROM-API-CRATES.md): EXT_clip_cull_distance's first clip distance,
-/// EXT_texture_filter_anisotropic's two names, EXT_texture_mirror_clamp_to_edge's mode and
-/// EXT_blend_func_extended's four factors.
-pub(crate) const CLIP_DISTANCE0: u32 = 0x3000;
-pub(crate) const TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84FE;
-pub(crate) const MAX_TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84FF;
-pub(crate) const MIRROR_CLAMP_TO_EDGE: u32 = 0x8743;
-pub(crate) const SRC1_COLOR: u32 = 0x88F9;
-pub(crate) const SRC1_ALPHA: u32 = 0x8589;
-pub(crate) const ONE_MINUS_SRC1_COLOR: u32 = 0x88FA;
-pub(crate) const ONE_MINUS_SRC1_ALPHA: u32 = 0x88FB;
-
 /// The extensions the back end uses that the context has, by WebGL name, less those switched off.
 pub(crate) fn extensions(have: &BTreeSet<String>, off: &[&str]) -> BTreeSet<&'static str> {
     EXTENSIONS

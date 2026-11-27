@@ -130,7 +130,7 @@ pub(crate) fn caps(
         // Lines are drawn 1 wide (WIDE_LINES is absent), whatever range GL has.
         max_line_width: 1.0,
         max_anisotropy: if anisotropic {
-            platform::float(gl, platform::MAX_TEXTURE_MAX_ANISOTROPY_EXT) as u16
+            platform::float(gl, gles::MAX_TEXTURE_MAX_ANISOTROPY_EXT) as u16
         } else {
             1
         },

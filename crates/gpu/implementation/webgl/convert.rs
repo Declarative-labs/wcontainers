@@ -24,6 +24,9 @@ enum Kind {
     DepthFloat,
 }
 
+/// The bits of 24-bit unorm depth.
+const UNORM24_BITS: u32 = 24;
+
 /// A format's kind and the width in bits of each of its four components.
 fn bits(format: Format) -> Option<(Kind, [u32; 4])> {
     use Format as F;
@@ -48,7 +51,7 @@ fn bits(format: Format) -> Option<(Kind, [u32; 4])> {
         F::Rg11b10Float => Some((SmallFloat, [11, 11, 10, 0])),
         F::Depth16Unorm => n(Depth(16), 16),
         // A buffer's 24-bit depth is a 32-bit word.
-        F::Depth24Plus | F::Depth24PlusStencil8 => n(Depth(24), 32),
+        F::Depth24Plus | F::Depth24PlusStencil8 => n(Depth(UNORM24_BITS), 32),
         F::Depth32Float | F::Depth32FloatStencil8 => n(DepthFloat, 32),
         _ => None,
     }
@@ -76,8 +79,9 @@ fn uvec(w: [u32; 4], f: impl Fn(u32) -> u64) -> String {
 }
 
 /// The uniform `unit` of a program writing the unorm depth of `format`, stored in b bits: 2^-b and
-/// 2^-2b, whose products with a stored value v add up to v / (2^b - 1) rounded once (a division
-/// would round twice on GPUs whose divide is a reciprocal and a product). None for other formats.
+/// 2^-2b, whose products with a stored value v add up to v / (2^b - 1) rounded once for 16 bits (a
+/// division would round twice on GPUs whose divide is a reciprocal and a product); 24-bit depth
+/// takes the first alone ([`program`]). None for other formats.
 pub(crate) fn depth_unit(format: Format) -> Option<[f32; 2]> {
     match bits(format)?.0 {
         Kind::Depth(b) => {
@@ -94,7 +98,8 @@ pub(crate) fn depth_unit(format: Format) -> Option<[f32; 2]> {
 /// GL ES lacks) or `dst` cannot be drawn into. From a signed normalised format the bits are exact
 /// only where it holds no smallest value (-128 samples as -127 does); into one, never (a draw writes
 /// -127 for -1), so it is refused.
-/// Into a depth format the program writes depth only, from the uniform `unit` where it is unorm.
+/// Into a depth format the program writes depth only, from the uniform `unit` where it is unorm. From
+/// 24-bit depth it reads the uniform `reciprocal24` ([`crate::depth::UNORM24`]).
 pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
     let (from, wf) = bits(src)?;
     let (to, wt) = bits(dst)?;
@@ -120,12 +125,19 @@ pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String>
     } else {
         Default::default()
     };
-    let towards = [towards, srgb].concat();
+    let unorm24 = if from == Kind::Depth(UNORM24_BITS) {
+        crate::depth::UNORM24
+    } else {
+        ""
+    };
+    let towards = [towards, srgb, unorm24].concat();
     let half = |c: &str| format!("half_bits(v.{c})");
     let decode = match from {
         Kind::Unorm => format!("uvec4(v * vec4({max}) + 0.5)"),
         Kind::Srgb => SRGB_BITS.into(),
-        // Rounded once, as the depth read back by draw is.
+        // As the depth read back by draw is: 24-bit depth checked against the device's conversion,
+        // narrower depth rounded once.
+        Kind::Depth(UNORM24_BITS) => "uvec4(unorm24(v.x), 0u, 0u, 0u)".into(),
         Kind::Depth(b) => {
             let one = (1u64 << b) - 1;
             format!("uvec4(min(uint(round(v.x * {one}.0)), {one}u))")
@@ -159,6 +171,19 @@ pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String>
                 _ => format!("vec4(r) / vec4({max})"),
             },
         ),
+        // v / (2^24 - 1) is v 2^-24 (exact) and a remainder of more than half and at most one of
+        // that float's steps, so the nearest float is v 2^-24's bits plus one (zero stays zero). In
+        // integers, so that no compiler regroups the sum below (Mesa makes v (2^-24 + 2^-48) of it,
+        // whose sum rounds to 2^-24, one step low).
+        Kind::Depth(UNORM24_BITS) => (
+            "",
+            format!(
+                "uintBitsToFloat(floatBitsToUint(float(r.x & {max}u) * unit.x) \
+                 + uint((r.x & {max}u) != 0u))",
+                max = (1u64 << UNORM24_BITS) - 1
+            ),
+        ),
+        // 2^-16 + 2^-32 is a float, so no regrouping rounds it.
         Kind::Depth(b) => (
             "",
             format!(

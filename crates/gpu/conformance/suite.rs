@@ -2162,6 +2162,131 @@ pub fn stencil_operations_and_tests<B: Gpu>(mut b: B) {
     ok(&mut b);
 }
 
+/// Each face of a block takes its own stencil compare and operations: a strip over the left half and
+/// one over the right, wound opposite ways, drawn with one block whose front face replaces the stencil
+/// with the reference (5) and whose back face increments it (to 1), then read by draws over the whole
+/// target that pass where it equals 5 (red) and where it equals 1 (green). The right strip is
+/// counter-clockwise as its positions are given (y up), the front face; the left one the back.
+pub fn each_face_takes_its_own_stencil_operations<B: Gpu>(mut b: B) {
+    const N: u32 = 4;
+    needs(&b, Format::Depth24PlusStencil8, FormatUse::DEPTH_STENCIL);
+    let (t, v) = rgba8_target(&mut b, N);
+    let st = texture(
+        &mut b,
+        Format::Depth24PlusStencil8,
+        (N, N),
+        1,
+        1,
+        TextureUsage::RENDER,
+    );
+    let sv = view(&mut b, &st, Format::Depth24PlusStencil8);
+    let vb = vertex_buffer(
+        &mut b,
+        &[
+            -1.0, -1.0, -1.0, 1.0, 0.0, -1.0, 0.0, 1.0, // left half
+            0.0, -1.0, 1.0, -1.0, 0.0, 1.0, 1.0, 1.0, // right half, wound the other way
+            -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, // all
+        ],
+    );
+    let p = program(&mut b, CONSTANT, "vs", "fs");
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let face = |compare, pass| StencilFace {
+        compare,
+        fail: StencilOp::Keep,
+        depth_fail: StencilOp::Keep,
+        pass,
+    };
+    let block = |b: &mut B, front, back| {
+        b.create_depth_stencil(&DepthStencilDesc {
+            depth_compare: None,
+            depth_write: false,
+            stencil: Some((front, back)),
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: None,
+        })
+        .expect("create_depth_stencil")
+    };
+    let writes = |b: &mut B, writes| {
+        blend(
+            b,
+            RenderTargetBlend {
+                blend: None,
+                writes,
+            },
+        )
+    };
+    let two_sided = block(
+        &mut b,
+        face(CompareFn::Always, StencilOp::Replace),
+        face(CompareFn::Always, StencilOp::IncrementClamp),
+    );
+    let equal = face(CompareFn::Equal, StencilOp::Keep);
+    let equal = block(&mut b, equal, equal);
+    let none = writes(&mut b, ColorWrites::empty());
+    let red = writes(&mut b, ColorWrites::R);
+    let green = writes(&mut b, ColorWrites::G);
+    let mut pass = color_pass::<B>(&v, LoadOp::Clear(f32_bits([0.0, 0.0, 0.0, 1.0])));
+    pass.depth = Some(DepthAttachment {
+        view: &sv,
+        depth: Some(AspectOps {
+            load: LoadOp::Clear(1.0f32.to_bits()),
+            store: StoreOp::Discard,
+            read_only: false,
+        }),
+        stencil: Some(AspectOps {
+            load: LoadOp::Clear(0),
+            store: StoreOp::Discard,
+            read_only: false,
+        }),
+    });
+    b.begin_pass(&pass);
+    // (block, writes, reference, first vertex)
+    let draws = [
+        (&two_sided, &none, 5, 0),
+        (&two_sided, &none, 5, 4),
+        (&equal, &red, 5, 8),
+        (&equal, &green, 1, 8),
+    ];
+    for (ds, bl, reference, first) in draws {
+        b.draw(&DrawCall {
+            stencil_reference: [reference; 2],
+            ..call(
+                &p,
+                bl,
+                ds,
+                &rs,
+                &vl,
+                &streams,
+                &vp,
+                Topology::TriangleStrip,
+                vertices(first, 4),
+            )
+        });
+    }
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let mut expected = Vec::new();
+    for _ in 0..N {
+        for x in 0..N {
+            // CONSTANT's colour through the green or the red channel alone.
+            expected.extend_from_slice(&if x < N / 2 {
+                [0, 217, 0, 255]
+            } else {
+                [64, 0, 0, 255]
+            });
+        }
+    }
+    assert_close(&got, &expected, 0, 4, N as usize);
+    ok(&mut b);
+}
+
 /// Primitives are clipped where z < 0 (the clip volume's near side, depth from 0 to 1), and the depth
 /// written is the viewport's depth range applied to z: a quad whose z runs from -0.5 on the left to
 /// 0.5 on the right, drawn with depths 0.25 to 0.75, covers only the right half, at 0.25 + z / 2.
@@ -7215,6 +7340,11 @@ macro_rules! tests {
         #[test]
         fn stencil_operations_and_tests() {
             $crate::stencil_operations_and_tests($value);
+        }
+
+        #[test]
+        fn each_face_takes_its_own_stencil_operations() {
+            $crate::each_face_takes_its_own_stencil_operations($value);
         }
 
         #[test]

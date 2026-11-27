@@ -111,7 +111,8 @@ pub struct Linked {
 /// What the context's GLSL ES 3.00 takes beyond the core language, and how the picture is turned.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GlslSettings {
-    /// Without EXT_clip_control the last vertex stage negates y as its last step, so row 0 is the
+    /// Under GL's lower-left origin (no EXT_clip_control, or a rasterizer that keeps the bottom-left
+    /// rule with the upper-left one) the last vertex stage negates y as its last step, so row 0 is the
     /// top of the picture on both origin routes.
     pub flip_y: bool,
     /// NV_shader_noperspective_interpolation's `noperspective`, which linear values take where the

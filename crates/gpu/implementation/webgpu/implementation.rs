@@ -115,6 +115,9 @@ pub struct WebGpu {
     /// What the probe of how `depth24plus` is stored found, which the unit tests read.
     #[cfg(test)]
     depth24: Depth24,
+    /// Whether the device samples stored 24-bit depth as a product with a rounded reciprocal rather than as the
+    /// nearest float ([`Depth24::sampled_by_product`]), which the 24-bit depth read checks against.
+    depth24_by_product: bool,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
     float_clears: bool,
     /// Texture reads into a buffer at an offset off Direct3D 12's placement alignment overwrite
@@ -855,6 +858,7 @@ impl WebGpu {
             resolved_by_draw,
             #[cfg(test)]
             depth24,
+            depth24_by_product: depth24.sampled_by_product(),
         }
     }
 
