@@ -1,5 +1,11 @@
 # Status: graphics implementations
 
+**Before any build of a fresh clone:** run `git submodule update --init --recursive` (or fill
+`crates/shader-converters/implementation/linked/dxbc-spirv` and `dxil-spirv`, with dxil-spirv's spirv-headers, from a
+local copy at the same commits: dxbc-spirv 6196cc6c, dxil-spirv 510991e7, spirv-headers c63848ec). Without them every
+target that needs `wcontainers-shader-converters-linked` stops in its build script ("dxbc-spirv is missing"), which
+looks like a failure of this track's code and is not.
+
 The brief is orchestrator/restart-2026-11-25/brief-graphics-implementations.md in the scratch folder. Logs of every
 run named here are in the scratch folder graphics-implementations/.
 
@@ -1554,6 +1560,158 @@ stage constants now equal the Mesa compiler suite's `GEOMETRY`/`STAGES` (crates 
   the G1 to G9 answers; nir's 56 on A6 and A7; GI4 and the window question on the owner.
 - Not done: the hostile-guest suite (none exists; the thread-test design review is still owed to the owner).
 
+## The fifteenth run (2026-11-27): the exact 24-bit depth checks, opengl onto the Gallium trait
+
+Logs in the scratch folder graphics-implementations/r15/ (at-<commit>-<machine>.log: measurements at pushed commits;
+tools/r15-job.sh with STEPS, its `mutate` step applying each plant alone in the job's copy and its `opengl` step;
+tools/collisions.py). Every x86 job passed `--jobs 12`. Claims at a commit were run from a clean worktree of that pushed
+commit (its submodules filled from the local copies at the same commits).
+
+### His main
+
+- `git fetch /Users/thomaseaton/Documents/GitHub/wcontainers main` gives ac696ea19, already in the branch
+  (`merge-base --is-ancestor` exit 0): nothing to merge. No owner interface file changed by this run's commits.
+
+### Commits (all pushed)
+
+- 2cc5a8bd5: the shared suite reads 24-bit depth back bit for bit where a back end reports `DEPTH24_UNORM`
+  (`a_copy_within_one_depth_or_stencil_subresource_moves_the_region` and
+  `depth_copies_through_buffers_keep_their_pitches_and_values`); one step of 2^-24 is still accepted where depth is
+  stored as float. The property is the interface's: format.rs:72 (24-bit depth "stored as 24-bit unsigned normalised
+  where DEPTH24_UNORM"), resource.rs:374 (a read back or buffer copy moves depth "in four bytes (32-bit float, or
+  24-bit unorm in the low bits of a word)") and interface.rs:350 to 352 (buffer bytes into 24-bit depth "are 24-bit
+  unorm in the low bits of a 32-bit word"). No interface file changed.
+- 8e954bd88: that test names every word that came back otherwise. This commit also brought crates/gallium from
+  origin/graphics-api-crates f3af6417f byte for byte (staged before it; its message does not say so).
+- b5c186282: the copy within one depth subresource writes, for 24-bit depth, words a nearest-word read or copy gets
+  one off (`DEPTH24_COPIED`: 0x7fffff, 0xc00000 and others) instead of eighths, and names every texel that came back
+  otherwise. f2152bc7a: rustfmt's layout of one assertion.
+- e2d978f32, dddbc6ca0, 441ef6514: opengl onto the Gallium trait (below).
+
+### (1) The weak test, measured (both machines alike unless named)
+
+| at | test | x86-64 | ARM64 |
+|---|---|---|---|
+| de60c7c76 (before) | webgpu plant "unorm24 read rounded" against the shared suite on lavapipe | survives: 74 passed, 1 failed (16-bit floats, known) | (x86 only) |
+| 2cc5a8bd5 | webgl on Mesa (17 + shared 75) | 91 passed, 1 failed | the same |
+| 2cc5a8bd5 | webgpu on lavapipe | 156 passed, 4 failed, 4 ignored (the three known and the depth word test) | the same |
+| 2cc5a8bd5 | shared suite in headless Chrome 155 (SwiftShader) | 75 passed, 0 failed | the same |
+| 2cc5a8bd5 | shaders; recording, gpu, trace | 158 (5 ignored); 349 | the same |
+
+The new failure on the unplanted code is one word: `Depth24Plus words in the buffer: ["layer 0 row 2 column 1:
+0xffffff, not 0xfffffe"]`, on webgl over llvmpipe and webgpu over lavapipe, both machines. Cause (INFERRED, computed
+by tools/collisions.py over all 2^24 words with the product the back ends' comment gives for these devices,
+f32(c) * f32(2^-24 (1 + 2^-23))): exactly one pair of neighbouring stored words samples to one float, 0xfffffe and
+0xffffff (both 1.0). Both back ends read 24-bit depth by sampling it (no API of theirs copies it out), so no read can
+tell those two apart on these devices: the back ends do not meet the interface's read-back-as-written for that one
+word there. SwiftShader samples by the nearest float and passes. This is a property of the devices' sampling, not of
+the test; the test keeps the word and names it (the suite's doc says so), so on Mesa it fails on that word alone. For
+the owner (not changed here): either a listed loss in the interface for 24-bit depth read by sampling on such
+devices, or a back end route that reads depth without sampling.
+
+The plants, each applied alone (`mutate`), at b5c186282 on both machines, every result alike:
+
+| plant | a_copy_within_one_depth... | depth_copies_through_buffers... (words wrong) | verdict |
+|---|---|---|---|
+| none (webgl), none (webgpu) | passes | fails: 0xfffffe only | baseline |
+| webgl depth.rs: plain rounding instead of unorm24 | **fails** (texels 0 to 3) | fails: 0x7fffff, 0xfffffe, 0xc00000 | killed |
+| webgl: depth24_reciprocal forced to 0 | **fails** | fails: the same three | killed |
+| webgl convert.rs: plain rounding in the copy program's 24-bit read | passes | fails: 0xfffffe only | survives |
+| webgpu fill.rs: unorm24 returns the plain rounding (shared suite) | **fails** | fails: the same three | killed |
+| the same, webgpu's whole package | also its own unit_tests::copies (2 tests) | | killed |
+
+So two of the three plants the check found now fail a test that passes without them (and, at 8e954bd88 before the
+copy test changed, they already failed the word test with two more words than the baseline, MEASURED on x86-64). The
+convert.rs plant survives every test on both machines (READ, why): webgl copies a same-format depth region by
+`blit_same` (implementation.rs:5885) and within one subresource through a buffer (`copy_within`, :5879 and :1758); a
+24-bit depth texture has no colour partner the interface lets it copy to (the recorder's `bits_group`,
+recording/texel.rs:225), so convert.rs:140's 24-bit source arm is reached by no call of the suite on Mesa; and in
+Chrome, which samples by the nearest float, plain rounding is already exact, so the plant changes no value there either
+(INFERRED). No device available here can tell it apart; reported, not changed (the order: fix the test, not the code).
+
+The webgpu side had the same hole: at de60c7c76 the rounded webgpu read passed the whole shared suite on lavapipe
+(74 of 75, the one failure the known 16-bit floats); its own unit tests (unit_tests::copies) caught it. Now the shared
+suite catches it too.
+
+### (2) opengl onto the Gallium trait, compile-only
+
+Done so far, each moved off the bindings (not duplicated): the driver implements `Gallium` (`Driver<B>`) and
+`GalliumContext` (`DriverContext<B>`) in safe Rust under `forbid` (crates/opengl/src/driver.rs); the blend, depth and
+stencil, rasterizer, sampler and vertex element states (states.rs, kinds as `Arc`s whose blocks go back to the back end
+when the last holder drops them); their binds and deletes; blend colour, stencil reference, sample mask, scissor,
+viewport, patch vertices, clip (ignored, as before), polygon stipple; the reset status (guest.rs: the guest-call
+machinery keyed by context, used by the old code too); barriers; the screen's names, format support, context creation
+and slow-path report; resources and their buffer and texture maps, unmaps, flushes and subdata (resources.rs, the
+trait's `Resource` and `Mapping` kinds). Gallium's values come from the bindings' constants alone (build.rs writes
+pipe_values.rs: `pub const` lines and C number types, 0 `unsafe`; src/pipe.rs). Kinds not yet moved are an uninhabited
+`Unmoved`; a call that would make one is refused by name. The trait was taken at each tip: f3af6417f, then b06f8f476
+(origin 33eb398e1: counted kinds as `&Arc`, `begin_query -> Result`, client bytes carried, Mesa's own pointers gone),
+with crates/mesa-compiler at the same tip.
+
+| at (pushed) | errors, `cargo check --all-targets -p wcontainers-opengl`, Mesa on, x86-64 / ARM64 | of them unsafe | opengl lines naming `unsafe` (count-unsafe.sh) |
+|---|---|---|---|
+| de60c7c76 (start) | 1,506 / 1,505 | 1,497 / 1,496 | 354 |
+| e2d978f32 (states, setters, screen calls) | 1,458 / 1,457 | 1,449 / 1,448 | 306 |
+| dddbc6ca0 (trait at b06f8f476) | 1,456 (dev check, x86) | 1,449 | 306 |
+| 441ef6514 (resources and maps) | 1,423 / 1,422 | 1,414 / 1,413 | 271 |
+
+Of the 1,423 at 441ef6514, 1,144 are in the bindings bindgen writes (OUT_DIR/gallium.rs, used by the modules not yet
+moved), the rest in those modules (state.rs 58, draw.rs 48, view.rs 35, context.rs 31, query.rs 25, stream.rs 19,
+blit.rs 18, resource.rs 16, screen.rs 13, indices.rs 8, compute.rs 4, present.rs 2); none in driver.rs, states.rs,
+resources.rs, guest.rs, pipe.rs, format.rs, packed.rs. Without Mesa opengl checks (exit 0); `wcontainers-gallium`
+checks (exit 0). At 441ef6514 also: nir `--lib --test route --test hostile_compiler` 42 passed and
+mesa-compiler-direct 5 passed on both machines (the Mesa compiler's glue changed with the tip); Cargo.lock 85577b9eeb628013
+on both machines before and after (the gallium package and opengl's two new edges). Clippy cannot run on opengl with
+Mesa while the unmoved modules fail; `cargo fmt --check` of opengl exits 0. crates/gallium as the API track wrote it
+does not pass `cargo fmt --check` (generated; not changed here).
+
+What the trait cannot express yet, written at once to NEEDED-FROM-API-CRATES.md, "Fifteenth run": **G10 (new)**: the
+generator dropped `pipe_sampler_state.min_lod` (p_state.h:487 declares `float min_lod, max_lod;`; interface.rs
+`SamplerState` has `max_lod` only), so every sampler is refused by name (states.rs `min_lod`); **G5**: no capabilities
+(the screen cannot report `prefer_real_buffer_in_constbuf0` or anything else); **the values**: the trait names no
+PIPE_* constant; **G4**: no format description and no `u_default_texture_subdata` (multisampled subdata refused).
+
+G9 measured on our side (READ, the pinned Mesa source): today the driver reports neither `prefer_real_buffer_in_constbuf0`
+nor `user_vertex_buffers` (fill_caps sets neither, `u_init_pipe_screen_caps` neither), and Mesa 26.3.1 has no
+capability for user indices at all; so st/mesa passes constant buffer 0 as `user_buffer` (st_atom_constbuf.c:124 and
+:182) and client indices as `index.user` (main/draw.c:1662 to 1674, 2043 to 2077), and uploads client vertex arrays
+itself (st_atom_array.cpp:431 to 506). The API track's trace (MEASURED there) agrees, and the trait at b06f8f476
+carries both as bytes.
+
+Next for the port, in order: the framebuffer and clears (context.rs), sampler views (view.rs), shaders and their
+variants (the rest of state.rs, on the stage-typed received programs), queries (query.rs), stream output (stream.rs),
+then draw.rs, blit.rs (G4's blitter), present.rs (G7); the screen's caps on G5.
+
+Linter (da55b9d7, x86-64, no model key; at 441ef6514 with this page's draft; r15/lint/lint.err against
+r14/at-17faff388-x86/lint.err): total 85,330 to 85,662. Ours: opengl 1,329 to 1,464 (the moved code's text rules:
+magic_literal 337 to 381, function_summary_not_third_person 249 to 270, summary_not_one_line 255 to 277,
+summary_unanswered 18 to 35 waiting on the model's answers, stray_source 19 to 24 for the new files, which the crate's
+old layout raises for every file; constant_defined_twice 0 to 2, both fixed in the closing commit: `COLOR_CHANNELS`
+now derived from the trait's `BlendColor`, build.rs's `STATEMENT_END` renamed `VALUE_END`); gpu 16,403 to 16,412 (the
+suite's new words and messages: magic_literal +5, the rest one each). Brought in byte for byte: gallium 0 to 233,
+mesa-compiler 955 to 910. The text findings of the moved code are left for when the port is whole, as the brief orders
+the text rules after the moves.
+
+### (3) Direct3D
+
+origin/graphics-api-crates-direct3d a830d8964 brought the Direct3D 11, DXGI, d3dcommon and COM API crates (trait
+`Direct3D11` with `create_device`, interface.rs:100; the calling glue's `SystemDirect3D11`, direct/call.rs:30539). D1's
+70 lines did not move this run: they are `cfg(windows)` and the rented machines' toolchain has no Windows target
+(MEASURED: `ls $(rustc --print sysroot)/lib/rustlib/` on the x86-64 machine lists wasm32-unknown-unknown, wasm32v1-none,
+x86_64-unknown-linux-gnu, -musl and x86_64-unknown-none), so no compile of the moved code could be made; and the
+crates arrive with that track's move of the fronts (51637d1c4, 118 files, 273,638 lines against this branch: paths
+not this track's), which is the orchestrator's merge. Written to NEEDED, "D1 against ... a830d8964".
+
+### Milestones
+
+- Reached: (1) the exact check in the suite, as a test of what the interface states; two of three plants now fail a
+  test that passes without them, on both machines; the third is reached by no call on these devices (above). (2) opengl
+  implements the Gallium trait at its newest tip, compile-only, states, setters, screen calls and resources moved: errors
+  1,506 to 1,423 (x86-64), unsafe lines 354 to 271. (4) the fresh-clone note heads this page.
+- Not reached: the depth word test passing on Mesa (one word, a device limit, for the owner); D1 (a Windows target or
+  the desktop, and the orchestrator's merge of the fronts' move); the rest of the port (G5, G10, the values, G4).
+- Waiting on the owner, unchanged: GI4 and the window question.
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
@@ -1629,3 +1787,11 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   crates/opengl-es/implementation/webgl 0 (its browser wait is a wasm-bindgen `suspending` import, no `unsafe`).
   New dependencies: none from outside the workspace (Cargo.lock: one edge, opengl-es-webgl to opengl-es-conformance;
   hash ee279c2c1aa4481c on both machines). No hostile-guest suite exists, none was run.
+- Fifteenth run (2cc5a8bd5 to f2152bc7a): opengl 354 to 306 (e2d978f32) to 271 lines (441ef6514), MEASURED with
+  count-unsafe.sh at each; the track's total 517 to 469 to 434 (webgpu 19, shaders 71, shader-converters 5, nir 56,
+  opengl 271, test-window 12, the rest 0). The new modules (driver.rs, states.rs, resources.rs, guest.rs, pipe.rs)
+  hold none and check under `forbid`. No marked exception written here. Brought in, not written here: crates/gallium
+  (0 lines) and crates/mesa-compiler at origin 33eb398e1 (its direct crate: 66 to 35 lines of .rs naming `unsafe`, 34
+  `#[expect(unsafe_code, reason)]` marks, in a crate whose own table denies unsafe code). New dependencies: none from outside the workspace (Cargo.lock: the
+  wcontainers-gallium package and opengl's edges to it and to wcontainers-mesa-compiler; 85577b9eeb628013 on both
+  machines). No hostile-guest suite exists, none was run.

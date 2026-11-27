@@ -27,7 +27,7 @@ const VALUES: &str = "pipe_values.rs";
 const VALUE_LINE: &str = "pub const ";
 const NUMBER_TYPE_LINE: &str = "pub type ";
 const C_NUMBER_TYPE: &str = " = ::std::os::raw::c_";
-const STATEMENT_END: char = ';';
+const VALUE_END: char = ';';
 /// What the bindings hold: Gallium's types and constants, and the functions of Mesa's that the
 /// driver calls.
 const ALLOWED_TYPES: &str = "pipe_.*|util_format_description|blitter_context|u_transfer_vtbl";
@@ -112,7 +112,7 @@ fn main() {
         // A long constant goes on over several lines, to its semicolon.
         values.push_str(line);
         let mut last = line;
-        while !last.trim_end().ends_with(STATEMENT_END) {
+        while !last.trim_end().ends_with(VALUE_END) {
             let Some(more) = lines.next() else { break };
             values.push(' ');
             values.push_str(more.trim());

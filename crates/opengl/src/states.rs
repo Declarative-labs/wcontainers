@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use wcontainers_gallium::{
-    BlendState, DepthStencilAlphaState, RasterizerState, SamplerState, StencilState, VertexElement,
+    BlendColor, BlendState, DepthStencilAlphaState, RasterizerState, SamplerState, StencilState,
+    VertexElement,
 };
 use wcontainers_gpu::{
     Gpu, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, caps::Caps, caps::Features,
@@ -26,7 +27,7 @@ use crate::packed::{Packed, packed_format};
 use crate::pipe::*;
 
 /// The channels of a colour, as Gallium's blend colour holds them.
-pub const COLOR_CHANNELS: usize = 4;
+pub const COLOR_CHANNELS: usize = size_of::<BlendColor>() / size_of::<f32>();
 
 /// Objects whose holders went, given back to the back end when it is next used (Mesa deletes
 /// states from inside the driver's own calls, and a bound state outlives its deletion).
