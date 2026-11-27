@@ -248,5 +248,104 @@ pub fn check(in_scope: &str, header: &cheader::Header) -> Result<String, String>
     for entry in PLAN {
         let _ = writeln!(report, "  {}.{} {:?} called at {}", entry.structure, entry.pointer, entry.roles, entry.caller);
     }
+    let (rows, unmapped) = mapping(header);
+    let _ = writeln!(report, "GALLIUM MAPPING: parameters and returns by row");
+    for (row, count) in &rows {
+        let _ = writeln!(report, "  {count} {row}");
+    }
+    let _ = writeln!(report, "UNMAPPED {}", unmapped.len());
+    for item in &unmapped {
+        let _ = writeln!(report, "  {item}");
+        problems.push(format!("unmapped: {item}"));
+    }
     if problems.is_empty() { Ok(report) } else { Err(format!("{report}PROBLEMS {}\n  {}", problems.len(), problems.join("\n  "))) }
+}
+
+
+/// Kinds that a pointer makes, gives back, binds or reads by its roles.
+fn kinds_of(entry: &Entry) -> Vec<&'static str> {
+    entry
+        .roles
+        .iter()
+        .flat_map(|role| match role {
+            Role::Makes(of) | Role::GivesBack(of) | Role::Reads(of) => of.to_vec(),
+            Role::Binds(of) | Role::Counts(of) => vec![*of],
+            Role::Turns(from, to) => vec![*from, *to],
+        })
+        .collect()
+}
+
+/// The handles Mesa passes for an object of a kind: a structure pointer of its own, or `void *` (the states).
+const HANDLES: &[&str] = &[
+    "struct pipe_resource",
+    "struct pipe_query",
+    "struct pipe_sampler_view",
+    "struct pipe_stream_output_target",
+    "struct pipe_fence_handle",
+    "struct pipe_transfer",
+    "struct pipe_context",
+];
+
+/// Parameters whose C form says less than what Mesa passes (READ at the caller each names), each with its row.
+const EXCEPTIONS: &[(&str, &str, &str)] = &[
+    ("flush_frontbuffer", "subbox", "plain data read during the call, copied into owned values (not const in C; drisw.c:173 passes a box it does not read back)"),
+    ("clear_render_target", "dst", "a surface: plain data naming a resource, read during the call (u_threaded_context.c:5422)"),
+    ("clear_depth_stencil", "dst", "a surface: plain data naming a resource, read during the call (u_threaded_context.c:5469)"),
+    ("context_create", "priv", "the frontend's own value: carried as a number, never read (st_manager.c:1023 passes its own pointer)"),
+    ("flush_frontbuffer", "winsys_drawable_handle", "the frontend's own value: carried as a number, never read (drisw.c:173)"),
+];
+
+/// One row of the Gallium mapping rule for a parameter (or the return) of a planned pointer.
+fn row(entry: &Entry, param: &cheader::CParam, first: bool) -> Option<&'static str> {
+    if let Some((_, _, row)) = EXCEPTIONS.iter().find(|(pointer, name, _)| *pointer == entry.pointer && *name == param.name) {
+        return Some(row);
+    }
+    let is_const = param.base.starts_with("const ");
+    let base = param.base.trim_start_matches("const ").trim();
+    let returned = param.name == "return";
+    let makes = entry.roles.iter().any(|role| matches!(role, Role::Makes(_)));
+    let kinds = kinds_of(entry);
+    Some(match (base, param.pointers) {
+        ("void", 0) if returned => "nothing",
+        ("struct pipe_context", 1) if first => "the context: &self",
+        ("struct pipe_screen", 1) if first => "the library: &self",
+        ("void" | "struct pipe_resource" | "struct pipe_query" | "struct pipe_sampler_view" | "struct pipe_stream_output_target" | "struct pipe_context", 1)
+            if returned && makes && !entry.pointer.ends_with("_map") =>
+        {
+            "an object made: returned by value, None where refused"
+        }
+        ("void", 1) if returned => "the mapped bytes: a shadow the glue owns, lent to Mesa until the unmap",
+        ("void", 1) if is_const => "bytes read during the call, the count beside them",
+        ("void", 1) if !kinds.is_empty() => "an object of the pointer's kind: by value where it gives it back, Option<&> where it binds",
+        ("void", 2) | ("struct pipe_sampler_view" | "struct pipe_stream_output_target", 2) => "objects of a kind at slots, with their count",
+        ("struct pipe_fence_handle", 2) => "a fence's place: the fence made by a flush, or the count's old and new fence",
+        ("struct pipe_transfer", 2) => "a mapping out: returned with the mapped bytes",
+        ("struct pipe_resource", 1) if is_const => "plain data read during the call, copied into owned values",
+        (handle, 1) if HANDLES.contains(&handle) && !returned => "an object of the pointer's kinds: by reference, or by value where it gives it back",
+        ("unsigned" | "bool" | "uint64_t" | "uint32_t" | "uint8_t" | "double" | "uint" | "int" | "uintptr_t", 0) => "number by value",
+        ("unsigned", 1) if is_const => "numbers read during the call, the count beside them",
+        (declared, 0) if declared.starts_with("enum ") || declared == "mesa_shader_stage" => "a declared value, checked",
+        ("struct pipe_shader_state" | "struct pipe_compute_state", 1) if is_const => "a program: mesa-compiler's Received taken from it, the rest plain data",
+        (plain, 1) if is_const && (plain.starts_with("struct pipe_") || plain.starts_with("union pipe_")) => "plain data read during the call, copied into owned values",
+        (plain, 0) if plain.starts_with("struct pipe_") => "plain data by value",
+        ("char", 1) if is_const && returned => "text out: the driver's own text, copied",
+        ("float", 1) | ("union pipe_query_result", 1) if !is_const => "plain data out: written from the owned value returned",
+        _ => return None,
+    })
+}
+
+/// Every parameter and return of every planned pointer of the two headers, by row; the unmapped ones listed.
+fn mapping(header: &cheader::Header) -> (BTreeMap<&'static str, usize>, Vec<String>) {
+    let mut rows = BTreeMap::new();
+    let mut unmapped = Vec::new();
+    for entry in PLAN {
+        let Some(function) = header.callbacks.get(entry.structure).and_then(|callbacks| callbacks.iter().find(|function| function.name == entry.pointer)) else { continue };
+        for (at, param) in std::iter::once(&function.ret).chain(&function.params).enumerate() {
+            match row(entry, param, at == 1) {
+                Some(row) => *rows.entry(row).or_default() += 1,
+                None => unmapped.push(format!("{}.{} {}: {}{}", entry.structure, entry.pointer, param.name, param.base, "*".repeat(param.pointers))),
+            }
+        }
+    }
+    (rows, unmapped)
 }
