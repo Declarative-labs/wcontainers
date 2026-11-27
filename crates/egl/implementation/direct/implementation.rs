@@ -33,11 +33,19 @@ mod runtime {
     std::thread_local! {
         /// The error of the glue's last refusal on this thread, reported by the next `get_error` before EGL's.
         static REFUSED: Cell<i32> = const { Cell::new(constants::SUCCESS) };
+        /// How many calls the glue itself refused on this thread.
+        static REFUSALS: Cell<u64> = const { Cell::new(0) };
     }
 
     /// Records a refusal, as EGL records its own errors per thread.
     pub(crate) fn refuse(error: i32) {
+        REFUSALS.with(|refusals| refusals.set(refusals.get().saturating_add(1)));
         REFUSED.with(|refused| refused.set(error));
+    }
+
+    /// How many calls the glue itself refused on this thread.
+    pub(crate) fn refusals() -> u64 {
+        REFUSALS.with(Cell::get)
     }
 
     /// Returns and clears the last refusal.
@@ -136,6 +144,12 @@ impl Library {
         };
         let names_all = extensions.split(|&byte| byte == b' ').any(|name| name == b"EGL_KHR_client_get_all_proc_addresses");
         (names_all && library.entries().get_proc_address.is_some() && library.entries().get_current_context.is_some()).then_some(library)
+    }
+
+    /// How many calls the glue itself refused on the calling thread, before reaching the library: a test tells the
+    /// glue's refusal from the library's own error by it.
+    pub fn refusals(&self) -> u64 {
+        runtime::refusals()
     }
 
     fn entries(&self) -> &calls::Entries {

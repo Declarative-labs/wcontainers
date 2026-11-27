@@ -221,7 +221,6 @@ impl wcontainers_egl::Egl for Library {
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
         let result = unsafe { entry(dpy, ctx) };
         if result != 0 { handle.held.end(); }
-        if result != 0 { handle.held.end(); }
         result != 0
     }
 
@@ -235,7 +234,6 @@ impl wcontainers_egl::Egl for Library {
         #[expect(unsafe_code, reason = "egl.xml: eglDestroySurface takes the C types the field declares; dpy is a Display of this library; surface is a Surface of this library")]
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
         let result = unsafe { entry(dpy, surface) };
-        if result != 0 { handle.held.end(); }
         if result != 0 { handle.held.end(); }
         result != 0
     }

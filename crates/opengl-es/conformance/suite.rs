@@ -1,6 +1,8 @@
 // Written by tools/api-crate-generator from Khronos's gl.xml (and ANGLE's gl_angle_ext.xml for ANGLE's extensions), pinned in src/khronos/write.rs. Do not edit.
 //! The tests every implementation of wcontainers-opengl-es over wcontainers-egl runs, written against the traits
-//! alone: a context made, drawn with and read back; every refusal of the glue's own checks; every method called.
+//! alone: a context made, drawn with and read back; every check of the implementation's own, each shown refused by
+//! the implementation itself (not the library), with every buffer a heap allocation of exactly the length named or a
+//! part of a longer one whose rest the call must not reach; every method called.
 
 use std::path::Path;
 
@@ -171,104 +173,602 @@ fn refused<G: OpenGlEs>(gl: &G, error: u32, what: &str) {
     assert_eq!(gl.get_error(), gl::NO_ERROR, "{what}: one error only");
 }
 
-/// Every check the glue makes that no registry attribute expresses refuses what would reach memory not lent.
-pub fn refuses_what_would_reach_memory<E: Egl, G: OnEgl<E>>(folder: Option<&Path>) {
+/// How a test tells the implementation's own refusals from the library's errors: the number of calls each refused
+/// itself so far (the OpenGL ES context's, and EGL's on the calling thread). A check removed from the implementation
+/// leaves the count where it was, even where the library refuses the call with the same error.
+pub struct Counts<E, G> {
+    pub gl: fn(&G) -> u64,
+    pub egl: fn(&E) -> u64,
+}
+
+/// Asserts that the call was refused by the implementation itself, with the error, and that nothing else is pending.
+fn glue_refuses<E, G: OpenGlEs>(gl: &G, counts: &Counts<E, G>, error: u32, what: &str, call: impl FnOnce()) {
+    let before = (counts.gl)(gl);
+    call();
+    assert_eq!((counts.gl)(gl), before + 1, "{what}: refused by the implementation itself");
+    refused(gl, error, what);
+}
+
+/// Asserts that the call passed the implementation's checks and the library took it without an error.
+fn glue_passes<E, G: OpenGlEs>(gl: &G, counts: &Counts<E, G>, what: &str, call: impl FnOnce()) {
+    let before = (counts.gl)(gl);
+    call();
+    assert_eq!((counts.gl)(gl), before, "{what}: not refused");
+    assert_eq!(gl.get_error(), gl::NO_ERROR, "{what}: no error");
+}
+
+/// Asserts that the EGL call was refused by the implementation itself, with the error.
+fn egl_refuses<E: Egl, G>(egl: &E, counts: &Counts<E, G>, error: i32, what: &str, call: impl FnOnce() -> bool) {
+    let before = (counts.egl)(egl);
+    let succeeded = call();
+    assert!(!succeeded, "{what}: refused");
+    assert_eq!((counts.egl)(egl), before + 1, "{what}: refused by the implementation itself");
+    assert_eq!(egl.get_error(), error, "{what}");
+}
+
+/// The values in a heap allocation of exactly their length: a call that reads or writes past it reaches memory the
+/// allocator guards (AddressSanitizer reports it), or the values a test placed after a part it gives.
+fn heap<T: Clone>(values: &[T]) -> Vec<T> {
+    values.to_vec()
+}
+
+/// A value no call of these tests writes, kept past the end of what a call is given: a call that wrote or read past
+/// its slice changes it, or reads it back.
+const LEFT: i32 = 0x5EED_5EED;
+/// `LEFT` as an unsigned value.
+const LEFT_WORD: u32 = 0x5EED_5EED;
+/// A clear colour's first channel, given alone; the three after it in memory are `BEYOND`.
+const GIVEN: f32 = 0.25;
+/// What follows the one value a clear is given: read only by a call that reads past its slice.
+const BEYOND: f32 = 0.75;
+/// An integer clear's first channel, given alone; `LEFT` follows it.
+const GIVEN_INTEGER: i32 = 5;
+/// A value no format, type or attachment is: the library refuses it, so a call that reads it shows.
+const NO_VALUE: u32 = 0x1234;
+
+/// Pixel transfers read and write only the caller's bytes, as many as the pixel store state makes the transfer, and
+/// only with no pixel buffer bound; an offset only with one bound; a format or type the implementation does not know
+/// is refused. Every buffer given is a heap allocation of exactly the length named.
+pub fn refuses_pixels_past_what_was_given<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
     let made = make::<E, G>(folder, &CONTEXT_ES3);
     let gl = &made.gl;
-    let mut textures = [0_u32];
+    let side = usize::try_from(SIDE).unwrap_or(0);
+    let row = side * PIXEL;
+    let mut textures = [0_u32; 2];
     gl.gen_textures(&mut textures);
     gl.bind_texture(gl::TEXTURE_2D, textures[0]);
     gl.tex_storage_2d(gl::TEXTURE_2D, 1, gl::RGBA8, SIDE, SIDE);
-    let short = vec![0_u8; IMAGE - 1];
-    gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Bytes(&short));
-    refused(gl, gl::INVALID_VALUE, "pixels one byte short");
-    // A row length of twice the width: the last row starts 3 rows of 8 pixels in.
-    gl.pixel_storei(gl::UNPACK_ROW_LENGTH, 2 * SIDE);
-    let whole = vec![0_u8; IMAGE];
-    gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Bytes(&whole));
-    refused(gl, gl::INVALID_VALUE, "pixels short of the row length");
-    let rows = vec![0_u8; (3 * 2 * SIDE as usize + SIDE as usize) * PIXEL];
-    gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Bytes(&rows));
-    assert_eq!(gl.get_error(), gl::NO_ERROR, "pixels exactly as long as the row length asks");
-    gl.pixel_storei(gl::UNPACK_ROW_LENGTH, 0);
-    gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::RGBA, 0x1234, PixelUnpack::Bytes(&whole));
-    refused(gl, gl::INVALID_ENUM, "a pixel type the glue does not know");
-    gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Offset(0));
-    refused(gl, gl::INVALID_OPERATION, "an offset with no unpack buffer");
-    gl.compressed_tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::COMPRESSED_RGBA8_ETC2_EAC, CompressedPixelUnpack::Offset { offset: 0, size: 16 });
-    refused(gl, gl::INVALID_OPERATION, "a compressed offset with no unpack buffer");
+    gl.bind_texture(gl::TEXTURE_2D_ARRAY, textures[1]);
+    gl.tex_storage_3d(gl::TEXTURE_2D_ARRAY, 1, gl::RGBA8, SIDE, SIDE, 2);
+    let unpack = |bytes: usize| vec![0_u8; bytes];
+    let two = |pixels: &[u8]| gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Bytes(pixels));
+    let three = |pixels: &[u8]| gl.tex_sub_image_3d(gl::TEXTURE_2D_ARRAY, 0, 0, 0, 0, SIDE, SIDE, 2, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Bytes(pixels));
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "pixels one byte short", || two(&unpack(IMAGE - 1)));
+    glue_passes(gl, counts, "pixels exactly as long", || two(&unpack(IMAGE)));
+    // Each pixel store value moves the end of what is read; the caller's bytes must reach it.
+    let stores: [(u32, i32, usize); 3] = [
+        // Rows of twice the width: the last row starts 3 rows of 8 pixels in.
+        (gl::UNPACK_ROW_LENGTH, 2 * SIDE, (3 * 2 * side + side) * PIXEL),
+        (gl::UNPACK_SKIP_ROWS, 1, IMAGE + row),
+        (gl::UNPACK_SKIP_PIXELS, 1, IMAGE + PIXEL),
+    ];
+    for (name, value, needed) in stores {
+        gl.pixel_storei(name, value);
+        glue_refuses(gl, counts, gl::INVALID_VALUE, &format!("pixels short of the store value {name:#x}"), || two(&unpack(needed - 1)));
+        glue_passes(gl, counts, &format!("pixels as long as the store value {name:#x} asks"), || two(&unpack(needed)));
+        gl.pixel_storei(name, 0);
+    }
+    // Rows of 3 pixels aligned to 8 bytes: 16 bytes apart, the last 12 long.
+    gl.pixel_storei(gl::UNPACK_ALIGNMENT, 8);
+    let aligned = |pixels: &[u8]| gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, 3, 2, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Bytes(pixels));
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "pixels short of the unpack alignment", || aligned(&unpack(3 * 2 * PIXEL)));
+    glue_passes(gl, counts, "pixels as long as the unpack alignment asks", || aligned(&unpack(16 + 3 * PIXEL)));
+    gl.pixel_storei(gl::UNPACK_ALIGNMENT, 4);
+    // Images: two of them, then each taller by the image height, then one skipped.
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "one image for two", || three(&unpack(IMAGE)));
+    glue_passes(gl, counts, "two images", || three(&unpack(2 * IMAGE)));
+    for (name, value) in [(gl::UNPACK_IMAGE_HEIGHT, 2 * SIDE), (gl::UNPACK_SKIP_IMAGES, 1)] {
+        gl.pixel_storei(name, value);
+        glue_refuses(gl, counts, gl::INVALID_VALUE, &format!("two images short of the store value {name:#x}"), || three(&unpack(2 * IMAGE)));
+        glue_passes(gl, counts, &format!("images as long as the store value {name:#x} asks"), || three(&unpack(3 * IMAGE)));
+        gl.pixel_storei(name, 0);
+    }
+    let whole = unpack(IMAGE);
+    glue_refuses(gl, counts, gl::INVALID_ENUM, "a pixel type the implementation does not know", || {
+        gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::RGBA, NO_VALUE, PixelUnpack::Bytes(&whole));
+    });
+    glue_refuses(gl, counts, gl::INVALID_ENUM, "a pixel format the implementation does not know", || {
+        gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, NO_VALUE, gl::UNSIGNED_BYTE, PixelUnpack::Bytes(&whole));
+    });
+    // Offsets need an unpack buffer; bytes need none.
+    let offset = u64::try_from(IMAGE).unwrap_or(0);
+    let compressed = CompressedPixelUnpack::Offset { offset, size: 16 };
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "an offset with no unpack buffer", || {
+        gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Offset(offset));
+    });
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "an image offset with no unpack buffer", || {
+        gl.tex_sub_image_3d(gl::TEXTURE_2D_ARRAY, 0, 0, 0, 0, SIDE, SIDE, 1, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Offset(offset));
+    });
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "a compressed offset with no unpack buffer", || {
+        gl.compressed_tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::COMPRESSED_RGBA8_ETC2_EAC, compressed);
+    });
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "a compressed image offset with no unpack buffer", || {
+        gl.compressed_tex_sub_image_3d(gl::TEXTURE_2D_ARRAY, 0, 0, 0, 0, SIDE, SIDE, 1, gl::COMPRESSED_RGBA8_ETC2_EAC, compressed);
+    });
+    let mut buffers = [0_u32; 2];
+    gl.gen_buffers(&mut buffers);
+    gl.bind_buffer(gl::PIXEL_UNPACK_BUFFER, buffers[0]);
+    gl.buffer_data(gl::PIXEL_UNPACK_BUFFER, i64::try_from(4 * IMAGE).unwrap_or(0), None, gl::STREAM_READ);
+    let bytes = unpack(16);
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "bytes with an unpack buffer bound", || two(&whole));
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "image bytes with an unpack buffer bound", || three(&unpack(2 * IMAGE)));
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "compressed bytes with an unpack buffer bound", || {
+        gl.compressed_tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::COMPRESSED_RGBA8_ETC2_EAC, CompressedPixelUnpack::Bytes(&bytes));
+    });
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "compressed image bytes with an unpack buffer bound", || {
+        gl.compressed_tex_sub_image_3d(gl::TEXTURE_2D_ARRAY, 0, 0, 0, 0, SIDE, SIDE, 1, gl::COMPRESSED_RGBA8_ETC2_EAC, CompressedPixelUnpack::Bytes(&bytes));
+    });
+    glue_passes(gl, counts, "an offset into the unpack buffer bound", || {
+        gl.tex_sub_image_2d(gl::TEXTURE_2D, 0, 0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelUnpack::Offset(0));
+    });
+    gl.bind_buffer(gl::PIXEL_UNPACK_BUFFER, 0);
+    // Reads back: the same rules for the pack state and buffer.
     let mut framebuffers = [0_u32];
     gl.gen_framebuffers(&mut framebuffers);
     gl.bind_framebuffer(gl::FRAMEBUFFER, framebuffers[0]);
     gl.framebuffer_texture_2d(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D, textures[0], 0);
-    let mut read = vec![0_u8; IMAGE - 1];
-    gl.read_pixels(0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelPack::Bytes(&mut read));
-    refused(gl, gl::INVALID_VALUE, "a read one byte short");
+    let read = |bytes: &mut [u8]| gl.read_pixels(0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelPack::Bytes(bytes));
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "a read one byte short", || read(&mut unpack(IMAGE - 1)));
+    let mut kept = vec![LEFT_WORD.to_ne_bytes()[0]; IMAGE + row];
+    glue_passes(gl, counts, "a read exactly as long", || read(&mut kept[..IMAGE]));
+    assert!(kept[IMAGE..].iter().all(|&byte| byte == LEFT_WORD.to_ne_bytes()[0]), "a read wrote past its bytes");
+    let stores: [(u32, i32); 3] = [(gl::PACK_ROW_LENGTH, 2 * SIDE), (gl::PACK_SKIP_ROWS, 1), (gl::PACK_SKIP_PIXELS, 1)];
+    for (name, value) in stores {
+        gl.pixel_storei(name, value);
+        glue_refuses(gl, counts, gl::INVALID_VALUE, &format!("a read short of the store value {name:#x}"), || read(&mut unpack(IMAGE)));
+        gl.pixel_storei(name, 0);
+    }
     gl.pixel_storei(gl::PACK_ALIGNMENT, 8);
-    let mut odd = vec![0_u8; 3 * 3 * 2];
-    gl.read_pixels(0, 0, 3, 2, gl::RGB, gl::UNSIGNED_BYTE, PixelPack::Bytes(&mut odd));
-    refused(gl, gl::INVALID_VALUE, "a read short of the pack alignment");
-    gl.read_pixels(0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelPack::Offset(0));
-    refused(gl, gl::INVALID_OPERATION, "a read offset with no pack buffer");
-    // Vertex data: only offsets into a bound buffer, and no draw with an enabled attribute reading none.
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "a read short of the pack alignment", || {
+        gl.read_pixels(0, 0, 3, 2, gl::RGBA, gl::UNSIGNED_BYTE, PixelPack::Bytes(&mut unpack(3 * 2 * PIXEL)));
+    });
+    gl.pixel_storei(gl::PACK_ALIGNMENT, 4);
+    glue_refuses(gl, counts, gl::INVALID_ENUM, "a read of a type the implementation does not know", || {
+        gl.read_pixels(0, 0, SIDE, SIDE, gl::RGBA, NO_VALUE, PixelPack::Bytes(&mut unpack(IMAGE)));
+    });
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "a read offset with no pack buffer", || {
+        gl.read_pixels(0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelPack::Offset(offset));
+    });
+    gl.bind_buffer(gl::PIXEL_PACK_BUFFER, buffers[1]);
+    gl.buffer_data(gl::PIXEL_PACK_BUFFER, i64::try_from(IMAGE).unwrap_or(0), None, gl::STREAM_READ);
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "read bytes with a pack buffer bound", || read(&mut unpack(IMAGE)));
+    glue_passes(gl, counts, "a read into the pack buffer bound", || {
+        gl.read_pixels(0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelPack::Offset(0));
+    });
+    gl.bind_buffer(gl::PIXEL_PACK_BUFFER, 0);
+}
+
+/// Vertex data comes only from buffers: an offset with no array or element array buffer bound is refused, and so is
+/// every draw while an enabled attribute has no buffer (its offset would be read as an address).
+pub fn refuses_vertex_reads_without_a_buffer<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    let mut most = [0_i32];
+    gl.get_integerv(gl::MAX_VERTEX_ATTRIBS, &mut most);
+    // The last attribute, so that a check of fewer attributes than the context has shows.
+    let last = u32::try_from(most[0] - 1).expect("at least one vertex attribute");
     gl.bind_buffer(gl::ARRAY_BUFFER, 0);
-    gl.vertex_attrib_pointer(0, 2, gl::FLOAT, false, 0, 0);
-    refused(gl, gl::INVALID_OPERATION, "a vertex offset with no array buffer");
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "a vertex offset with no array buffer", || gl.vertex_attrib_pointer(last, 2, gl::FLOAT, false, 0, 0));
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "an integer vertex offset with no array buffer", || gl.vertex_attrib_i_pointer(last, 2, gl::INT, 0, 0));
     let mut buffers = [0_u32; 2];
     gl.gen_buffers(&mut buffers);
     gl.bind_buffer(gl::ARRAY_BUFFER, buffers[0]);
     gl.buffer_data(gl::ARRAY_BUFFER, 64, None, gl::STATIC_DRAW);
-    gl.vertex_attrib_pointer(1, 2, gl::FLOAT, false, 0, 0x7000_0000);
-    gl.enable_vertex_attrib_array(1);
+    glue_passes(gl, counts, "a vertex offset into the array buffer", || gl.vertex_attrib_pointer(last, 2, gl::FLOAT, false, 0, 0x7000_0000));
+    gl.enable_vertex_attrib_array(last);
+    gl.bind_buffer(gl::ELEMENT_ARRAY_BUFFER, buffers[1]);
+    gl.buffer_data(gl::ELEMENT_ARRAY_BUFFER, 64, None, gl::STATIC_DRAW);
+    // Deleting the bound buffer leaves the attribute reading client memory at its offset.
     gl.delete_buffers(&buffers[..1]);
-    gl.draw_arrays(gl::TRIANGLES, 0, 3);
-    refused(gl, gl::INVALID_OPERATION, "a draw whose enabled attribute lost its buffer");
-    gl.draw_arrays_instanced(gl::TRIANGLES, 0, 3, 2);
-    refused(gl, gl::INVALID_OPERATION, "an instanced draw whose enabled attribute lost its buffer");
-    gl.disable_vertex_attrib_array(1);
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "a draw whose enabled attribute lost its buffer", || gl.draw_arrays(gl::TRIANGLES, 0, 3));
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "an instanced draw whose enabled attribute lost its buffer", || {
+        gl.draw_arrays_instanced(gl::TRIANGLES, 0, 3, 2);
+    });
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "an indexed draw whose enabled attribute lost its buffer", || {
+        gl.draw_elements_instanced(gl::TRIANGLES, 3, gl::UNSIGNED_SHORT, 0, 1);
+    });
+    gl.disable_vertex_attrib_array(last);
     gl.bind_buffer(gl::ELEMENT_ARRAY_BUFFER, 0);
-    gl.draw_elements_instanced(gl::TRIANGLES, 3, gl::UNSIGNED_SHORT, 0, 1);
-    refused(gl, gl::INVALID_OPERATION, "indices with no element array buffer");
-    // Lengths: a vector count must be exact, a bounded read gets room for its most.
-    gl.uniform4fv(0, &[0.0; 5]);
-    refused(gl, gl::INVALID_VALUE, "five floats for vec4s");
-    gl.clear_bufferfv(gl::COLOR, 0, &[0.0]);
-    assert_eq!(gl.get_error(), gl::NO_ERROR, "a colour clear with one value reads the glue's four");
-    let mut formats = [0_i32; 4];
-    gl.get_integerv(gl::COMPRESSED_TEXTURE_FORMATS, &mut formats);
-    refused(gl, gl::INVALID_ENUM, "a value whose length is another query's");
-    let mut one = [0_i32; 1];
-    gl.get_integerv(gl::VIEWPORT, &mut one);
-    assert_eq!(gl.get_error(), gl::NO_ERROR, "four values into room for one: the glue's room takes them");
-    // Buffers read back only as far as they reach.
-    gl.bind_buffer(gl::ARRAY_BUFFER, buffers[1]);
-    gl.buffer_data(gl::ARRAY_BUFFER, 16, None, gl::STATIC_DRAW);
+    glue_refuses(gl, counts, gl::INVALID_OPERATION, "indices with no element array buffer", || {
+        gl.draw_elements_instanced(gl::TRIANGLES, 3, gl::UNSIGNED_SHORT, 0x7000_0000, 1);
+    });
+}
+
+/// A fragment shader with one uniform of every type a `uniform*v` call sets, each used.
+const EVERY_UNIFORM: &str = "#version 300 es
+precision highp float;
+precision highp int;
+uniform float f1; uniform vec2 f2; uniform vec3 f3; uniform vec4 f4;
+uniform int i1; uniform ivec2 i2; uniform ivec3 i3; uniform ivec4 i4;
+uniform uint u1; uniform uvec2 u2; uniform uvec3 u3; uniform uvec4 u4;
+uniform mat2 m2; uniform mat2x3 m23; uniform mat2x4 m24; uniform mat3 m3; uniform mat3x2 m32; uniform mat3x4 m34;
+uniform mat4 m4; uniform mat4x2 m42; uniform mat4x3 m43;
+out vec4 drawn;
+void main() {
+    float sum = f1 + f2.x + f3.x + f4.x + float(i1 + i2.x + i3.x + i4.x) + float(u1 + u2.x + u3.x + u4.x);
+    sum += m2[0][0] + m23[0][0] + m24[0][0] + m3[0][0] + m32[0][0] + m34[0][0] + m4[0][0] + m42[0][0] + m43[0][0];
+    drawn = vec4(sum);
+}
+";
+
+/// Every `uniform*v` call's count is its slice's length over the values of one element: exact lengths pass (one
+/// element of a uniform that is not an array; a count of more would be the library's error), a length that does not
+/// divide is refused.
+pub fn counts_are_the_slices<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    let vertex = compiled(gl, gl::VERTEX_SHADER, "#version 300 es\nvoid main() { gl_Position = vec4(0.0); }\n");
+    let fragment = compiled(gl, gl::FRAGMENT_SHADER, EVERY_UNIFORM);
+    let program = gl.create_program();
+    gl.attach_shader(program, vertex);
+    gl.attach_shader(program, fragment);
+    gl.link_program(program);
+    gl.use_program(program);
+    let at = |name: &core::ffi::CStr| {
+        let location = gl.get_uniform_location(program, name);
+        assert!(location >= 0, "{name:?} is active");
+        location
+    };
+    type Floats<G> = fn(&G, i32, &[f32]);
+    type Matrices<G> = fn(&G, i32, bool, &[f32]);
+    let floats: [(&core::ffi::CStr, usize, Floats<G>); 4] =
+        [(c"f1", 1, G::uniform1fv), (c"f2", 2, G::uniform2fv), (c"f3", 3, G::uniform3fv), (c"f4", 4, G::uniform4fv)];
+    for (name, by, call) in floats {
+        let location = at(name);
+        glue_passes(gl, counts, &format!("{name:?} given one element"), || call(gl, location, &vec![0.0; by]));
+        if by > 1 {
+            glue_refuses(gl, counts, gl::INVALID_VALUE, &format!("{name:?} given a length that does not divide"), || call(gl, location, &vec![0.0; by + 1]));
+        }
+    }
+    let integers: [(&core::ffi::CStr, usize, fn(&G, i32, &[i32])); 4] =
+        [(c"i1", 1, G::uniform1iv), (c"i2", 2, G::uniform2iv), (c"i3", 3, G::uniform3iv), (c"i4", 4, G::uniform4iv)];
+    for (name, by, call) in integers {
+        let location = at(name);
+        glue_passes(gl, counts, &format!("{name:?} given one element"), || call(gl, location, &vec![0; by]));
+        if by > 1 {
+            glue_refuses(gl, counts, gl::INVALID_VALUE, &format!("{name:?} given a length that does not divide"), || call(gl, location, &vec![0; by + 1]));
+        }
+    }
+    let words: [(&core::ffi::CStr, usize, fn(&G, i32, &[u32])); 4] =
+        [(c"u1", 1, G::uniform1uiv), (c"u2", 2, G::uniform2uiv), (c"u3", 3, G::uniform3uiv), (c"u4", 4, G::uniform4uiv)];
+    for (name, by, call) in words {
+        let location = at(name);
+        glue_passes(gl, counts, &format!("{name:?} given one element"), || call(gl, location, &vec![0; by]));
+        if by > 1 {
+            glue_refuses(gl, counts, gl::INVALID_VALUE, &format!("{name:?} given a length that does not divide"), || call(gl, location, &vec![0; by + 1]));
+        }
+    }
+    let matrices: [(&core::ffi::CStr, usize, Matrices<G>); 9] = [
+        (c"m2", 4, G::uniform_matrix2fv),
+        (c"m23", 6, G::uniform_matrix2x3fv),
+        (c"m24", 8, G::uniform_matrix2x4fv),
+        (c"m3", 9, G::uniform_matrix3fv),
+        (c"m32", 6, G::uniform_matrix3x2fv),
+        (c"m34", 12, G::uniform_matrix3x4fv),
+        (c"m4", 16, G::uniform_matrix4fv),
+        (c"m42", 8, G::uniform_matrix4x2fv),
+        (c"m43", 12, G::uniform_matrix4x3fv),
+    ];
+    for (name, by, call) in matrices {
+        let location = at(name);
+        glue_passes(gl, counts, &format!("{name:?} given one element"), || call(gl, location, false, &vec![0.0; by]));
+        glue_refuses(gl, counts, gl::INVALID_VALUE, &format!("{name:?} given a length that does not divide"), || call(gl, location, false, &vec![0.0; by + 1]));
+    }
+}
+
+/// Calls that write a count of values write only as many as the slice holds: each is given an empty or short part of
+/// a longer allocation, and what follows it must be left as it was. Calls that read a count read only as many: the
+/// value after the part given is one the library would refuse, or an object the call would delete.
+pub fn counts_reach_only_the_slices<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    type Names<G> = fn(&G, &mut [u32]);
+    let makers: [(&str, Names<G>); 7] = [
+        ("gen_buffers", G::gen_buffers),
+        ("gen_framebuffers", G::gen_framebuffers),
+        ("gen_queries", G::gen_queries),
+        ("gen_renderbuffers", G::gen_renderbuffers),
+        ("gen_samplers", G::gen_samplers),
+        ("gen_textures", G::gen_textures),
+        ("gen_vertex_arrays", G::gen_vertex_arrays),
+    ];
+    for (what, call) in makers {
+        let mut names = heap(&[LEFT_WORD; 2]);
+        glue_passes(gl, counts, what, || call(gl, &mut names[..1]));
+        assert_ne!(names[0], LEFT_WORD, "{what} wrote its one name");
+        assert_eq!(names[1], LEFT_WORD, "{what} wrote past its slice");
+    }
+    // Info logs: a shader that does not compile, and a program that does not link, each have a long one.
+    let shader = gl.create_shader(gl::FRAGMENT_SHADER);
+    gl.shader_source(shader, &[b"not a shader".as_slice()]);
+    gl.compile_shader(shader);
+    let program = gl.create_program();
+    gl.attach_shader(program, shader);
+    gl.link_program(program);
+    let mut log = heap(&[LEFT_WORD.to_ne_bytes()[0]; 64]);
+    glue_passes(gl, counts, "get_shader_info_log", || {
+        let _ = gl.get_shader_info_log(shader, &mut log[..PIXEL]);
+    });
+    assert!(log[PIXEL..].iter().all(|&byte| byte == LEFT_WORD.to_ne_bytes()[0]), "get_shader_info_log wrote past its slice");
+    glue_passes(gl, counts, "get_program_info_log", || {
+        let _ = gl.get_program_info_log(program, &mut log[..PIXEL]);
+    });
+    assert!(log[PIXEL..].iter().all(|&byte| byte == LEFT_WORD.to_ne_bytes()[0]), "get_program_info_log wrote past its slice");
+    let mut values = heap(&[LEFT; 4]);
+    glue_passes(gl, counts, "get_internalformativ", || gl.get_internalformativ(gl::RENDERBUFFER, gl::RGBA8, gl::SAMPLES, &mut values[..0]));
+    assert!(values.iter().all(|&value| value == LEFT), "get_internalformativ wrote past its slice");
+    let fence = gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0).expect("a fence");
+    glue_passes(gl, counts, "get_synciv", || {
+        let _ = gl.get_synciv(&fence, gl::SYNC_STATUS, &mut values[..0]);
+    });
+    assert!(values.iter().all(|&value| value == LEFT), "get_synciv wrote past its slice");
+    gl.delete_sync(&fence);
+    // Deletions: the second object is bound, and only the first is given.
+    type Bind<G> = fn(&G, u32);
+    type Delete<G> = fn(&G, &[u32]);
+    let objects: [(&str, Names<G>, Bind<G>, u32, Delete<G>); 6] = [
+        ("delete_buffers", G::gen_buffers, |gl, name| gl.bind_buffer(gl::ARRAY_BUFFER, name), gl::ARRAY_BUFFER_BINDING, G::delete_buffers),
+        ("delete_textures", G::gen_textures, |gl, name| gl.bind_texture(gl::TEXTURE_2D, name), gl::TEXTURE_BINDING_2D, G::delete_textures),
+        ("delete_framebuffers", G::gen_framebuffers, |gl, name| gl.bind_framebuffer(gl::FRAMEBUFFER, name), gl::FRAMEBUFFER_BINDING, G::delete_framebuffers),
+        ("delete_renderbuffers", G::gen_renderbuffers, |gl, name| gl.bind_renderbuffer(gl::RENDERBUFFER, name), gl::RENDERBUFFER_BINDING, G::delete_renderbuffers),
+        ("delete_samplers", G::gen_samplers, |gl, name| gl.bind_sampler(0, name), gl::SAMPLER_BINDING, G::delete_samplers),
+        ("delete_vertex_arrays", G::gen_vertex_arrays, |gl, name| gl.bind_vertex_array(name), gl::VERTEX_ARRAY_BINDING, G::delete_vertex_arrays),
+    ];
+    for (what, make_names, bind, binding, delete) in objects {
+        let mut names = vec![0_u32; 2];
+        make_names(gl, &mut names);
+        bind(gl, names[1]);
+        glue_passes(gl, counts, what, || delete(gl, &names[..1]));
+        let mut bound = [0_i32];
+        gl.get_integerv(binding, &mut bound);
+        assert_eq!(bound[0].cast_unsigned(), names[1], "{what} deleted past its slice");
+        bind(gl, 0);
+        delete(gl, &names[1..]);
+    }
+    let mut queries = vec![0_u32; 2];
+    gl.gen_queries(&mut queries);
+    gl.begin_query(gl::ANY_SAMPLES_PASSED, queries[1]);
+    glue_passes(gl, counts, "delete_queries", || gl.delete_queries(&queries[..1]));
+    glue_passes(gl, counts, "the query not given still ends", || gl.end_query(gl::ANY_SAMPLES_PASSED));
+    // Lists of values: the one after the part given is a value the library refuses.
+    let mut textures = [0_u32];
+    gl.gen_textures(&mut textures);
+    gl.bind_texture(gl::TEXTURE_2D, textures[0]);
+    gl.tex_storage_2d(gl::TEXTURE_2D, 1, gl::RGBA8, SIDE, SIDE);
+    let mut framebuffers = [0_u32];
+    gl.gen_framebuffers(&mut framebuffers);
+    gl.bind_framebuffer(gl::FRAMEBUFFER, framebuffers[0]);
+    gl.framebuffer_texture_2d(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D, textures[0], 0);
+    // Names of outputs to capture: only the one given.
+    let captured = compiled(gl, gl::VERTEX_SHADER, "#version 300 es\nout float captured;\nvoid main() { captured = 1.0; gl_Position = vec4(0.0); }\n");
+    let coloured = compiled(gl, gl::FRAGMENT_SHADER, "#version 300 es\nprecision mediump float;\nout vec4 drawn;\nvoid main() { drawn = vec4(1.0); }\n");
+    let capturing = gl.create_program();
+    gl.attach_shader(capturing, captured);
+    gl.attach_shader(capturing, coloured);
+    glue_passes(gl, counts, "transform_feedback_varyings", || gl.transform_feedback_varyings(capturing, &[c"captured"], gl::INTERLEAVED_ATTRIBS));
+    gl.link_program(capturing);
+    let mut linked = [0_i32];
+    gl.get_programiv(capturing, gl::LINK_STATUS, &mut linked);
+    assert_eq!(linked[0], 1, "transform_feedback_varyings read past its names");
+    let attachments = heap(&[gl::COLOR_ATTACHMENT0, NO_VALUE]);
+    glue_passes(gl, counts, "draw_buffers", || gl.draw_buffers(&attachments[..1]));
+    glue_passes(gl, counts, "invalidate_framebuffer", || gl.invalidate_framebuffer(gl::FRAMEBUFFER, &attachments[..1]));
+}
+
+/// Calls whose output the glue takes into room of its own copy out only as many values as the caller's slice holds,
+/// and calls whose input it copies into room of its own read only that: a clear given one channel clears with that
+/// channel and zeros, never with the values after it in the caller's memory.
+pub fn rooms_keep_calls_inside<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    let mut integers = vec![LEFT; 8];
+    glue_passes(gl, counts, "get_integerv into nothing", || gl.get_integerv(gl::VIEWPORT, &mut integers[..0]));
+    assert!(integers.iter().all(|&value| value == LEFT), "get_integerv wrote past its slice");
+    glue_passes(gl, counts, "get_integerv into one", || gl.get_integerv(gl::VIEWPORT, &mut integers[..1]));
+    assert_eq!(integers[0], 0, "the viewport's x");
+    assert!(integers[1..].iter().all(|&value| value == LEFT), "get_integerv wrote past its slice");
+    let mut floats = vec![-1.0_f32; 8];
+    glue_passes(gl, counts, "get_floatv", || gl.get_floatv(gl::VIEWPORT, &mut floats[..0]));
+    assert!(floats.iter().all(|&value| value < 0.0), "get_floatv wrote past its slice");
+    let mut wide = vec![i64::from(LEFT); 8];
+    glue_passes(gl, counts, "get_integer64v", || gl.get_integer64v(gl::VIEWPORT, &mut wide[..0]));
+    assert!(wide.iter().all(|&value| value == i64::from(LEFT)), "get_integer64v wrote past its slice");
+    // The colour write mask is four trues.
+    let mut flags = vec![false; 8];
+    glue_passes(gl, counts, "get_booleanv", || gl.get_booleanv(gl::COLOR_WRITEMASK, &mut flags[..0]));
+    assert!(flags.iter().all(|&flag| !flag), "get_booleanv wrote past its slice");
+    for name in [gl::COMPRESSED_TEXTURE_FORMATS, gl::PROGRAM_BINARY_FORMATS, gl::SHADER_BINARY_FORMATS] {
+        glue_refuses(gl, counts, gl::INVALID_ENUM, &format!("get_integerv of the list {name:#x}"), || gl.get_integerv(name, &mut integers));
+        glue_refuses(gl, counts, gl::INVALID_ENUM, &format!("get_floatv of the list {name:#x}"), || gl.get_floatv(name, &mut floats));
+        glue_refuses(gl, counts, gl::INVALID_ENUM, &format!("get_integer64v of the list {name:#x}"), || gl.get_integer64v(name, &mut wide));
+        glue_refuses(gl, counts, gl::INVALID_ENUM, &format!("get_booleanv of the list {name:#x}"), || gl.get_booleanv(name, &mut flags));
+    }
+    integers.fill(LEFT);
+    glue_passes(gl, counts, "get_vertex_attribiv", || gl.get_vertex_attribiv(0, gl::CURRENT_VERTEX_ATTRIB, &mut integers[..0]));
+    let program = gl.create_program();
+    glue_passes(gl, counts, "get_programiv", || gl.get_programiv(program, gl::LINK_STATUS, &mut integers[..0]));
+    let shader = gl.create_shader(gl::VERTEX_SHADER);
+    glue_passes(gl, counts, "get_shaderiv", || gl.get_shaderiv(shader, gl::SHADER_TYPE, &mut integers[..0]));
+    assert!(integers.iter().all(|&value| value == LEFT), "a get wrote past its slice");
+    let mut queries = [0_u32];
+    gl.gen_queries(&mut queries);
+    gl.begin_query(gl::ANY_SAMPLES_PASSED, queries[0]);
+    if gl.get_queryiv_ext(gl::ANY_SAMPLES_PASSED, gl::CURRENT_QUERY, &mut integers[..0]).is_some() {
+        assert_eq!(gl.get_error(), gl::NO_ERROR);
+    }
+    gl.end_query(gl::ANY_SAMPLES_PASSED);
+    gl.finish();
+    let mut words = heap(&[LEFT_WORD; 8]);
+    glue_passes(gl, counts, "get_query_objectuiv", || gl.get_query_objectuiv(queries[0], gl::QUERY_RESULT_AVAILABLE, &mut words[..0]));
+    assert!(words.iter().all(|&value| value == LEFT_WORD), "get_query_objectuiv wrote past its slice");
+    let mut results = heap(&[u64::from(LEFT_WORD); 8]);
+    let _ = gl.get_query_objectui64v_ext(queries[0], gl::QUERY_RESULT, &mut results[..0]);
+    while gl.get_error() != gl::NO_ERROR {}
+    assert!(results.iter().all(|&value| value == u64::from(LEFT_WORD)), "get_query_objectui64v_ext wrote past its slice");
+    assert!(integers.iter().all(|&value| value == LEFT), "get_queryiv_ext wrote past its slice");
+    // Clears: one channel given, followed in memory by values the clear must not read.
+    let mut textures = [0_u32; 3];
+    gl.gen_textures(&mut textures);
+    let mut framebuffers = [0_u32];
+    gl.gen_framebuffers(&mut framebuffers);
+    gl.bind_framebuffer(gl::FRAMEBUFFER, framebuffers[0]);
+    for (texture, format) in textures.iter().zip([gl::RGBA8, gl::RGBA32I, gl::RGBA32UI]) {
+        gl.bind_texture(gl::TEXTURE_2D, *texture);
+        gl.tex_storage_2d(gl::TEXTURE_2D, 1, format, SIDE, SIDE);
+    }
+    gl.framebuffer_texture_2d(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D, textures[0], 0);
+    let colour = heap(&[GIVEN, BEYOND, BEYOND, BEYOND]);
+    glue_passes(gl, counts, "clear_bufferfv given one channel", || gl.clear_bufferfv(gl::COLOR, 0, &colour[..1]));
+    let mut pixel = vec![0_u8; PIXEL];
+    gl.read_pixels(0, 0, 1, 1, gl::RGBA, gl::UNSIGNED_BYTE, PixelPack::Bytes(&mut pixel));
+    assert!((63..=64).contains(&pixel[0]) && pixel[1..] == [0, 0, 0], "clear_bufferfv read past its one channel: {pixel:?}");
+    glue_passes(gl, counts, "clear_bufferfv given exactly one channel", || gl.clear_bufferfv(gl::COLOR, 0, &heap(&[GIVEN])));
+    let mut channels = vec![0_u8; PIXEL * PIXEL];
+    gl.framebuffer_texture_2d(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D, textures[1], 0);
+    let signed = heap(&[GIVEN_INTEGER, LEFT, LEFT, LEFT]);
+    glue_passes(gl, counts, "clear_bufferiv given one channel", || gl.clear_bufferiv(gl::COLOR, 0, &signed[..1]));
+    gl.read_pixels(0, 0, 1, 1, gl::RGBA_INTEGER, gl::INT, PixelPack::Bytes(&mut channels));
+    let read: Vec<i32> = channels.chunks(PIXEL).map(|bytes| i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).collect();
+    assert_eq!(read, [GIVEN_INTEGER, 0, 0, 0], "clear_bufferiv read past its one channel");
+    glue_passes(gl, counts, "clear_bufferiv given exactly one channel", || gl.clear_bufferiv(gl::COLOR, 0, &heap(&[GIVEN_INTEGER])));
+    gl.framebuffer_texture_2d(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D, textures[2], 0);
+    let unsigned = heap(&[GIVEN_INTEGER.cast_unsigned(), LEFT_WORD, LEFT_WORD, LEFT_WORD]);
+    glue_passes(gl, counts, "clear_bufferuiv given one channel", || gl.clear_bufferuiv(gl::COLOR, 0, &unsigned[..1]));
+    gl.read_pixels(0, 0, 1, 1, gl::RGBA_INTEGER, gl::UNSIGNED_INT, PixelPack::Bytes(&mut channels));
+    let read: Vec<u32> = channels.chunks(PIXEL).map(|bytes| u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).collect();
+    assert_eq!(read, [GIVEN_INTEGER.cast_unsigned(), 0, 0, 0], "clear_bufferuiv read past its one channel");
+    glue_passes(gl, counts, "clear_bufferuiv given exactly one channel", || gl.clear_bufferuiv(gl::COLOR, 0, &heap(&[GIVEN_INTEGER.cast_unsigned()])));
+    // A buffer's data is read only as far as the bytes given; fewer than the size is refused.
+    let mut buffers = [0_u32];
+    gl.gen_buffers(&mut buffers);
+    gl.bind_buffer(gl::ARRAY_BUFFER, buffers[0]);
+    let data = heap(&[1_u8; 64]);
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "fewer bytes than the size", || gl.buffer_data(gl::ARRAY_BUFFER, 64, Some(&data[..8]), gl::STATIC_DRAW));
+    glue_passes(gl, counts, "as many bytes as the size", || gl.buffer_data(gl::ARRAY_BUFFER, 8, Some(&data[..8]), gl::STATIC_DRAW));
     let mut past = vec![0_u8; 64];
     assert!(!gl.map_buffer_range_read(gl::ARRAY_BUFFER, 0, &mut past), "a read past the buffer's end");
     assert_eq!(gl.get_error(), gl::INVALID_VALUE);
-    gl.buffer_data(gl::ARRAY_BUFFER, 64, Some(&[0; 8]), gl::STATIC_DRAW);
-    refused(gl, gl::INVALID_VALUE, "fewer bytes than the size");
-    // Fences: a deleted one, or another context's, is no fence.
-    let fence = gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0).expect("a fence");
-    gl.delete_sync(&fence);
-    let mut status = [0_i32];
-    gl.get_synciv(&fence, gl::SYNC_STATUS, &mut status);
-    refused(gl, gl::INVALID_VALUE, "a deleted fence");
+}
+
+/// A fence is used only by the context that made it, and only until it is deleted: each is refused by the
+/// implementation itself, also while this context holds a live fence another context's would be mistaken for.
+pub fn fences_are_the_contexts_own<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    let live = gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0).expect("a fence");
+    let deleted = gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0).expect("a second fence");
+    glue_passes(gl, counts, "a fence deleted", || gl.delete_sync(&deleted));
+    let mut status = vec![0_i32; 1];
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "get_synciv of a deleted fence", || {
+        let _ = gl.get_synciv(&deleted, gl::SYNC_STATUS, &mut status);
+    });
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "client_wait_sync of a deleted fence", || {
+        let _ = gl.client_wait_sync(&deleted, 0, 0);
+    });
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "delete_sync of a deleted fence", || gl.delete_sync(&deleted));
+    // The other context's first fence: this context's first is live.
     let other = make::<E, G>(folder, &CONTEXT_ES3);
     let others = other.gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0).expect("the other context's fence");
-    gl.get_synciv(&others, gl::SYNC_STATUS, &mut status);
-    refused(gl, gl::INVALID_VALUE, "another context's fence");
-    // EGL: an attribute key with no value, and a destroyed context.
-    let mut configs = vec![None; 1];
-    assert_eq!(made.egl.choose_config(&made.display, &[egl::RED_SIZE], &mut configs), None);
-    assert_eq!(made.egl.get_error(), egl::BAD_ATTRIBUTE);
-    assert!(made.egl.destroy_context(&made.display, &made.context));
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "get_synciv of another context's fence", || {
+        let _ = gl.get_synciv(&others, gl::SYNC_STATUS, &mut status);
+    });
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "client_wait_sync of another context's fence", || {
+        let _ = gl.client_wait_sync(&others, 0, 0);
+    });
+    glue_refuses(gl, counts, gl::INVALID_VALUE, "delete_sync of another context's fence", || gl.delete_sync(&others));
+    glue_passes(gl, counts, "this context's live fence", || {
+        let _ = gl.get_synciv(&live, gl::SYNC_STATUS, &mut status);
+    });
+    other.gl.delete_sync(&others);
+    gl.delete_sync(&live);
+}
+
+/// EGL's handles are used only with the library that made them and only until destroyed, attribute lists are read only
+/// as far as the slice and up to their first key EGL_NONE, and a context's calls after it is destroyed are refused.
+pub fn egl_handles_are_the_librarys_own<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let (egl, display) = (&made.egl, &made.display);
+    let mut configs = vec![None; 256];
+    let list = vec![egl::RED_SIZE];
+    egl_refuses(egl, counts, egl::BAD_ATTRIBUTE, "a key with no value", || egl.choose_config(display, &list, &mut configs).is_some());
+    let followed = heap(&[egl::RED_SIZE, 8, egl::NONE]);
+    egl_refuses(egl, counts, egl::BAD_ATTRIBUTE, "a key whose value lies past the slice", || egl.choose_config(display, &followed[..1], &mut configs).is_some());
+    let wanted = vec![egl::SURFACE_TYPE, egl::PBUFFER_BIT, egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT, egl::NONE];
+    let found = egl.choose_config(display, &wanted, &mut configs).expect("configurations");
+    let found = usize::try_from(found).unwrap_or(0);
+    assert!(found > 0 && found < configs.len(), "{found} configurations into room for {}", configs.len());
+    assert!(configs[found..].iter().all(Option::is_none), "only the configurations written are handles");
+    let config = configs[0].clone().expect("a configuration");
+    // A list with no EGL_NONE, followed in memory by a pair EGL would refuse: it ends at the slice.
+    let unended = heap(&[egl::WIDTH, SIDE, egl::HEIGHT, SIDE, egl::WIDTH, -1, egl::NONE]);
+    let surface = egl.create_pbuffer_surface(display, &config, &unended[..4]).expect("a list ended at the slice");
+    // Another library's handles: the same EGL loaded again.
+    let second = E::load(folder).expect("EGL loads again");
+    let second_display = second.get_display().expect("its display");
+    assert!(second.initialize(&second_display).is_some());
+    let mut second_configs = vec![None; 1];
+    assert!(second.choose_config(&second_display, &wanted, &mut second_configs).is_some_and(|found| found > 0));
+    let second_config = second_configs[0].clone().expect("its configuration");
+    let second_context = second.create_context(&second_display, &second_config, None, &CONTEXT_ES3).expect("its context");
+    let second_surface = second.create_pbuffer_surface(&second_display, &second_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE]).expect("its surface");
+    let other = &second_display;
+    let refuse = |what: &str, call: &dyn Fn() -> bool| egl_refuses(egl, counts, egl::BAD_DISPLAY, what, call);
+    refuse("choose_config on another library's display", &|| egl.choose_config(other, &wanted, &mut vec![None; 1]).is_some());
+    refuse("create_context on another library's display", &|| egl.create_context(other, &config, None, &CONTEXT_ES3).is_some());
+    refuse("create_pbuffer_surface on another library's display", &|| egl.create_pbuffer_surface(other, &config, &[egl::NONE]).is_some());
+    refuse("destroy_context on another library's display", &|| egl.destroy_context(other, &made.context));
+    refuse("destroy_surface on another library's display", &|| egl.destroy_surface(other, &surface));
+    refuse("get_config_attrib on another library's display", &|| egl.get_config_attrib(other, &config, egl::RED_SIZE).is_some());
+    refuse("initialize on another library's display", &|| egl.initialize(other).is_some());
+    refuse("make_current on another library's display", &|| egl.make_current(other, None, None, None));
+    refuse("query_string on another library's display", &|| egl.query_string(Some(other), egl::VENDOR).is_some());
+    refuse("query_surface on another library's display", &|| egl.query_surface(other, &surface, egl::WIDTH).is_some());
+    refuse("swap_buffers on another library's display", &|| egl.swap_buffers(other, &surface));
+    refuse("swap_interval on another library's display", &|| egl.swap_interval(other, 0));
+    let refuse = |error: i32, what: &str, call: &dyn Fn() -> bool| egl_refuses(egl, counts, error, what, call);
+    refuse(egl::BAD_CONFIG, "create_context of another library's configuration", &|| egl.create_context(display, &second_config, None, &CONTEXT_ES3).is_some());
+    refuse(egl::BAD_CONFIG, "create_pbuffer_surface of another library's configuration", &|| {
+        egl.create_pbuffer_surface(display, &second_config, &[egl::NONE]).is_some()
+    });
+    refuse(egl::BAD_CONFIG, "get_config_attrib of another library's configuration", &|| egl.get_config_attrib(display, &second_config, egl::RED_SIZE).is_some());
+    refuse(egl::BAD_CONTEXT, "create_context sharing another library's context", &|| egl.create_context(display, &config, Some(&second_context), &CONTEXT_ES3).is_some());
+    refuse(egl::BAD_CONTEXT, "make_current of another library's context", &|| egl.make_current(display, Some(&surface), Some(&surface), Some(&second_context)));
+    refuse(egl::BAD_SURFACE, "make_current drawing to another library's surface", &|| egl.make_current(display, Some(&second_surface), Some(&surface), Some(&made.context)));
+    refuse(egl::BAD_SURFACE, "make_current reading another library's surface", &|| egl.make_current(display, Some(&surface), Some(&second_surface), Some(&made.context)));
+    refuse(egl::BAD_SURFACE, "query_surface of another library's surface", &|| egl.query_surface(display, &second_surface, egl::WIDTH).is_some());
+    refuse(egl::BAD_SURFACE, "swap_buffers of another library's surface", &|| egl.swap_buffers(display, &second_surface));
+    refuse(egl::BAD_SURFACE, "destroy_surface of another library's surface", &|| egl.destroy_surface(display, &second_surface));
+    refuse(egl::BAD_CONTEXT, "destroy_context of another library's context", &|| egl.destroy_context(display, &second_context));
+    // Destroyed handles.
+    assert!(egl.destroy_surface(display, &surface));
+    refuse(egl::BAD_SURFACE, "query_surface of a destroyed surface", &|| egl.query_surface(display, &surface, egl::WIDTH).is_some());
+    refuse(egl::BAD_SURFACE, "swap_buffers of a destroyed surface", &|| egl.swap_buffers(display, &surface));
+    refuse(egl::BAD_SURFACE, "make_current drawing to a destroyed surface", &|| egl.make_current(display, Some(&surface), None, Some(&made.context)));
+    refuse(egl::BAD_SURFACE, "destroy_surface of a destroyed surface", &|| egl.destroy_surface(display, &surface));
+    let gl = &made.gl;
+    // Destroyed while current on this thread: EGL keeps it until released, the implementation refuses it at once.
     let _ = gl.get_error();
-    gl.flush();
-    assert_eq!(gl.get_error(), gl::CONTEXT_LOST, "a call after the context was destroyed");
-    assert!(!made.egl.destroy_context(&made.display, &made.context));
-    assert_eq!(made.egl.get_error(), egl::BAD_CONTEXT, "a destroyed context destroyed again");
-    assert!(made.egl.make_current(&made.display, None, None, None));
+    assert!(egl.destroy_context(display, &made.context));
+    glue_refuses(gl, counts, gl::CONTEXT_LOST, "a call after the context current on the thread was destroyed", || gl.flush());
+    assert!(egl.make_current(display, None, None, None));
+    refuse(egl::BAD_CONTEXT, "destroy_context of a destroyed context", &|| egl.destroy_context(display, &made.context));
+    refuse(egl::BAD_CONTEXT, "make_current of a destroyed context", &|| egl.make_current(display, None, None, Some(&made.context)));
+    refuse(egl::BAD_CONTEXT, "create_context sharing a destroyed context", &|| egl.create_context(display, &config, Some(&made.context), &CONTEXT_ES3).is_some());
+    let _ = gl.get_error();
+    glue_refuses(gl, counts, gl::CONTEXT_LOST, "a call after the context was destroyed", || gl.flush());
+    assert!(second.make_current(&second_display, None, None, None));
+    assert!(second.destroy_surface(&second_display, &second_surface));
+    assert!(second.destroy_context(&second_display, &second_context));
 }
 
 /// A context asked without robust buffer access gets it: the glue forces it.
@@ -278,6 +778,18 @@ pub fn robust_access_is_forced<E: Egl, G: OnEgl<E>>(folder: Option<&Path>) {
     made.gl.get_integerv(gl::CONTEXT_ROBUST_ACCESS_EXT, &mut robust);
     assert_eq!(robust[0], 1, "the context reads buffers robustly");
     assert_eq!(made.gl.get_error(), gl::NO_ERROR);
+}
+
+/// An extension's command answers None unless the context names the extension.
+pub fn extensions_answer_only_when_named<E: Egl, G: OnEgl<E>>(folder: Option<&Path>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    let mut count = [0_i32];
+    gl.get_integerv(gl::NUM_EXTENSIONS, &mut count);
+    let named: Vec<Vec<u8>> = (0..count[0].cast_unsigned()).filter_map(|index| gl.get_stringi(gl::EXTENSIONS, index)).collect();
+    let names_any = |wanted: &[&str]| wanted.iter().any(|name| named.iter().any(|named| named.as_slice() == name.as_bytes()));
+    extension_calls(gl, &names_any);
+    while gl.get_error() != gl::NO_ERROR {}
 }
 
 /// Calls every method of the trait, `rounds` times each with arguments picked by the round; nothing may end the
@@ -297,15 +809,49 @@ pub fn every_method_is_called<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, rounds
 
 #[macro_export]
 macro_rules! tests {
-    ($egl:ty, $gl:ty, $folder:expr) => {
+    ($egl:ty, $gl:ty, $folder:expr, $gl_refusals:expr, $egl_refusals:expr) => {
+        fn counts() -> $crate::Counts<$egl, $gl> {
+            $crate::Counts { gl: $gl_refusals, egl: $egl_refusals }
+        }
+
         #[test]
         fn draws_and_reads_back() {
             $crate::draws_and_reads_back::<$egl, $gl>($folder.as_deref());
         }
 
         #[test]
-        fn refuses_what_would_reach_memory() {
-            $crate::refuses_what_would_reach_memory::<$egl, $gl>($folder.as_deref());
+        fn refuses_pixels_past_what_was_given() {
+            $crate::refuses_pixels_past_what_was_given::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
+        fn refuses_vertex_reads_without_a_buffer() {
+            $crate::refuses_vertex_reads_without_a_buffer::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
+        fn counts_are_the_slices() {
+            $crate::counts_are_the_slices::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
+        fn counts_reach_only_the_slices() {
+            $crate::counts_reach_only_the_slices::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
+        fn rooms_keep_calls_inside() {
+            $crate::rooms_keep_calls_inside::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
+        fn fences_are_the_contexts_own() {
+            $crate::fences_are_the_contexts_own::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
+        fn egl_handles_are_the_librarys_own() {
+            $crate::egl_handles_are_the_librarys_own::<$egl, $gl>($folder.as_deref(), &counts());
         }
 
         #[test]
@@ -314,10 +860,70 @@ macro_rules! tests {
         }
 
         #[test]
+        fn extensions_answer_only_when_named() {
+            $crate::extensions_answer_only_when_named::<$egl, $gl>($folder.as_deref());
+        }
+
+        #[test]
         fn every_method_is_called() {
             $crate::every_method_is_called::<$egl, $gl>($folder.as_deref(), 8);
         }
     };
+}
+
+/// Calls each extension's command; one answering while the context names none of its extensions fails.
+fn extension_calls<G: OpenGlEs>(gl: &G, named: &dyn Fn(&[&str]) -> bool) {
+    let seed = 0_usize;
+    {
+        let answered = gl.blend_equation_separatei_oes(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2))).is_some();
+        assert!(named(&["GL_OES_draw_buffers_indexed"]) || !answered, "blend_equation_separatei_oes answered with none of its extensions named");
+    }
+    {
+        let answered = gl.blend_func_separatei_oes(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)), pick(&WORDS, seed.wrapping_add(3)), pick(&WORDS, seed.wrapping_add(4))).is_some();
+        assert!(named(&["GL_OES_draw_buffers_indexed"]) || !answered, "blend_func_separatei_oes answered with none of its extensions named");
+    }
+    {
+        let answered = gl.clip_control_ext(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1))).is_some();
+        assert!(named(&["GL_EXT_clip_control"]) || !answered, "clip_control_ext answered with none of its extensions named");
+    }
+    {
+        let answered = gl.color_maski_oes(pick(&WORDS, seed.wrapping_add(0)), seed.wrapping_add(1).is_multiple_of(2), seed.wrapping_add(2).is_multiple_of(2), seed.wrapping_add(3).is_multiple_of(2), seed.wrapping_add(4).is_multiple_of(2)).is_some();
+        assert!(named(&["GL_OES_draw_buffers_indexed"]) || !answered, "color_maski_oes answered with none of its extensions named");
+    }
+    {
+        let answered = gl.disablei_oes(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1))).is_some();
+        assert!(named(&["GL_OES_draw_buffers_indexed", "GL_OES_viewport_array"]) || !answered, "disablei_oes answered with none of its extensions named");
+    }
+    {
+        let answered = gl.enablei_oes(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1))).is_some();
+        assert!(named(&["GL_OES_draw_buffers_indexed", "GL_OES_viewport_array"]) || !answered, "enablei_oes answered with none of its extensions named");
+    }
+    {
+        let mut params = vec![0_u64; length(seed.wrapping_add(2))];
+        let answered = gl.get_query_objectui64v_ext(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), &mut params).is_some();
+        assert!(named(&["GL_EXT_disjoint_timer_query"]) || !answered, "get_query_objectui64v_ext answered with none of its extensions named");
+    }
+    {
+        let mut params = vec![0_i32; length(seed.wrapping_add(2))];
+        let answered = gl.get_queryiv_ext(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), &mut params).is_some();
+        assert!(named(&["GL_EXT_disjoint_timer_query", "GL_EXT_occlusion_query_boolean"]) || !answered, "get_queryiv_ext answered with none of its extensions named");
+    }
+    {
+        let answered = gl.polygon_mode_angle(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1))).is_some();
+        assert!(named(&["GL_ANGLE_polygon_mode"]) || !answered, "polygon_mode_angle answered with none of its extensions named");
+    }
+    {
+        let answered = gl.polygon_offset_clamp_ext(pick(&FLOATS, seed.wrapping_add(0)), pick(&FLOATS, seed.wrapping_add(1)), pick(&FLOATS, seed.wrapping_add(2))).is_some();
+        assert!(named(&["GL_EXT_polygon_offset_clamp"]) || !answered, "polygon_offset_clamp_ext answered with none of its extensions named");
+    }
+    {
+        let answered = gl.provoking_vertex_angle(pick(&WORDS, seed.wrapping_add(0))).is_some();
+        assert!(named(&["GL_ANGLE_provoking_vertex"]) || !answered, "provoking_vertex_angle answered with none of its extensions named");
+    }
+    {
+        let answered = gl.query_counter_ext(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1))).is_some();
+        assert!(named(&["GL_EXT_disjoint_timer_query"]) || !answered, "query_counter_ext answered with none of its extensions named");
+    }
 }
 
 /// The number of the trait's methods `call_one` calls (152 of 154: glClientWaitSync and glFinish are called by the
