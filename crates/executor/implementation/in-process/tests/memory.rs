@@ -107,11 +107,24 @@ fn a_new_memory_reads_as_zeros_and_its_window_allows_nothing() {
         assert_eq!(window_protection(&memory, at), NOTHING);
     }
     assert_eq!(window_protection(&memory, OUTSIDE), RESERVED);
+    // The slot holds the bytes below the window that translated instructions reach (a stack step of up to 60 KiB and
+    // the probe of the page below it, docs/native-without-virtual-machine.md section 3.2 rule c), and above it up to
+    // the next slot's.
+    for below in [GUEST_PAGE, REACH_BELOW] {
+        assert_eq!(
+            host_protection(memory.window_base() - below).as_deref(),
+            Some(RESERVED),
+            "{below:#x} below the window"
+        );
+    }
     assert_eq!(
-        window_protection(&memory, (1 << SLOT_BITS) - GUEST_PAGE),
+        window_protection(&memory, (1 << SLOT_BITS) - REACH_BELOW - GUEST_PAGE),
         RESERVED
     );
 }
+
+/// The bytes below a window its slot holds never mapped.
+const REACH_BELOW: u64 = 64 << 10;
 
 #[test]
 fn each_window_s_slot_table_and_displaced_code_s_are_held_inaccessible() {

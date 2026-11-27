@@ -1,4 +1,4 @@
-//! Form I's runs of translated code on a thread of this process (docs/native-without-virtual-machine.md section 5):
+//! Form I's runs of translated instructions on a thread of this process (docs/native-without-virtual-machine.md section 5):
 //! the floor, whose every entry at the in-process way's [`IN_PROCESS_ENTRIES`] ends a run, and a thread's frame, whose
 //! own words are the thread's register page and the words after it.
 
@@ -8,16 +8,18 @@ use rustix::io::Errno;
 use wcontainers_arm64::Way;
 use wcontainers_arm64::thread_state::{PAGE, RegisterPage, SCRATCH};
 use wcontainers_arm64::way::{
-    AFTER_PAGE_WORDS, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, PROCESS_ENTRY_BYTES,
+    AFTER_PAGE_WORDS, BASE, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, PROCESS_ENTRY_BYTES,
 };
 use wcontainers_executor_arm64_stop::{
     AfterPage, FloatStatus, GENERAL, GuestState, Interrupted, Taken, in_process,
 };
 use wcontainers_linux_process::{
     EXIT_BYTES, EXIT_SCRATCH_REGISTER, FRAME_REGISTER, GENERAL_REGISTERS, LinuxProcess,
-    RUN_FRAME_WORDS, RunEnd, RunFrame, VECTOR_REGISTERS,
+    RUN_FRAME_WORDS, RunEnd, RunFrame, VECTOR_REGISTERS, WINDOW_BASE_REGISTER,
 };
-use wcontainers_linux_process_direct::{DirectCodeMapping, DirectLinuxProcess, DirectRunThread};
+use wcontainers_linux_process_direct::{
+    DirectInstructionMapping, DirectLinuxProcess, DirectRunThread,
+};
 
 use crate::memory::GUEST_PAGE;
 
@@ -25,14 +27,17 @@ use crate::memory::GUEST_PAGE;
 const FLOOR_PAGE: u64 = IN_PROCESS_ENTRIES & !(GUEST_PAGE - 1);
 /// The link register, which holds the address after a call into the floor.
 const LINK: usize = GENERAL - 1;
+/// The floor's window: none, since no run starts in it; its exits are reached only by a branch from a piece.
+const NO_WINDOW: core::ops::Range<u64> = 0..0;
 /// The words of the register page, then where the words after it start, in the frame's own words.
 const PAGE_WORDS: usize = size_of::<RegisterPage>() / size_of::<u64>();
 const AFTER_PAGE_AT: usize = IN_PROCESS_WITHHELD_AT / size_of::<u64>();
 
-// The way's code finds its page in x28 and calls the floor through x30, keeping t in x23, as the exits do; an exit is
-// one entry long; the page and the words after it are the frame's own.
+// The way's instructions find their page in x28 and the window's base in x24, and call the floor through x30,
+// keeping t in x23, as the exits do; an exit is one entry long; the page and the words after it are the frame's own.
 const _: () = assert!(
     FRAME_REGISTER == PAGE
+        && WINDOW_BASE_REGISTER == BASE
         && EXIT_SCRATCH_REGISTER == SCRATCH
         && EXIT_BYTES as u64 == PROCESS_ENTRY_BYTES
         && GENERAL_REGISTERS == GENERAL
@@ -40,10 +45,10 @@ const _: () = assert!(
         && PAGE_WORDS <= AFTER_PAGE_AT
 );
 
-/// The floor of this process: a page of exits where the in-process way's code calls its entries.
+/// The floor of this process: a page of exits where the in-process way's instructions call its entries.
 #[derive(Debug)]
 pub struct Floor {
-    _exits: DirectCodeMapping,
+    _exits: DirectInstructionMapping,
 }
 
 static FLOOR: OnceLock<Result<Floor, Errno>> = OnceLock::new();
@@ -53,9 +58,11 @@ pub fn floor() -> Result<&'static Floor, Errno> {
     FLOOR
         .get_or_init(|| {
             let linux = DirectLinuxProcess;
-            let exits = linux.exit_code().repeat(GUEST_PAGE as usize / EXIT_BYTES);
+            let exits = linux
+                .exit_instructions()
+                .repeat(GUEST_PAGE as usize / EXIT_BYTES);
             linux
-                .map_code(FLOOR_PAGE as usize, &exits)
+                .map_instructions(FLOOR_PAGE as usize, &exits, NO_WINDOW, true)
                 .map(|exits| Floor { _exits: exits })
         })
         .as_ref()
@@ -67,13 +74,15 @@ pub fn floor() -> Result<&'static Floor, Errno> {
 pub enum Exit {
     /// A call into the floor, with its code.
     Call(u16),
-    /// An exit at no entry of the floor, which translated code never reaches.
+    /// An exit at no entry of the floor, which translated instructions never reach.
     Elsewhere,
-    /// The stop came before the code started: the thread is as it was entered.
+    /// The host refused the run: its pc or stack pointer is not one the piece may start with.
+    Refused,
+    /// The stop came before the instructions started: the thread is as it was entered.
     NotEntered,
-    /// The stop came while the code ran, at the hardware's pc.
+    /// The stop came while the instructions ran, at the hardware's pc.
     Stopped,
-    /// An exception of the code, at the hardware's pc.
+    /// An exception of the instructions, at the hardware's pc.
     Taken(Taken),
 }
 
@@ -103,8 +112,8 @@ impl InProcessThread {
         core::ptr::from_ref(&*self.frame) as u64
     }
 
-    /// Makes the thread go on from the guest's `state` at the host address `at`, a piece's code of `way`; its vector
-    /// registers and thread pointer stay as they are.
+    /// Makes the thread go on from the guest's `state` at the host address `at`, a piece's first instruction for
+    /// `way`; its vector registers and thread pointer stay as they are.
     pub fn enter(
         &mut self,
         way: Way,
@@ -120,10 +129,15 @@ impl InProcessThread {
         self.frame.words[AFTER_PAGE_AT..AFTER_PAGE_AT + AFTER_PAGE_WORDS].copy_from_slice(&after);
     }
 
-    /// Runs the thread's code until it calls the floor, takes an exception or is stopped.
-    pub fn run(&mut self) -> Exit {
-        match self.linux.run_code(&mut self.host, &mut self.frame) {
+    /// Runs the piece's instructions from the thread's pc until they call the floor, take an exception or are
+    /// stopped.
+    pub fn run(&mut self, instructions: &DirectInstructionMapping) -> Exit {
+        match self
+            .linux
+            .run_instructions(&mut self.host, instructions, &mut self.frame)
+        {
             RunEnd::Exit(exit) => call_at(exit),
+            RunEnd::Refused => Exit::Refused,
             RunEnd::NotEntered => Exit::NotEntered,
             RunEnd::Stopped => {
                 let registers = &mut self.frame.registers;
@@ -140,11 +154,10 @@ impl InProcessThread {
                 write,
                 alignment,
             } => {
-                let registers = &self.frame.registers;
-                Exit::Taken(if alignment && address == registers.sp {
+                // A translated piece branches only to its own instructions, the slot table and the floor, all aligned:
+                // an alignment fault at the pc is never one, and is an access like any other.
+                Exit::Taken(if alignment && address == self.frame.registers.sp {
                     Taken::StackAlignment
-                } else if alignment && address == registers.pc {
-                    Taken::JumpAlignment
                 } else {
                     Taken::Access {
                         alignment,

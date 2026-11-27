@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use wcontainers_abi::{Access, Permissions, SystemCallNumber, SystemCallRequest};
 use wcontainers_arm64::thread_state::RegisterPage;
-use wcontainers_arm64::way::Kept;
+use wcontainers_arm64::way::{Kept, OUTSIDE};
 use wcontainers_arm64::{Arm64 as Arm64Translation, Instruction, Way, decode};
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_executor::memory_space::{MemorySpace, PageTable};
@@ -23,10 +23,9 @@ use wcontainers_executor_arm64_stop::in_process::{self, Resolution};
 use wcontainers_executor_arm64_stop::{
     FloatStatus, GuestState, Piece, Resolved, SYSCALL_NUMBER, Stop, Taken, access_first,
 };
-use wcontainers_guest_cpu::HostCode;
 use wcontainers_guest_cpu::position::{Stopping, span_at};
 use wcontainers_linux_process::{LinuxProcess, Pid, RUN_STOP_SIGNAL};
-use wcontainers_linux_process_direct::{DirectCodeMapping, DirectLinuxProcess};
+use wcontainers_linux_process_direct::{DirectInstructionMapping, DirectLinuxProcess};
 use wcontainers_processor_architecture::{
     MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
 };
@@ -39,7 +38,9 @@ use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
     INSTRUCTION_SIZE, InstructionFetch, PagePermission, Processor, User, ZERO_PROCESSOR,
 };
-use wcontainers_translator::{LookAhead, translate_native_for};
+use wcontainers_translator::{
+    LookAhead, NativeRequest, TranslatedInstructions, translate_instructions,
+};
 use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::memory::{
@@ -48,9 +49,9 @@ use crate::memory::{
 use crate::run::{Exit, InProcessThread};
 
 /// Where the pieces are put in this process: past the floor, in the area no guest address reaches.
-const CODE_AREA: u64 = (1 << 45) + (1 << 34);
-/// The bytes of the code area.
-const CODE_AREA_BYTES: u64 = 1 << 40;
+const INSTRUCTION_AREA: u64 = (1 << 45) + (1 << 34);
+/// The bytes of the instruction area.
+const INSTRUCTION_AREA_BYTES: u64 = 1 << 40;
 /// How long an execution runs with no trap before the handler is asked about an interrupt, as at one from outside: one
 /// tick of a kernel built with HZ at 1000, the slice of a Linux task that runs alone on its CPU
 /// (<https://github.com/torvalds/linux/blob/master/kernel/Kconfig.hz>).
@@ -77,12 +78,21 @@ struct PieceKey {
     word: u32,
 }
 
-/// A piece of one guest instruction, translated and mapped as code where its runs find it.
+/// What every piece is asked for: no look-ahead, and the count's adds written so that it is exact wherever the piece
+/// is left.
+const REQUEST: NativeRequest = NativeRequest {
+    look_ahead: LookAhead::None,
+    exact_replay: true,
+    stop: false,
+    step: false,
+};
+
+/// A piece of one guest instruction, translated and mapped where its runs find it.
 #[derive(Debug)]
 struct Loaded {
-    code: HostCode,
+    instructions: TranslatedInstructions<Way>,
     at: u64,
-    _mapping: DirectCodeMapping,
+    mapping: DirectInstructionMapping,
 }
 
 impl InProcess {
@@ -95,7 +105,7 @@ impl InProcess {
     }
 
     /// The piece of the guest instruction `word` at `guest`, run in `way`, translated and mapped on first use, and
-    /// whether it was translated now; none where the instruction cannot be translated or the code area is full.
+    /// whether it was translated now; none where the instruction cannot be translated or the instruction area is full.
     fn piece(&mut self, way: Way, guest: u64, word: u32) -> Option<(Rc<Loaded>, bool)> {
         let Way::InProcess {
             slot, displaced, ..
@@ -112,37 +122,45 @@ impl InProcess {
         if let Some(loaded) = self.pieces.get(&key) {
             return Some((Rc::clone(loaded), false));
         }
-        let code = translate_native_for::<Arm64Translation>(
+        let instructions = translate_instructions::<Arm64Translation>(
             &word.to_le_bytes(),
             guest,
-            LookAhead::None,
-            true,
+            &REQUEST,
             &way,
             &(),
         )?;
-        let mut bytes = code.bytes.clone();
-        bytes.resize(bytes.len().next_multiple_of(GUEST_PAGE as usize), 0);
-        let (at, mapping) = map_in_code_area(&bytes)?;
+        let window = way.window_base()..way.window_base() + OUTSIDE;
+        let bytes = instructions.padded(GUEST_PAGE as usize);
+        let (at, mapping) = map_in_instruction_area(&bytes, &window, displaced)?;
         let loaded = Rc::new(Loaded {
-            code,
+            instructions,
             at,
-            _mapping: mapping,
+            mapping,
         });
         self.pieces.insert(key, Rc::clone(&loaded));
         Some((loaded, true))
     }
 }
 
-/// The next free place in the code area, taken for good.
-static NEXT_CODE: Mutex<u64> = Mutex::new(CODE_AREA);
+/// The next free place in the instruction area, taken for good.
+static NEXT_INSTRUCTIONS: Mutex<u64> = Mutex::new(INSTRUCTION_AREA);
 
-/// Maps `bytes` at the next free place of the code area: where something else of this process maps, the place after.
-fn map_in_code_area(bytes: &[u8]) -> Option<(u64, DirectCodeMapping)> {
-    let mut next = NEXT_CODE.lock().unwrap_or_else(PoisonError::into_inner);
-    while *next + bytes.len() as u64 <= CODE_AREA + CODE_AREA_BYTES {
+/// Maps the translator's instructions `bytes`, made for the host addresses `window`, at the next free place of the
+/// instruction area: where something else of this process maps, the place after.
+fn map_in_instruction_area(
+    bytes: &[u8],
+    window: &core::ops::Range<u64>,
+    displaced: bool,
+) -> Option<(u64, DirectInstructionMapping)> {
+    let mut next = NEXT_INSTRUCTIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    while *next + bytes.len() as u64 <= INSTRUCTION_AREA + INSTRUCTION_AREA_BYTES {
         let at = *next;
         *next += bytes.len() as u64;
-        if let Ok(mapping) = DirectLinuxProcess.map_code(at as usize, bytes) {
+        if let Ok(mapping) =
+            DirectLinuxProcess.map_instructions(at as usize, bytes, window.clone(), displaced)
+        {
             return Some((at, mapping));
         }
     }
@@ -499,11 +517,11 @@ impl<'run> Run<'run> {
     ) -> Option<Trap> {
         let piece = Piece {
             base: loaded.at,
-            length: loaded.code.bytes.len(),
-            spans: &loaded.code.spans,
+            length: loaded.instructions.bytes().len(),
+            spans: &loaded.instructions.code().spans,
         };
         loop {
-            let taken = match self.thread.run() {
+            let taken = match self.thread.run(&loaded.mapping) {
                 Exit::Call(code) => Taken::Call(code),
                 Exit::Taken(taken) => taken,
                 // A stop that came after the interrupt it was sent for was taken: the run goes on as it was entered.
@@ -527,7 +545,7 @@ impl<'run> Run<'run> {
                     self.page = self.thread.page();
                     return asked.then_some(Trap::Interrupt);
                 }
-                Exit::Elsewhere => return Some(Trap::Ended(host_refused())),
+                Exit::Elsewhere | Exit::Refused => return Some(Trap::Ended(host_refused())),
             };
             let memory = self.memory;
             let resolution = in_process::resolve(
@@ -544,7 +562,7 @@ impl<'run> Run<'run> {
             match resolution {
                 None => return Some(Trap::Ended(host_refused())),
                 Some(Resolution::Outside { address, state }) => {
-                    let access = access_of(word_at(self.memory, state.pc), false);
+                    let access = access_of(word_at(self.memory, state.pc));
                     self.state = state;
                     self.page = page;
                     return Some(Trap::MemoryFault { address, access });
@@ -624,16 +642,16 @@ impl<'run> Run<'run> {
                 Trap::Ended(Exception::ProgramCounterAlignmentFault { address })
             }
             Stop::Alignment(_) => Trap::Ended(Exception::StackPointerAlignmentFault),
-            Stop::MemoryFault { address, write } => Trap::MemoryFault {
+            Stop::MemoryFault { address, .. } => Trap::MemoryFault {
                 address: address | tag,
-                access: access_of(word_at(self.memory, pc), write),
+                access: access_of(word_at(self.memory, pc)),
             },
         })
     }
 }
 
 /// The top byte of the address the access at host address `pc` of the piece made from the state, which the in-process
-/// way's code drops before it reaches the window, so that no host fault reports it; zero for an instruction of no access.
+/// way's instructions drop before they reach the window, so that no host fault reports it; zero for an instruction of no access.
 fn access_tag(piece: &Piece<'_>, pc: u64, state: &GuestState) -> u64 {
     let Ok(offset) = u32::try_from(pc.wrapping_sub(piece.base)) else {
         return 0;
@@ -694,11 +712,17 @@ fn word_at(memory: &InProcessMemory, pc: u64) -> u32 {
     u32::from_le_bytes(word)
 }
 
-/// What the faulting instruction `word` did, as Linux reports it: a write where the host said so or where it stores.
-fn access_of(word: u32, write: bool) -> Access {
+/// What the faulting instruction `word` did, as Linux reports it (the abort's WnR bit): a write where it writes memory,
+/// `dc zva`, which zeroes its block, and the atomics, which write what they read, among them. The instruction decides,
+/// not the host's access: a probe of a store that crosses a page reads, and an access outside the window is the mark's
+/// read; and every instruction that runs is one this decoder knows.
+fn access_of(word: u32) -> Access {
     let stores = matches!(
         decode(word),
         Instruction::Store { .. }
+            | Instruction::ZeroBlock { .. }
+            | Instruction::Atomic { .. }
+            | Instruction::CompareSwap { .. }
             | Instruction::StorePair { .. }
             | Instruction::StoreVector { .. }
             | Instruction::StoreVectorPair { .. }
@@ -706,11 +730,7 @@ fn access_of(word: u32, write: bool) -> Access {
             | Instruction::StoreRelease { .. }
             | Instruction::SimdMemory { load: false, .. }
     );
-    if write || stores {
-        Access::Write
-    } else {
-        Access::Read
-    }
+    if stores { Access::Write } else { Access::Read }
 }
 
 fn to_permissions(permission: PagePermission) -> Permissions {
@@ -796,7 +816,7 @@ fn trapped(word: u32) -> Option<Exception> {
     }
 }
 
-/// The exception an execution ends with where the host refused it a run or its code reported what no piece does: an
+/// The exception an execution ends with where the host refused it a run or its instructions reported what no piece does: an
 /// SError, the interface having no other way to say it.
 fn host_refused() -> Exception {
     Exception::Undecoded {
@@ -821,7 +841,7 @@ impl Interruption {
         self.target.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Asks for an interrupt, which the run takes before its next entry, and stops a run of its code.
+    /// Asks for an interrupt, which the run takes before its next entry, and stops a run of its instructions.
     fn interrupt(&self) {
         self.requested.store(true, Ordering::Release);
         if let Some(thread) = *self.target() {
@@ -831,7 +851,7 @@ impl Interruption {
 }
 
 /// Interrupts one execution of form I: a request its run takes before its next entry, and the stop signal to its
-/// thread, which ends a run of its code.
+/// thread, which ends a run of its instructions.
 #[derive(Debug)]
 pub struct InProcessInterrupter {
     interruption: Arc<Interruption>,

@@ -8,6 +8,11 @@ use rustix::process::{Resource, Rlimit};
 use wcontainers_arm64::way::{IN_PROCESS_SLOTS, SLOT_BITS};
 use wcontainers_executor_in_process::memory::{CreateMemoryError, InProcessPool};
 
+/// The bytes below a window that translated instructions reach: a stack step of up to 60 KiB, then a probe of the
+/// page below it (docs/native-without-virtual-machine.md section 3.2, rule c), which a slot must hold never mapped
+/// whether the slot below is held or not.
+const REACH_BELOW: u64 = 64 << 10;
+
 /// Whether this process maps the host address, read from its own `/proc/self/maps`.
 fn is_mapped(address: u64) -> bool {
     let maps = std::fs::read_to_string("/proc/self/maps").expect("the process's own maps");
@@ -57,17 +62,38 @@ fn every_free_slot_is_taken_once_then_refused_and_given_back_unmapped() {
         "{left_out} slots left out"
     );
 
-    let (memory, table) = memories.pop().expect("at least one memory");
-    let slot = memory.slot();
-    let base = memory.window_base();
-    drop(memory);
-    assert!(
-        is_mapped(base),
-        "a memory's slot is held while its table is"
-    );
-    drop(table);
-    assert!(!is_mapped(base), "a dropped memory's slot is unmapped");
-    assert!(!is_mapped(base + (1 << SLOT_BITS) - 1));
-    let (again, _again_table) = pool.create_memory().expect("the slot given back");
-    assert_eq!(again.slot(), slot);
+    // The lowest slot, whose neighbor below is no memory's, and another.
+    let lowest = memories
+        .iter()
+        .position(|(memory, _)| memory.slot() == 1)
+        .expect("slot 1 is free in a new process");
+    for (memory, table) in [
+        memories.swap_remove(lowest),
+        memories.pop().expect("a second memory"),
+    ] {
+        let slot = memory.slot();
+        let base = memory.window_base();
+        drop(memory);
+        for held in [base - REACH_BELOW, base - 1, base] {
+            assert!(
+                is_mapped(held),
+                "{held:#x} of slot {slot} is held while its table is"
+            );
+        }
+        drop(table);
+        for given_back in [
+            base - REACH_BELOW,
+            base - 1,
+            base,
+            base + (1 << SLOT_BITS) - REACH_BELOW - 1,
+        ] {
+            assert!(
+                !is_mapped(given_back),
+                "{given_back:#x} of slot {slot} is unmapped once dropped"
+            );
+        }
+        let again = pool.create_memory().expect("the slot given back");
+        assert_eq!(again.0.slot(), slot);
+        memories.push(again);
+    }
 }

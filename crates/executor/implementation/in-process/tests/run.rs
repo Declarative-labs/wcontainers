@@ -186,6 +186,8 @@ struct Handler<'table> {
     /// Set at the first interrupt, which is then answered terminate; without it every interrupt, an end of a slice
     /// among them, is answered continue.
     interrupted: Option<&'table AtomicBool>,
+    /// Interrupts answered continue before one is answered terminate, where given.
+    interrupts_before_end: Option<usize>,
 }
 
 impl TrapHandler for Handler<'_> {
@@ -217,6 +219,13 @@ impl TrapHandler for Handler<'_> {
 
     fn handle_interrupt(&mut self) -> InterruptResponse {
         self.interrupts += 1;
+        if let Some(before_end) = self.interrupts_before_end {
+            return if self.interrupts > before_end {
+                InterruptResponse::Terminate
+            } else {
+                InterruptResponse::Continue
+            };
+        }
         match self.interrupted {
             Some(interrupted) => {
                 interrupted.store(true, Ordering::Release);
@@ -667,4 +676,229 @@ fn an_interrupt_asked_before_the_execution_runs_is_taken_first() {
     assert_eq!(handler.interrupts, 1);
     assert_eq!(ended.program_counter, CODE);
     assert_eq!(ended.exception, None);
+}
+
+/// `svc #0` then `b .-4`: a guest that makes system call after system call, so that every slice has a trap.
+const BRANCH_BACK: u32 = 0x17ff_ffff;
+/// System calls the guest may make before the handler ends the execution.
+const MANY_CALLS: usize = 2000;
+
+#[test]
+fn an_interrupt_asked_before_the_execution_is_taken_first_by_a_guest_that_keeps_making_system_calls()
+ {
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &[SYSTEM_CALL, BRANCH_BACK], 0);
+    let (execution, interrupter) = executor.prepare_execution(before(10), &memory);
+    interrupter.interrupt();
+    let interrupted = AtomicBool::new(false);
+    let mut handler = Handler {
+        returning: MANY_CALLS,
+        interrupted: Some(&interrupted),
+        ..Handler::default()
+    };
+    let ExecutionStop::Terminated(ended) = execution.run(&mut handler) else {
+        panic!("form I never waits");
+    };
+    assert_eq!((handler.calls.len(), handler.interrupts), (0, 1));
+    assert_eq!(ended.program_counter, CODE);
+    assert_eq!(ended.exception, None);
+}
+
+/// `ldadd x0, x3, [x1]`, `dc zva, x1` and `ic ivau, x1`
+/// ([Arm ARM, C6.2](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions)).
+const ATOMIC_ADD: u32 = 0xf820_0023;
+const ZERO_BLOCK: u32 = 0xd50b_7421;
+const CODE_CHANGED: u32 = 0xd50b_7521;
+
+/// Runs `instruction` then a system call with x1 at `address`, and returns the faults the handler was given and the
+/// execution's end.
+fn fault_of(
+    executor: &mut InProcess,
+    instruction: u32,
+    address: u64,
+) -> (Vec<(u64, Access)>, Processor<()>) {
+    let (memory, _table) = memory(executor, &[instruction, SYSTEM_CALL], 0);
+    let mut start = before(11);
+    start.general_purpose_registers[BASE_FROM] = address;
+    let mut handler = Handler::default();
+    let ended = execute(executor, &memory, start, &mut handler);
+    (handler.faults, ended)
+}
+
+/// Linux reports an atomic access and `dc zva` as writes (the abort's WnR bit, arch/arm64/mm/fault.c
+/// `is_write_abort`) and a cache maintenance by address that faults as a read (its CM bit), whether the page refuses
+/// it or the address is outside the window.
+#[test]
+fn a_fault_is_a_write_or_a_read_as_linux_reports_it() {
+    let mut executor = executor();
+    let write = |address| {
+        (
+            vec![(address, Access::Write)],
+            Some(Exception::DataAbort {
+                status: if address == READ_ONLY {
+                    FaultStatus::PermissionFaultLevel3
+                } else {
+                    FaultStatus::TranslationFaultLevel3
+                },
+                access: AccessDirection::Write,
+                address,
+            }),
+        )
+    };
+    for (name, instruction, address, wanted) in [
+        ("ldadd", ATOMIC_ADD, READ_ONLY, write(READ_ONLY)),
+        ("dc zva", ZERO_BLOCK, READ_ONLY, write(READ_ONLY)),
+        ("dc zva", ZERO_BLOCK, GUARD, write(GUARD)),
+        ("ldadd", ATOMIC_ADD, GUARD, write(GUARD)),
+        (
+            "ic ivau",
+            CODE_CHANGED,
+            NOTHING,
+            (
+                vec![(NOTHING, Access::Read)],
+                Some(Exception::DataAbort {
+                    status: FaultStatus::TranslationFaultLevel3,
+                    access: AccessDirection::Read,
+                    address: NOTHING,
+                }),
+            ),
+        ),
+    ] {
+        let (faults, ended) = fault_of(&mut executor, instruction, address);
+        assert_eq!((faults, ended.exception), wanted, "{name} at {address:#x}");
+        assert_eq!(ended.program_counter, CODE, "{name} at {address:#x}");
+    }
+    // On a page the guest may read, a code change is announced and the guest goes on to its system call.
+    for page in [READ_ONLY, DATA] {
+        let (faults, ended) = fault_of(&mut executor, CODE_CHANGED, page);
+        assert_eq!(faults, [], "ic ivau at {page:#x}");
+        assert_eq!(
+            ended.exception,
+            Some(Exception::SupervisorCall { immediate: 0 }),
+            "ic ivau at {page:#x}"
+        );
+    }
+}
+
+/// Interrupts that land anywhere while a guest makes system call after system call, in a call into the floor too, are
+/// each answered continue and change nothing: every call is made with what the last one returned, and the execution
+/// ends at the one the handler ends.
+#[test]
+fn interrupts_that_land_anywhere_change_nothing_the_guest_sees() {
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &[SYSTEM_CALL, BRANCH_BACK], 0);
+    let start = before(12);
+    let (execution, interrupter) = executor.prepare_execution(start.clone(), &memory);
+    let done = AtomicBool::new(false);
+    let (stop, handler) = std::thread::scope(|scope| {
+        let done = &done;
+        let interrupter = &interrupter;
+        scope.spawn(move || {
+            while !done.load(Ordering::Acquire) {
+                interrupter.interrupt();
+            }
+        });
+        let mut handler = Handler {
+            returning: MANY_CALLS,
+            ..Handler::default()
+        };
+        let stop = execution.run(&mut handler);
+        done.store(true, Ordering::Release);
+        (stop, handler)
+    });
+    let ExecutionStop::Terminated(ended) = stop else {
+        panic!("form I never waits");
+    };
+    eprintln!("interrupts answered: {}", handler.interrupts);
+    assert_eq!(
+        ended.exception,
+        Some(Exception::SupervisorCall { immediate: 0 }),
+        "{ended:x?}"
+    );
+    assert_eq!(handler.calls.len(), MANY_CALLS + 1);
+    assert_eq!(
+        handler.calls[0].arguments[0],
+        start.general_purpose_registers[0]
+    );
+    assert!(
+        handler.calls[1..]
+            .iter()
+            .all(|call| call.arguments[0] == RETURNED)
+    );
+    assert_eq!(ended.program_counter, CODE + size_of::<u32>() as u64);
+    assert_eq!(ended.general_purpose_registers[0], RETURNED);
+    assert!(handler.interrupts > 0, "no interrupt came");
+}
+
+/// The slice after which an execution that took no trap is interrupted: a tick at 1000 Hz.
+const SLICE: std::time::Duration = std::time::Duration::from_millis(1);
+/// Interrupts a guest that never traps is given before the handler ends it.
+const SLICES: usize = 20;
+
+/// A guest that never traps is interrupted at the end of each slice, as at a tick from outside, and goes on when the
+/// handler answers continue; one that traps in every slice is not.
+#[test]
+fn a_guest_is_interrupted_after_each_slice_in_which_it_took_no_trap() {
+    let mut executor = executor();
+    let (spinning, _spinning_table) = memory(&executor, &[BRANCH_TO_ITSELF], 0);
+    let mut handler = Handler {
+        interrupts_before_end: Some(SLICES),
+        ..Handler::default()
+    };
+    let started = std::time::Instant::now();
+    let ended = execute(&mut executor, &spinning, before(13), &mut handler);
+    let took = started.elapsed();
+    assert_eq!(handler.interrupts, SLICES + 1);
+    assert!(took >= SLICE * (SLICES + 1) as u32, "{took:?}");
+    assert_eq!((ended.program_counter, ended.exception), (CODE, None));
+
+    let (calling, _calling_table) = memory(&executor, &[SYSTEM_CALL, BRANCH_BACK], 0);
+    let mut handler = Handler {
+        returning: MANY_CALLS * 10,
+        ..Handler::default()
+    };
+    let started = std::time::Instant::now();
+    let ended = execute(&mut executor, &calling, before(14), &mut handler);
+    let slices = started.elapsed().as_micros() / SLICE.as_micros();
+    assert_eq!(handler.calls.len(), MANY_CALLS * 10 + 1);
+    assert_eq!(
+        ended.exception,
+        Some(Exception::SupervisorCall { immediate: 0 })
+    );
+    // A slice the host took from the guest's thread may end with no trap; most do not.
+    assert!(
+        (handler.interrupts as u128) * 4 < slices.max(1),
+        "{} interrupts in {slices} slices",
+        handler.interrupts
+    );
+}
+
+/// An execution on a thread that already runs one is refused: it ends at once with an SError
+/// ([ESR_EL1.EC](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-)
+/// 0b101111, in bits 31 to 26 of the syndrome), the interface having no other way to say so, and the guest's state as
+/// it was.
+#[test]
+fn an_execution_on_a_thread_that_already_runs_one_ends_in_an_serror() {
+    const SERROR: u64 = 0b10_1111;
+    const EXCEPTION_CLASS_SHIFT: u32 = 26;
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &INSTRUCTIONS, 0);
+    let held = DirectLinuxProcess
+        .prepare_run_thread()
+        .expect("this thread is prepared");
+    let start = before(15);
+    let mut handler = Handler::default();
+    let ended = execute(&mut executor, &memory, start.clone(), &mut handler);
+    drop(held);
+    assert_eq!(
+        ended,
+        Processor {
+            exception: Some(Exception::Undecoded {
+                syndrome: SERROR << EXCEPTION_CLASS_SHIFT,
+                fault_address: 0,
+            }),
+            ..start
+        }
+    );
+    assert!(handler.calls.is_empty());
 }
