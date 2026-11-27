@@ -1,10 +1,7 @@
 //! The WebAssembly executor: the translator's output for ARM64, run by wasmtime behind the executor interface.
 //!
-//! A space is the 2^48 addresses of a 48-bit virtual address, whose windows of 4 GiB that hold anything are in a memory
-//! file, mapped once into a host memory that every thread's store takes as its guest memory. Each executor keeps one store for each space it ran on. Code is translated where a thread first
-//! reaches it, kept by its bytes for every executor of the process, and dropped when it is written over. The trap
-//! handler is asked from inside the hooks the translated code calls, while the guest's WebAssembly frames stay where
-//! they are.
+//! A space's bytes are in a memory file that every thread's store takes as its guest memory. Code is translated where a
+//! thread first reaches it and dropped when it is written over; the handler is asked from inside the hooks it calls.
 
 mod engine;
 mod single_instruction;
@@ -46,13 +43,16 @@ pub struct WasmtimeExecutor {
 pub struct WasmtimeTranslatorConfig {
     /// The look-ahead code reached at run time is translated at.
     pub look_ahead: LookAhead,
-    /// The slice of a run: after this many events of the translator's progress count (the guest's executed jumps that
-    /// can go backward, calls and returns) the run asks the handler as at an interrupt from outside, and again after
-    /// each such slice; none for a run no slice bounds.
+    /// The slice of a run, in events of the translator's progress count; none for a run no slice bounds.
+    ///
+    /// The events are the guest's executed jumps that can go backward, calls and returns; after each slice the run asks
+    /// the handler as at an interrupt from outside.
     pub slice: Option<NonZeroU64>,
 }
 
 /// Tuning number: the progress events of a slice, a few milliseconds of a loop of a few instructions.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 pub const DEFAULT_SLICE: NonZeroU64 = NonZeroU64::new(1 << 22).expect("a slice of events");
 
 impl Default for WasmtimeTranslatorConfig {
@@ -69,8 +69,7 @@ impl Default for WasmtimeTranslatorConfig {
 pub enum WasmtimeError {
     #[error("the host refused the memory of a space: {0}")]
     HostRefused(String),
-    /// A state's memory lies outside the addresses a space has, or in more windows than a space holds, or its program
-    /// counter past the addresses code runs from.
+    /// A state's memory lies outside a space or in more windows than it holds, or its code past where code runs.
     #[error("the state reaches past the addresses of a space")]
     AddressOutsideSpace,
 }
@@ -193,8 +192,7 @@ impl Execution for WasmtimeExecution<'_> {
     /// Never made: a thread of this executor never waits.
     type Wait = Ready<()>;
 
-    /// Runs until the next trap, then asks the handler from inside the hook the trap called, until the handler ends the
-    /// execution.
+    /// Runs until the next trap, then asks the handler from inside the trap's hook, until the handler ends it.
     fn run(self, handler: &mut impl TrapHandler) -> ExecutionStop<Processor<()>, Ready<()>> {
         let thread = self.thread;
         let wasmtime = thread

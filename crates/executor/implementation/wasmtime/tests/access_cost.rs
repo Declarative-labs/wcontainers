@@ -1,5 +1,6 @@
-//! What one guest load or store costs, below 4 GiB and on the top page of the 2^48 bytes of addresses: a loop that
-//! loads, adds to and stores a word, timed against the same loop without the accesses.
+//! What one guest load or store costs below 4 GiB and on the top page of the 2^48 bytes of addresses.
+//!
+//! A loop loads, adds to and stores a word, timed against the same loop without the accesses.
 
 use std::time::{Duration, Instant};
 
@@ -19,19 +20,29 @@ const LOAD: u32 = 0xF940_0001;
 const ADD_ONE: u32 = 0x9100_0421;
 /// STR X1, [X0] (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate-->).
 const STORE: u32 = 0xF900_0001;
-/// AND X5, X2, #0x1FF, the word of the page this round uses (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->).
+/// AND X5, X2, #0x1FF, the word of the page this round uses.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate->
 const WORD_OF_PAGE: u32 = 0x9240_2045;
 /// LDR X1, [X0, X5, LSL #3] (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--register---Load-register--register-->).
 const LOAD_INDEXED: u32 = 0xF865_7801;
 /// STR X1, [X0, X5, LSL #3] (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--register---Store-register--register-->).
 const STORE_INDEXED: u32 = 0xF825_7801;
-/// SUBS X2, X2, #1 (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--immediate---Subtract-immediate-value--setting-flags->).
+/// SUBS X2, X2, #1, which counts the rounds down.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--immediate---Subtract-immediate-value--setting-flags->
 const COUNT_DOWN: u32 = 0xF100_0442;
-/// B.NE back to the loop's first instruction, one instruction back (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->).
+/// `B.NE` one instruction back, to the loop's first instruction.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
 const AGAIN_ONE_BACK: u32 = 0x54FF_FFE1;
-/// B.NE four instructions back.
+/// `B.NE` four instructions back, to the loop's first instruction.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
 const AGAIN_FOUR_BACK: u32 = 0x54FF_FF81;
-/// B.NE five instructions back.
+/// `B.NE` five instructions back, to the loop's first instruction.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
 const AGAIN_FIVE_BACK: u32 = 0x54FF_FF61;
 /// SVC #0 (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SVC--Supervisor-call->).
 const SUPERVISOR_CALL: u32 = 0xD400_0001;
@@ -76,8 +87,7 @@ struct Case {
     data: u64,
 }
 
-/// Runs the code at its start with X0 the data page and X2 the rounds, until its system call, and returns how long it
-/// took.
+/// Runs the code with X0 the data page and X2 the rounds until its system call, and returns how long it took.
 fn run(
     executor: &mut WasmtimeExecutor,
     memory: &<WasmtimeExecutor as Executor>::GuestMemory,

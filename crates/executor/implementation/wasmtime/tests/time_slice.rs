@@ -64,8 +64,9 @@ impl TrapHandler for Interrupts {
     }
 }
 
-/// Places the code at the lowest address of a new space of the executor, runs it from there with x0 holding `count`,
-/// and returns the state it ended in and the interrupts it asked about.
+/// Runs the code from the lowest address of a new space with x0 holding `count`, and returns how it ended.
+///
+/// What it returns is the state the code ended in and the interrupts it asked about.
 fn run(
     executor: &mut WasmtimeExecutor,
     code: &[u32],

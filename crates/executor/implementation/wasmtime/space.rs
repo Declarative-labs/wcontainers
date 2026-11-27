@@ -1,10 +1,7 @@
-//! A guest's address space: its bytes in a memory file mapped into one host memory, which every store's guest memory
-//! is; what each page allows; the state memory its threads share; and the gate that stops them for a change.
+//! A guest's address space: its memory file and host memory, its page permissions, its state memory and its gate.
 //!
-//! A space has the 2^48 bytes of addresses of a 48-bit virtual address, in windows of 4 GiB (the translator's address
-//! windows). The guest memory holds [`HOST_WINDOWS`] of them, each followed by a page that shows the next window's
-//! first page; window 0 is always the first, and a window gets one of the others when one of its addresses is first
-//! given bytes or permissions.
+//! Its 2^48 bytes of addresses are in windows of 4 GiB (the translator's address windows); the guest memory holds
+//! [`HOST_WINDOWS`] of them, window 0 first, each followed by a page that shows the next window's first page.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -40,25 +37,32 @@ const SPACE_PAGES: u64 = SPACE_BYTES / PAGE_SIZE;
 /// The pages of address one window holds.
 const WINDOW_PAGES: u64 = WINDOW_BYTES / PAGE_SIZE;
 /// Tuning number: the windows of addresses a space's guest memory holds at once, window 0 among them.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 pub(crate) const HOST_WINDOWS: u64 = 8;
-/// The bytes after each window's place that show the next window's first page: a WebAssembly page, so that every
-/// window's place is whole host pages on every host.
+/// The bytes after each window's place that show the next window's first page: a WebAssembly page.
+///
+/// A WebAssembly page keeps every window's place whole host pages on every host.
 const SPILL_BYTES: u64 = WASM_PAGE_BYTES;
 /// The pages from one window's place to the next one's.
 const STRIDE_PAGES: u64 = (WINDOW_BYTES + SPILL_BYTES) / PAGE_SIZE;
 /// The bytes of a space's guest memory: its windows' places, each with the bytes after it.
 pub(crate) const GUEST_BYTES: u64 = HOST_WINDOWS * STRIDE_PAGES * PAGE_SIZE;
 /// The inaccessible bytes after a guest memory, which wasmtime's compiled code may rely on to fault: its default guard.
+///
+/// <https://docs.rs/wasmtime/latest/wasmtime/struct.Config.html#method.memory_guard_size>
 pub(crate) const GUEST_GUARD_BYTES: u64 = 32 << 20;
 /// The pages of a space's guest memory, which the permission table has a byte for each of.
 pub(crate) const GUEST_PAGES: u64 = GUEST_BYTES / PAGE_SIZE;
 /// The window table's place for a window the guest memory does not hold: past the permission table's pages.
 const NO_PLACE: u64 = GUEST_BYTES;
-/// No window: what [`Pages::windows`] holds for a window not given a place.
+/// What [`Pages::windows`] holds for a window not given a place.
 const NO_WINDOW: u8 = u8::MAX;
 /// The bytes of the state memory: all a 32-bit memory has.
 const STATE_BYTES: u64 = 1 << u32::BITS;
-/// The bytes of the state memory given to thread blocks, from its start.
+/// Tuning number: the bytes of the state memory given to thread blocks, from its start.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const BLOCKS_BYTES: u64 = 1 << 20;
 /// Thread blocks start at a multiple of the guest's widest register, a 128-bit vector register.
 const THREAD_ALIGN: u64 = size_of::<u128>() as u64;
@@ -79,17 +83,21 @@ pub(crate) const GUEST_WASM_PAGES: u64 = GUEST_BYTES / WASM_PAGE_BYTES;
 const STATE_WASM_PAGES: u64 = STATE_BYTES / WASM_PAGE_BYTES;
 /// The name a space's memory file has, which only debugging shows.
 const FILE_NAME: &str = "wcontainers-guest";
-/// Pages of records kept together, allocated when one of them is first given anything.
+/// Tuning number: the pages of records kept together, allocated when one of them is first given anything.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const CHUNK_PAGES: usize = 1 << 12;
-/// The bytes copied at once between two memory files.
+/// Tuning number: the bytes copied at once between two memory files.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const COPY_BYTES: usize = 1 << 20;
 
-/// A page record's bits beside its permissions (`Permissions::bits`): it was given permissions, so it is mapped.
-const MAPPED: u8 = 1 << 3;
-/// The page holds code a load was translated from, so the table takes writing from it.
-const CODE: u8 = 1 << 4;
 /// The bits of a record that are its permissions.
 const PERMISSION_BITS: u8 = Permissions::all().bits();
+/// A page record's bit above its permissions (`Permissions::bits`): it was given permissions, so it is mapped.
+const MAPPED: u8 = PERMISSION_BITS + 1;
+/// The page holds code a load was translated from, so the table takes writing from it.
+const CODE: u8 = MAPPED << 1;
 
 /// A space's pages, its file, its state memory and its code, shared by its memory, its table and every thread on it.
 pub(crate) struct Space {
@@ -108,8 +116,7 @@ pub(crate) struct Space {
     pub(crate) load_count: AtomicUsize,
 }
 
-/// Each page's record, and the pages shown from another file, by the page's place in the guest memory; and the place
-/// of each window.
+/// Each page's record and backing, by its place in the guest memory, and the place of each window.
 struct Pages {
     chunks: Vec<Option<Box<[u8; CHUNK_PAGES]>>>,
     /// By page of the guest memory, where a page mapped from another space's pages shows them from.
@@ -155,8 +162,9 @@ pub(crate) struct Gate {
     blocks: Mutex<Vec<u32>>,
 }
 
-/// The guest memory a [`WasmtimeExecutor`](crate::WasmtimeExecutor) makes: a space of the 2^48 addresses of a 48-bit
-/// virtual address, at most [`HOST_WINDOWS`] windows of 4 GiB of them holding bytes or permissions at once.
+/// The guest memory a [`WasmtimeExecutor`](crate::WasmtimeExecutor) makes: a space of 2^48 bytes of addresses.
+///
+/// At most [`HOST_WINDOWS`] windows of 4 GiB of them hold bytes or permissions at once.
 pub struct WasmtimeMemory {
     pub(crate) space: Arc<Space>,
 }
@@ -218,8 +226,9 @@ impl Pages {
         (host_window != NO_WINDOW).then(|| first_place_page(host_window) + page % WINDOW_PAGES)
     }
 
-    /// Returns the page of address a page of the guest memory shows, if it shows one: a page of a window's place, or
-    /// the page after the place, which shows the next window's first page.
+    /// Returns the page of address a page of the guest memory shows, if it shows one.
+    ///
+    /// A page of a window's place shows a page of the window, and the page after the place the next window's first.
     fn address_page(&self, place: u64) -> Option<u64> {
         let host_window = u8::try_from(place / STRIDE_PAGES).ok()?;
         let window = self
@@ -231,21 +240,21 @@ impl Pages {
 
     fn record(&self, page: u64) -> u8 {
         let Some(place) = self.place(page) else {
-            return 0;
+            return u8::MIN;
         };
         let place = usize::try_from(place).unwrap_or(usize::MAX);
         self.chunks
             .get(place / CHUNK_PAGES)
             .and_then(Option::as_ref)
-            .map_or(0, |chunk| chunk[place % CHUNK_PAGES])
+            .map_or(u8::MIN, |chunk| chunk[place % CHUNK_PAGES])
     }
 
     /// Changes the record of a page whose window has a place.
     fn change(&mut self, page: u64, change: impl FnOnce(u8) -> u8) {
         let place = self.place(page).expect("a page of a window with a place");
         let place = usize::try_from(place).expect("a page of the guest memory");
-        let chunk =
-            self.chunks[place / CHUNK_PAGES].get_or_insert_with(|| Box::new([0; CHUNK_PAGES]));
+        let chunk = self.chunks[place / CHUNK_PAGES]
+            .get_or_insert_with(|| Box::new([u8::MIN; CHUNK_PAGES]));
         let record = &mut chunk[place % CHUNK_PAGES];
         *record = change(*record);
     }
@@ -280,7 +289,7 @@ impl Space {
             .map_err(refused)?;
         let state = StateMemory::new(
             &shared.engine,
-            u32::try_from(STATE_WASM_PAGES).expect("a 32-bit memory's pages"),
+            u32::try_from(STATE_WASM_PAGES).expect("the pages of the state memory"),
         )
         .map_err(|error| WasmtimeError::HostRefused(error.to_string()))?;
         let chunks = usize::try_from(GUEST_PAGES)
@@ -288,10 +297,18 @@ impl Space {
             .div_ceil(CHUNK_PAGES);
         // Window 0 is the first window of the guest memory, at 0; every other has no place yet.
         let mut windows = vec![NO_WINDOW; usize::try_from(WINDOWS).expect("a count of windows")];
-        windows[0] = 0;
+        windows[usize::MIN] = u8::MIN;
+        let given = u8::try_from(windows.iter().filter(|&&host| host != NO_WINDOW).count())
+            .expect("a count of the guest memory's windows");
         let no_place = NO_PLACE.to_le_bytes();
         let table: Vec<u8> = (0..=WINDOWS)
-            .flat_map(|window| if window == 0 { [0; 8] } else { no_place })
+            .flat_map(|window| {
+                if window == u64::MIN {
+                    u64::MIN.to_le_bytes()
+                } else {
+                    no_place
+                }
+            })
             .collect();
         state.write(
             usize::try_from(WINDOW_TABLE_AT).expect("an offset in the state memory"),
@@ -306,26 +323,25 @@ impl Space {
                 chunks: (0..chunks).map(|_| None).collect(),
                 backing: BTreeMap::new(),
                 windows,
-                given: 1,
+                given,
             }),
             code: Mutex::new(Code {
                 loads: Vec::new(),
                 next_slot: contract::EXACT_SLOT as u32 + 1,
             }),
             gate: Gate {
-                running: AtomicUsize::new(0),
+                running: AtomicUsize::new(usize::MIN),
                 wanted: AtomicBool::new(false),
                 changing: Mutex::new(()),
                 blocks: Mutex::new(Vec::new()),
             },
-            blocks: Mutex::new((Vec::new(), 0)),
-            narrowed: AtomicU64::new(0),
-            load_count: AtomicUsize::new(0),
+            blocks: Mutex::new((Vec::new(), u64::MIN)),
+            narrowed: AtomicU64::new(u64::MIN),
+            load_count: AtomicUsize::new(usize::MIN),
         })
     }
 
-    /// Gives the windows of the pages a place in the guest memory, those that have none; false when the guest memory
-    /// has no window left for one.
+    /// Gives the windows of the pages that have no place in the guest memory one; false when none is left.
     fn give_places(&self, pages: Range<u64>) -> bool {
         let mut records = lock(&self.pages);
         for part in split_at_windows(pages) {
@@ -368,8 +384,9 @@ impl Space {
         page.map_or(place, |page| page * PAGE_SIZE + place % PAGE_SIZE)
     }
 
-    /// Returns the bytes at the addresses, giving their windows a place, in one part for each window they touch; none
-    /// outside the space or when the guest memory has no window left for them.
+    /// Returns the bytes at the addresses in one part for each window they touch, giving their windows a place.
+    ///
+    /// None outside the space or when the guest memory has no window left for them.
     pub(crate) fn bytes(&self, addresses: Range<u64>) -> Option<Vec<DirectBytes>> {
         let pages = pages_of(&addresses).ok()?;
         if !self.give_places(pages) {
@@ -399,7 +416,7 @@ impl Space {
         let Some(parts) = self.bytes(address..end) else {
             return false;
         };
-        let mut done = 0;
+        let mut done = usize::MIN;
         for part in parts {
             done += part.read(&mut into[done..]);
         }
@@ -422,7 +439,7 @@ impl Space {
     }
 
     /// Returns the run of pages around the address that allow running code, if its own page does.
-    pub(crate) fn executable_run(&self, address: u64) -> Option<Range<u64>> {
+    pub(crate) fn find_executable_run(&self, address: u64) -> Option<Range<u64>> {
         let pages = lock(&self.pages);
         let executable = |page: u64| {
             page < SPACE_PAGES
@@ -453,14 +470,15 @@ impl Space {
             .collect()
     }
 
-    /// Gives the pages permissions, or with none leaves them unmapped; a narrowing waits until no thread runs. False,
-    /// changing nothing, when the guest memory has no window left for them.
+    /// Gives the pages permissions, or with none leaves them unmapped; false when no window is left for them.
+    ///
+    /// A narrowing waits until no thread runs; a refusal changes nothing.
     pub(crate) fn set_permissions(&self, pages: Range<u64>, allowed: Option<Permissions>) -> bool {
         if allowed.is_some() && !self.give_places(pages.clone()) {
             return false;
         }
         let parts = self.placed_parts(pages);
-        let new = allowed.map_or(0, |allowed| allowed.bits() | MAPPED);
+        let new = allowed.map_or(u8::MIN, |allowed| allowed.bits() | MAPPED);
         let narrows = {
             let records = lock(&self.pages);
             parts.iter().cloned().flatten().any(|page| {
@@ -506,9 +524,10 @@ impl Space {
         true
     }
 
-    /// Writes the permission table's bytes of the pages and of the page before them, each of which says what the page
-    /// after it allows too: for a window's last page, what the next window's first page allows, which the guest memory
-    /// shows after the window's place.
+    /// Writes the permission table's bytes of the pages and of the page before them.
+    ///
+    /// Each byte says what the page after it allows too: for a window's last page, what the next window's first page
+    /// allows, which the guest memory shows after the window's place.
     pub(crate) fn write_permission_bytes(&self, pages: Range<u64>) {
         let first = pages.start.saturating_sub(1);
         let end = pages.end.min(SPACE_PAGES);
@@ -529,7 +548,7 @@ impl Space {
                 })
                 .collect()
         };
-        let mut index = 0;
+        let mut index = usize::MIN;
         while index < bytes.len() {
             let start = index;
             index += 1;
@@ -543,8 +562,10 @@ impl Space {
         }
     }
 
-    /// Shows the next window's first page after the window's place, from where that page shows its bytes, and writes
-    /// the byte of the window's last page, which says what the next page allows; nothing while either has no place.
+    /// Shows the next window's first page after the window's place, and writes the byte of the window's last page.
+    ///
+    /// The page is shown from where it shows its bytes, and the byte says what it allows; nothing is done while either
+    /// window has no place.
     fn show_spill(&self, window: u64) {
         let last = (window + 1) * WINDOW_PAGES - 1;
         let next = last + 1;
@@ -641,7 +662,7 @@ impl Space {
     /// Returns the progress count the thread of the block saved last.
     pub(crate) fn progress_count(&self, block: u32) -> u64 {
         let at = usize::try_from(block).expect("a block offset") + progress_count_offset::<Arm64>();
-        let mut count = [0; size_of::<u64>()];
+        let mut count = [u8::MIN; size_of::<u64>()];
         self.state.read(at, &mut count);
         u64::from_le_bytes(count)
     }
@@ -658,7 +679,7 @@ impl Space {
                         return None;
                     }
                     blocks.1 = next + THREAD_BYTES;
-                    u32::try_from(next).expect("a block inside a 32-bit memory")
+                    u32::try_from(next).expect("a block inside the state memory")
                 }
             }
         };
@@ -666,7 +687,7 @@ impl Space {
         self.state.fill(
             at,
             usize::try_from(THREAD_BYTES).expect("a block's bytes"),
-            0,
+            u8::MIN,
         );
         lock(&self.gate.blocks).push(block);
         Some(block)
@@ -680,9 +701,9 @@ impl Space {
     /// Returns the slot the array gives the address; 0 for none or an address it does not cover.
     pub(crate) fn slot(&self, address: u64) -> u32 {
         let Some(at) = slot_entry(address) else {
-            return 0;
+            return contract::EMPTY_SLOT.cast_unsigned();
         };
-        let mut entry = [0; SLOT_BYTES];
+        let mut entry = [u8::MIN; SLOT_BYTES];
         self.state.read(at, &mut entry);
         u32::from_le_bytes(entry)
     }
@@ -693,8 +714,9 @@ impl Space {
         }
     }
 
-    /// Places a translation of the code at the load address: gives its pieces slots, takes writing from the pages it was
-    /// read from, gives each piece's address its slot, and returns the load and whether a page lost writing.
+    /// Places a translation of the code at the load address, and returns the load and whether a page lost writing.
+    ///
+    /// Its pieces get slots, the pages it was read from lose writing, and each piece's address gets its slot.
     ///
     /// Called only inside a change, before which no thread may reach the new slots.
     pub(crate) fn add_load_locked(
@@ -784,7 +806,7 @@ impl Space {
                 for offset in offsets {
                     let address = load.load_address + offset;
                     if self.slot(address) == slot {
-                        self.set_slot(address, 0);
+                        self.set_slot(address, contract::EMPTY_SLOT.cast_unsigned());
                     }
                     slot += 1;
                 }
@@ -815,7 +837,7 @@ impl Space {
                 for offset in offsets {
                     let address = load.load_address + offset;
                     if self.slot(address) == slot {
-                        self.set_slot(address, 0);
+                        self.set_slot(address, contract::EMPTY_SLOT.cast_unsigned());
                     }
                     slot += 1;
                 }
@@ -837,8 +859,7 @@ impl Space {
         }
     }
 
-    /// Returns where each page, whose window has a place, shows its bytes from: its own file at its place, or the
-    /// backing it was mapped from.
+    /// Returns where a page of a window with a place shows its bytes from: its own file or its mapping's backing.
     fn backing(&self, page: u64) -> Backing {
         let records = lock(&self.pages);
         let place = records
@@ -875,7 +896,7 @@ impl Space {
                 })
                 .collect()
         };
-        let mut index = 0;
+        let mut index = usize::MIN;
         while index < placed.len() {
             let (first, ref backing) = placed[index];
             let mut end = index + 1;
@@ -909,8 +930,9 @@ impl Space {
         Ok(())
     }
 
-    /// Shows the pages from this space's own file again, zeroed, inside a change; pages of a window with no place are
-    /// zero already.
+    /// Shows the pages from this space's own file again, zeroed, inside a change.
+    ///
+    /// Pages of a window with no place are zero already.
     fn own_zeroed_locked(&self, pages: Range<u64>) -> Result<(), rustix::io::Errno> {
         for part in self.placed_parts(pages) {
             let place = lock(&self.pages)
@@ -943,8 +965,9 @@ impl Space {
         Ok(())
     }
 
-    /// Copies the data of the other space's own file at the pages into this space's own file, inside a change; this
-    /// space's windows of the pages from `into` must have a place.
+    /// Copies the data of the other space's own file at the pages into this space's own file, inside a change.
+    ///
+    /// This space's windows of the pages from `into` must have a place.
     ///
     /// Each page's bytes land at the page as far past `into` as it is past the first page, and what the other file
     /// holds no data at is skipped.
@@ -990,15 +1013,14 @@ impl Space {
     }
 }
 
-/// Copies the data of the file at the offsets to the other file from the offset, skipping what the file holds no data
-/// at.
+/// Copies the data of the file at the offsets to the other file from the offset, skipping the file's holes.
 fn copy_file_data(
     file: &OwnedFd,
     offsets: Range<u64>,
     into: &OwnedFd,
     at: u64,
 ) -> Result<(), rustix::io::Errno> {
-    let mut buffer = vec![0; COPY_BYTES];
+    let mut buffer = vec![u8::MIN; COPY_BYTES];
     let mut next = offsets.start;
     while next < offsets.end {
         let data = match rustix::fs::seek(file, SeekFrom::Data(next)) {
@@ -1019,7 +1041,7 @@ fn copy_file_data(
                 break;
             }
             let written = from - offsets.start + at;
-            let mut done = 0;
+            let mut done = usize::MIN;
             while done < read {
                 done += rustix::io::pwrite(into, &buffer[done..read], written + done as u64)?;
             }
@@ -1048,8 +1070,7 @@ impl MemorySpace for WasmtimeMemory {
     type Bytes<'space> = WasmtimeBytes<'space>;
     type PageTable = WasmtimePageTable;
 
-    /// Borrows the bytes, giving their windows a place; addresses whose windows the guest memory has no room left
-    /// for are refused as outside the space.
+    /// Borrows the bytes, giving their windows a place, or refuses them when no window is left for them.
     fn borrow(&self, addresses: Range<u64>) -> Result<WasmtimeBytes<'_>, InvalidAddressError> {
         pages_of(&addresses)?;
         let parts = self
@@ -1063,8 +1084,9 @@ impl MemorySpace for WasmtimeMemory {
         })
     }
 
-    /// Gives whole pages of the space's own file back to the host, and writes zeros over the rest; a window with no
-    /// place is zero already.
+    /// Gives whole pages of the space's own file back to the host, and writes zeros over the rest.
+    ///
+    /// A window with no place is zero already.
     fn zero(&self, addresses: Range<u64>) -> Result<(), InvalidAddressError> {
         let pages = pages_of(&addresses)?;
         let space = &self.space;
@@ -1093,8 +1115,11 @@ impl MemorySpace for WasmtimeMemory {
                 {
                     continue;
                 }
-                let zeros =
-                    vec![0; usize::try_from(cleared.end - cleared.start).expect("part of a page")];
+                let zeros = vec![
+                    u8::MIN;
+                    usize::try_from(cleared.end - cleared.start)
+                        .expect("part of a page")
+                ];
                 if let Some(parts) = space.bytes(cleared) {
                     for view in parts {
                         view.write(&zeros[..usize::try_from(view.len()).expect("part of a page")]);
@@ -1112,7 +1137,7 @@ impl MemorySpace for WasmtimeMemory {
                     && let Some(parts) = space.bytes(page * PAGE_SIZE..(page + 1) * PAGE_SIZE)
                 {
                     for view in parts {
-                        view.write(&[0; PAGE_SIZE as usize]);
+                        view.write(&[u8::MIN; PAGE_SIZE as usize]);
                     }
                 }
             }
@@ -1137,8 +1162,9 @@ impl WasmtimeMemory {
 }
 
 impl WasmtimePageTable {
-    /// Gives the pages the permissions of a state, or with none leaves them unmapped, for a run of one instruction;
-    /// pages whose windows the guest memory has no room left for are refused as outside the space.
+    /// Gives the pages the permissions of a state, or with none leaves them unmapped, for a run of one instruction.
+    ///
+    /// Pages whose windows the guest memory has no room left for are refused as outside the space.
     pub(crate) fn assign(
         &mut self,
         addresses: Range<u64>,
@@ -1303,7 +1329,7 @@ impl PageTable for WasmtimePageTable {
                         .binary_search_by_key(&page, |&(held, _)| held)
                         .is_err()
                     {
-                        own.change(page, |_| 0);
+                        own.change(page, |_| u8::MIN);
                     }
                 }
             }
@@ -1332,7 +1358,7 @@ impl VolatileBytes for WasmtimeBytes<'_> {
     }
 
     fn read(&self, into: &mut [u8]) -> usize {
-        let mut done = 0;
+        let mut done = usize::MIN;
         for part in &self.parts {
             let read = part.read(&mut into[done..]);
             done += read;
@@ -1344,7 +1370,7 @@ impl VolatileBytes for WasmtimeBytes<'_> {
     }
 
     fn write(&self, bytes: &[u8]) -> usize {
-        let mut done = 0;
+        let mut done = usize::MIN;
         for part in &self.parts {
             let written = part.write(&bytes[done..]);
             done += written;
@@ -1357,7 +1383,7 @@ impl VolatileBytes for WasmtimeBytes<'_> {
     }
 
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
-        let mut done = 0;
+        let mut done = usize::MIN;
         for part in &self.parts {
             let read = part.read_to(sink)?;
             done += read;
@@ -1369,7 +1395,7 @@ impl VolatileBytes for WasmtimeBytes<'_> {
     }
 
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
-        let mut done = 0;
+        let mut done = usize::MIN;
         let mut failed = None;
         for part in &self.parts {
             match part.write_from(source) {

@@ -66,16 +66,20 @@ pub(crate) struct Scratch {
     steps: u32,
 }
 
-/// The single instructions run on one scratch space before it is made anew, which bounds what its store accumulates:
-/// an instance and lookup table slots for each instruction.
+/// The single instructions run on one scratch space before it is made anew, which bounds what its store accumulates.
+///
+/// The store gains an instance and lookup table slots for each instruction.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const SCRATCH_STEPS: u32 = 1 << 10;
 
 impl BehaviorSource for WasmtimeExecutor {
     type Architecture = Arm64<User>;
     type Error = WasmtimeError;
 
-    /// Runs the instruction at the program counter on a scratch space holding the memory, and reports the bytes it
-    /// changed on the pages the memory lets it write.
+    /// Runs the instruction at the program counter on a scratch space holding the memory.
+    ///
+    /// It reports the bytes the instruction changed on the pages the memory lets it write.
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
@@ -97,7 +101,7 @@ impl BehaviorSource for WasmtimeExecutor {
                 Scratch {
                     memory,
                     table,
-                    steps: 0,
+                    steps: u32::MIN,
                 }
             }
         };
@@ -166,7 +170,7 @@ impl WasmtimeExecutor {
             }
         }
         let read_page = |page: u64| {
-            let mut bytes = vec![0; PAGE_SIZE as usize];
+            let mut bytes = vec![u8::MIN; PAGE_SIZE as usize];
             if let Ok(view) = space.borrow(page * PAGE_SIZE..(page + 1) * PAGE_SIZE) {
                 view.read(&mut bytes);
             }
@@ -179,7 +183,7 @@ impl WasmtimeExecutor {
         let start = processor.program_counter;
         let mode = Mode::Step {
             start,
-            stops: 0,
+            stops: u32::MIN,
             loaded: false,
         };
         let shared = self.shared.clone();

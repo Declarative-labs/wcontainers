@@ -1,5 +1,6 @@
-//! A space's 2^48 bytes of addresses: the top page, an access across the end of a window, faults outside the pages
-//! given, bytes copied between windows, and the most windows a space holds.
+//! A space's 2^48 bytes of addresses: its top page, window ends, faults, copies and the most windows it holds.
+//!
+//! An access across the end of a window reaches the next one, and a fault outside the pages given names its address.
 
 use std::borrow::Cow;
 use wcontainers_abi::{Access, LOWEST_ADDRESS, PAGE_SIZE, Permissions, SystemCallRequest};

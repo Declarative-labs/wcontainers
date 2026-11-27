@@ -1,4 +1,4 @@
-//! wasmtime's unsafe embedding calls themselves, on this host: each use of `unsafe` is one marked line.
+//! The wasmtime embedding calls that need `unsafe`, on this host: each use of `unsafe` is one marked line.
 #![cfg(target_os = "linux")]
 
 use core::ffi::c_void;
@@ -28,8 +28,10 @@ pub struct DirectWasmtime {
     creator: Arc<HostMemories>,
 }
 
-/// The memory creator of the engines configured with it: it hands wasmtime the host memory `new_memory` names on the
-/// same thread, and makes every other memory the engine asks for, such as a heap of its garbage collector, itself.
+/// The memory creator of the engines configured with it: the host memory `new_memory` names, or one of its own.
+///
+/// It hands wasmtime the host memory `new_memory` names on the same thread, and makes every other memory the engine
+/// asks for, such as a heap of its garbage collector, itself.
 #[derive(Default)]
 struct HostMemories {
     /// The modules that define and export one memory, by engine and type, compiled once each.
@@ -38,8 +40,18 @@ struct HostMemories {
 
 /// The name the module of one memory exports it under.
 const MEMORY_EXPORT: &str = "memory";
-/// The log2 of WebAssembly's default page size (WebAssembly Core Specification, memory instances).
+/// The log2 of WebAssembly's default page size.
+///
+/// <https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances>
 const DEFAULT_PAGE_SIZE_LOG2: u8 = 16;
+/// The module of one memory's one memory, the first.
+const MEMORY_INDEX: u32 = u32::MIN;
+/// Why a store's memory was not made: the engine takes its memories from another value.
+const NOT_CONFIGURED: &str = "the engine was not configured with this value's host memories";
+/// Why a host memory did not grow: past its length.
+const GROWN_PAST_LENGTH: &str = "a host memory grows only inside its length";
+/// Why a memory of its own did not grow: past its reservation.
+const GROWN_PAST_RESERVATION: &str = "a memory grows only inside its reservation";
 
 /// A host memory: its reservation, shared by every store's memory over it and every view of its bytes.
 #[derive(Clone)]
@@ -116,9 +128,9 @@ impl Wasmtime for DirectWasmtime {
         if length == 0 || !length.is_multiple_of(page) || !guard.is_multiple_of(page) {
             return Err(Errno::INVAL);
         }
-        check_file(file, 0, length)?;
+        check_file(file, u64::MIN, length)?;
         let reservation = Reservation::new(length, guard)?;
-        reservation.map_over(0, length, file, 0)?;
+        reservation.map_over(usize::MIN, length, file, u64::MIN)?;
         Ok(DirectHostMemory(Arc::new(reservation)))
     }
 
@@ -170,10 +182,7 @@ impl Wasmtime for DirectWasmtime {
         let _clear = ClearNext;
         let instance = Instance::new(&mut store, &module, &[])?;
         let made = NEXT_HOST_MEMORY.with(|next| next.borrow().is_none());
-        wasmtime::ensure!(
-            made,
-            "the engine was not configured with this value's host memories"
-        );
+        wasmtime::ensure!(made, NOT_CONFIGURED);
         instance
             .get_memory(&mut store, MEMORY_EXPORT)
             .ok_or_else(|| wasmtime::Error::msg("the module of one memory exports it"))
@@ -240,7 +249,7 @@ impl HostMemories {
                 .then_some(u32::from(page_size_log2)),
         });
         let mut exports = ExportSection::new();
-        exports.export(MEMORY_EXPORT, ExportKind::Memory, 0);
+        exports.export(MEMORY_EXPORT, ExportKind::Memory, MEMORY_INDEX);
         let mut bytes = wasm_encoder::Module::new();
         bytes.section(&memories).section(&exports);
         let module = Module::new(engine, bytes.finish())?;
@@ -249,8 +258,9 @@ impl HostMemories {
     }
 }
 
-/// Returns `EINVAL` unless the file cannot shrink and holds `length` bytes from the offset, so that no page mapped from
-/// it ever faults.
+/// Returns `EINVAL` unless the file cannot shrink and holds `length` bytes from the offset.
+///
+/// Then no page mapped from it ever faults.
 fn check_file(file: BorrowedFd<'_>, offset: u64, length: usize) -> Result<(), Errno> {
     if !rustix::fs::fcntl_get_seals(file)?.contains(SealFlags::SHRINK) {
         return Err(Errno::INVAL);
@@ -291,8 +301,9 @@ impl Reservation {
         self.base.load(Ordering::Relaxed)
     }
 
-    /// Maps `length` bytes of the file from the offset at `start` bytes into the reservation, shared, readable and
-    /// writable; the caller checked both ranges.
+    /// Maps `length` bytes of the file from the offset at `start` bytes into the reservation, shared and writable.
+    ///
+    /// The caller checked both ranges.
     fn map_over(
         &self,
         start: usize,
@@ -384,10 +395,7 @@ unsafe impl LinearMemory for StoreMemory {
     }
 
     fn grow_to(&mut self, new_size: usize) -> wasmtime::Result<()> {
-        wasmtime::ensure!(
-            new_size <= self.reservation.length,
-            "a host memory grows only inside its length"
-        );
+        wasmtime::ensure!(new_size <= self.reservation.length, GROWN_PAST_LENGTH);
         self.size = new_size;
         Ok(())
     }
@@ -413,10 +421,7 @@ unsafe impl LinearMemory for OwnMemory {
     }
 
     fn grow_to(&mut self, new_size: usize) -> wasmtime::Result<()> {
-        wasmtime::ensure!(
-            new_size <= self.reservation.length,
-            "a memory grows only inside its reservation"
-        );
+        wasmtime::ensure!(new_size <= self.reservation.length, GROWN_PAST_RESERVATION);
         self.reservation
             .open(new_size)
             .map_err(|error| wasmtime::Error::msg(format!("opening a memory: {error}")))?;

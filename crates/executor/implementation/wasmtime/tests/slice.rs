@@ -1,5 +1,6 @@
-//! The ten instructions of the first slice over every state the generator makes for them: the executor shows one known
-//! behavior of each, and that behavior keeps the choices the translator was written to make.
+//! The ten instructions of the first slice over every state the generator makes for them.
+//!
+//! The executor shows one known behavior of each, and that behavior keeps the choices the translator was written to make.
 
 use std::convert::Infallible;
 use std::time::Instant;

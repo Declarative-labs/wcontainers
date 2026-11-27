@@ -1,5 +1,6 @@
-//! What one trap costs: a guest that makes a system call and branches back to it, each call answered by the handler
-//! from inside the run, timed over many calls.
+//! What one trap costs: a guest's system call answered by the handler from inside the run, timed over many calls.
+//!
+//! The guest makes a system call and branches back to it.
 
 use std::time::{Duration, Instant};
 
@@ -15,8 +16,9 @@ use wcontainers_volatile_bytes::VolatileBytes;
 
 /// SVC #0 (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SVC--Supervisor-call->).
 const SUPERVISOR_CALL: u32 = 0xD400_0001;
-/// B with an offset of minus one instruction, back to the call
-/// (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->).
+/// B with an offset of minus one instruction, back to the call.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
 const BRANCH_BACK: u32 = 0x17FF_FFFF;
 /// The calls each timed run answers.
 const CALLS: u64 = 1_000_000;

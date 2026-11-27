@@ -15,8 +15,9 @@ use wcontainers_processor_architecture_arm64::{
     Arm64, DataAccess, InstructionFetch, PagePermission, Processor, User, ZERO_PROCESSOR,
 };
 
-/// Returns for every instruction the first known behavior that each state the executor executes meets, or its first
-/// known behavior where none does: the translator's set, measured.
+/// Returns the translator's set, measured: for each instruction its first known behavior every executed state meets.
+///
+/// An instruction where none does gets its first known behavior.
 ///
 /// The instructions are shared out among as many executors as the agreement test runs.
 fn list_translator_behaviors() -> MeasuredInstructionSet<Arm64<User>> {
@@ -54,8 +55,9 @@ fn list_translator_behaviors() -> MeasuredInstructionSet<Arm64<User>> {
     MeasuredInstructionSet::from_measurements(&measurements)
 }
 
-/// Returns the first known behavior of the instruction every state the executor executes meets, or its first known
-/// behavior where none does; none where it has no known behavior.
+/// Returns the first known behavior of the instruction that every state the executor executes meets.
+///
+/// Where none does it is the first known behavior, and where the instruction has none there is none.
 fn find_shown_behavior(
     executor: &mut WasmtimeExecutor,
     generator: &CriticalValueCut,
