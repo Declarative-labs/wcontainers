@@ -1259,6 +1259,52 @@ in `gallium/implementation/direct` (Mesa's handles onto the kinds, bindgen's lay
 pointers, the fuzzing under AddressSanitizer, the suite; moving crates/opengl's logic onto the trait (the implementations
 track's, GI8 part B).
 
+## AC8, the trait made to fit the driver: G2, G3, G6, G9 (2026-11-27, b06f8f476; logs wcontainers-scratch/graphics-api-crates/r15/gallium/)
+
+For the implementations track, porting crates/opengl onto the trait: what changed at b06f8f476, each by the
+orchestrator's ruling of this run.
+
+- **G3, counted handles.** The four kinds Mesa counts (Resource, Fence, SamplerView, StreamOutputTarget; `COUNTED` in
+  src/gallium.rs) reach the implementation as `&Arc<K>`: in every method that reads or binds them and in every plain
+  structure (`FramebufferState`, `ConstantBuffer`, `VertexBuffer`, `ShaderBuffer`, `ImageView`, `DrawInfo`,
+  `DrawIndirectInfo`, ...: fields `Option<&'a Arc<Resource>>`). A driver keeps one past the call by `Arc::clone`; the
+  object ends where its last handle is dropped, inside the driver or not (its end is the kind's `Drop`). The glue holds
+  one handle for all of Mesa's own references. So `resource_destroy`, `sampler_view_destroy` and
+  `stream_output_target_destroy` are no methods any more (they are the counts' last release, the glue's), and `Fence`
+  lost its `Clone` bound. Methods that make an object still return the kind itself (`Option<K>`); the glue wraps it.
+- **G6.** `begin_query(q: Query) -> Result<ActiveQuery, Query>`: a failed begin gives the query back, which st/mesa
+  then destroys (queryobj.c:239 to 247, READ).
+- **G2.** `texture_map`, `texture_unmap`, `transfer_flush_region` and `get_sample_position` are no methods: the plan
+  marks them `MesaFills` (u_transfer_helper_transfer_map, _unmap, _flush_region, u_default_get_sample_position) and the
+  direct crate fills them. `u_transfer_vtbl.resource_create` and `resource_destroy` are planned (`SameAs` the screen's;
+  the helper calls them at u_transfer_helper.c:217 and 227, READ) and served by the screen's glue, no method of their
+  own. The driver's own transfer methods stay `helper_transfer_map`, `helper_transfer_unmap`,
+  `helper_transfer_flush_region`.
+- **G9, measured.** Client memory reaches a Gallium driver as follows (MEASURED, x86-64 job gac-gal/20261127-085137-3768348,
+  log r15/gallium/g9-trace.log: st/mesa over llvmpipe, Mesa 26.2.4, surfaceless EGL, under GALLIUM_TRACE, a program
+  drawing with client indices, a client vertex array, a uniform, a masked scissored clear and pixel buffer transfers,
+  both OpenGL ES 3 and desktop 4.6 compatibility; every GL step error 0):
+  | What | ES | desktop | Can the driver turn it off? (READ, Mesa 26.3.1) |
+  |---|---|---|---|
+  | draw_vbo with has_user_indices | 2 of 6 draws | 2 of 5 | **No**: main/draw.c:1662 and 2043 set it whenever no element buffer is bound; no capability is read |
+  | set_vertex_buffers with is_user_buffer | 1 of 4 | 0 of 2 | **Yes**: llvmpipe reports user_vertex_buffers (lp_screen.c:276); ours does not (u_init_pipe_screen_caps leaves it false, fill_caps does not set it), and then cso/u_vbuf uploads them (u_vbuf.c:1067) |
+  | set_constant_buffer with user_buffer | 0 of 3 | 0 of 3 | **For st/mesa, yes**: llvmpipe reports prefer_real_buffer_in_constbuf0 (lp_screen.c:216) and every st/mesa site then uploads (pipe_upload_constant_buffer0, u_inlines.h:749; st_atom_constbuf.c:124); ours does not report it today. **But Mesa's blitter**, a helper our driver calls, passes its clear color as user_buffer whatever is reported (u_blitter.c:1607, 2501, 2939) |
+  So: indices in client memory are carried (`DrawInfoIndex.user: Option<&[u8]>`, from index 0 to the end of the
+  furthest draw, copied by the glue), and constants in client memory too (`ConstantBuffer.user_buffer: Option<&[u8]>`,
+  `buffer_size` bytes from `buffer_offset`, copied), each with its reason in `CLIENT_MEMORY`. User vertex buffers stay
+  refused (the driver must keep user_vertex_buffers unreported). The driver should report
+  prefer_real_buffer_in_constbuf0 so st/mesa's constants come in buffers; only the blitter's then use the bytes row.
+
+MEASURED at b06f8f476 (pushed; x86-64 job gac-gal, log r15/gallium/trait-b06f8f476.log): generator build, its 17 tests;
+plan status 0: `GALLIUM PLAN: 100 pointers planned (95 of pipe_screen and pipe_context, 5 of u_transfer_vtbl)`,
+`UNMAPPED 0`; `GALLIUM INTERFACE: 93 methods, 43 structures, 21 kinds; left out 20 fields`; written twice IDENTICAL; SAME AS
+WRITTEN (interface.rs, Cargo.toml); `cargo check` and `cargo clippy -- -D warnings` of wcontainers-gallium status 0;
+lines naming `unsafe` 0.
+
+Still open for the serving glue (not trait changes): G4 (the helpers the driver calls, the blitter calling back into
+the context during the call), G5 (capabilities and the uploaders the glue fills), G7 (the drawable handle carried as a
+number: the plan's exception text to be corrected), G1 (TGSI: the trait carries NIR only; to be measured with the port).
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
