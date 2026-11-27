@@ -66,6 +66,8 @@ pub(crate) enum DepthSource {
     FloatBitsSigned,
     /// 24-bit unorm depth in the low bits of an `r32uint` texture.
     Unorm24,
+    /// 24-bit unorm depth read from a 24-bit depth texture, written again as the same 24-bit value.
+    Depth24,
     /// 16-bit unorm depth as the integers of an `r16uint` texture.
     Unorm16,
 }
@@ -81,8 +83,10 @@ impl DepthSource {
             ) => Some(DepthSource::Float),
             (Depth32Float | Depth32FloatStencil8, R32Uint) => Some(DepthSource::FloatBits),
             (Depth32Float | Depth32FloatStencil8, R32Sint) => Some(DepthSource::FloatBitsSigned),
-            (Depth24Plus | Depth24PlusStencil8, Depth24Plus | Depth24PlusStencil8)
-            | (Depth16Unorm, Depth16Unorm | R16Unorm) => Some(DepthSource::Float),
+            (Depth24Plus | Depth24PlusStencil8, Depth24Plus | Depth24PlusStencil8) => {
+                Some(DepthSource::Depth24)
+            }
+            (Depth16Unorm, Depth16Unorm | R16Unorm) => Some(DepthSource::Float),
             (Depth16Unorm, R16Uint) => Some(DepthSource::Unorm16),
             _ => None,
         }
@@ -983,8 +987,17 @@ pub(crate) fn depth_by_draw(
     }
 }
 
+/// The float nearest the 24-bit unorm value `{V}` stands for, `{V}` / (2^24 - 1): `{V}` 2^-24 is
+/// exact, and the remainder more than half and at most one of that float's steps, so the nearest
+/// float is `{V}` 2^-24's bits plus one (zero stays zero). In integers, so that no compiler regroups
+/// a sum of products (Mesa makes x (2^-24 + 2^-48) of one, whose sum rounds to 2^-24, one step
+/// low); WGSL's division may be 2.5 ulp off.
+const NEAREST_OF_UNORM24: &str =
+    "bitcast<f32>(bitcast<u32>(f32({V}) * 0x1p-24f) + select(0u, 1u, {V} != 0u))";
+
 fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource) -> DepthProgram {
     let cover = cover(gpu);
+    let mut functions = String::new();
     let (texture, depth) = match how {
         DepthSource::Float => ("texture_2d<f32>", depth_of_float_bits("bitcast<u32>(v.x)")),
         DepthSource::FloatBits => ("texture_2d<u32>", depth_of_float_bits("v.x")),
@@ -992,22 +1005,26 @@ fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource
             SIGNED_BITS_TEXTURE,
             depth_of_float_bits("bitcast<u32>(v.x)"),
         ),
-        // x / (2^24 - 1) is x 2^-24 (exact) and a remainder of more than half and at most one of
-        // that float's steps, so the nearest float is x 2^-24's bits plus one (zero stays zero). In
-        // integers, so that no compiler regroups a sum of products (Mesa makes x (2^-24 + 2^-48) of
-        // one, whose sum rounds to 2^-24, one step low); WGSL's division may be 2.5 ulp off.
         DepthSource::Unorm24 => (
             "texture_2d<u32>",
-            format!(
-                "bitcast<f32>(bitcast<u32>(f32(v.x & {UNORM24_MAX}u) * 0x1p-{UNORM24_BITS}f) \
-                 + select(0u, 1u, (v.x & {UNORM24_MAX}u) != 0u))"
-            ),
+            NEAREST_OF_UNORM24.replace("{V}", &format!("(v.x & {UNORM24_MAX}u)")),
         ),
+        // The stored value found by the device's own conversion, as a read finds it, and written as
+        // its nearest float: the sampled float itself can store as the next value (llvmpipe samples
+        // k as k times the rounded reciprocal, up to two float steps above k / (2^24 - 1)).
+        DepthSource::Depth24 => {
+            functions = unorm24_functions(gpu);
+            (
+                "texture_2d<f32>",
+                NEAREST_OF_UNORM24.replace("{V}", "unorm24(v.x)"),
+            )
+        }
         DepthSource::Unorm16 => ("texture_2d<u32>", format!("f32(v.x) / {}.0", u16::MAX)),
     };
     let source = format!(
         "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
          @group(0) @binding(1) var src: {texture};\n\
+         {functions}\
          @fragment fn depth(@builtin(position) p: vec4f) -> @builtin(frag_depth) f32 {{\n\
              let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
              return {depth};\n\
@@ -1020,7 +1037,9 @@ fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
     let sample_type = match how {
-        DepthSource::Float => wgpu::TextureSampleType::Float { filterable: false },
+        DepthSource::Float | DepthSource::Depth24 => {
+            wgpu::TextureSampleType::Float { filterable: false }
+        }
         DepthSource::FloatBitsSigned => wgpu::TextureSampleType::Sint,
         _ => wgpu::TextureSampleType::Uint,
     };
@@ -1287,6 +1306,18 @@ const SAMPLED_NEAREST: &str = "select(bitcast<u32>(f32(c) * 0x1p-24f) + 1u, 0u, 
 /// 2^-24 (1 + 2^-23), gives (llvmpipe and lavapipe).
 const SAMPLED_PRODUCT: &str = "bitcast<u32>(f32(c) * 0x1.000002p-24f)";
 
+/// `unorm24(d)`, the 24-bit value stored for a sampled depth by this device's own conversion.
+fn unorm24_functions(gpu: &WebGpu) -> String {
+    let sampled = if gpu.depth24_by_product {
+        SAMPLED_PRODUCT
+    } else {
+        SAMPLED_NEAREST
+    };
+    UNORM24_READ
+        .replace("{SAMPLED}", sampled)
+        .replace("{MAX}", &UNORM24_MAX.to_string())
+}
+
 fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat) -> DepthProgram {
     let cover = cover(gpu);
     // The conversions are exact: a unorm value stored as the nearest float is within half a
@@ -1299,14 +1330,7 @@ fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat)
             format!("u32(round(v.x * {}.0))", u16::MAX),
         ),
         AspectRead::Unorm24 => {
-            let sampled = if gpu.depth24_by_product {
-                SAMPLED_PRODUCT
-            } else {
-                SAMPLED_NEAREST
-            };
-            functions = UNORM24_READ
-                .replace("{SAMPLED}", sampled)
-                .replace("{MAX}", &UNORM24_MAX.to_string());
+            functions = unorm24_functions(gpu);
             ("texture_2d<f32>", "unorm24(v.x)".to_string())
         }
         AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)".into()),

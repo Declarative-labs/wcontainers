@@ -5,13 +5,22 @@
 #![cfg(target_arch = "wasm32")]
 
 #[path = "common/against.rs"]
-#[allow(unused_imports, reason = "the files shared with the native tests import the whole interface; the page uses part of it")]
+#[allow(
+    unused_imports,
+    reason = "the files shared with the native tests import the whole interface; the page uses part of it"
+)]
 mod against;
 #[path = "common/checks.rs"]
-#[allow(unused_imports, reason = "the files shared with the native tests import the whole interface; the page uses part of it")]
+#[allow(
+    unused_imports,
+    reason = "the files shared with the native tests import the whole interface; the page uses part of it"
+)]
 mod checks;
 #[path = "common/kit.rs"]
-#[allow(unused_imports, reason = "the files shared with the native tests import the whole interface; the page uses part of it")]
+#[allow(
+    unused_imports,
+    reason = "the files shared with the native tests import the whole interface; the page uses part of it"
+)]
 mod kit;
 #[path = "common/rig.rs"]
 mod rig;

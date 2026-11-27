@@ -638,17 +638,15 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
             [0, 0, u64::from(unorm24)],
             "{format:?}"
         );
-        // The words of the depth a program reads: what a read by a draw must give exactly.
-        let want: Vec<u32> = drawn
-            .iter()
-            .map(|d| {
-                if unorm24 {
-                    (f64::from(*d) * f64::from(UNORM24_MAX)).round() as u32
-                } else {
-                    d.to_bits()
-                }
-            })
-            .collect();
+        // What a read by a draw must give exactly: 24-bit depth's stored values, which the write
+        // stores as given and the read finds through the device's own conversion (a device may
+        // sample a value as a float nearer the next one: llvmpipe's product with the rounded
+        // reciprocal), else the bits of the depth a program reads.
+        let want: Vec<u32> = if unorm24 {
+            words.iter().map(|w| w & UNORM24_MAX).collect()
+        } else {
+            drawn.iter().map(|d| d.to_bits()).collect()
+        };
         // Where `depth24plus` is stored as a float, the word is the float's nearest 24-bit step,
         // which the program's float arithmetic may miss by one at a near tie.
         let stored_as_float = matches!(b.depth24(), Depth24::Float(_));
