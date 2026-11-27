@@ -65,26 +65,116 @@ impl From<Unsupported> for Failure {
     }
 }
 
-/// What runs the guest's instructions behind the kernel: the stand-in CPU.
+// What runs the guest's instructions behind the kernel: the stand-in, or, with the `runtime`
+// feature, the WebAssembly executor. Each function below is the one place the harness does
+// something only one of them has.
+
+/// The executor the harness runs the kernel on.
+#[cfg(not(feature = "runtime"))]
 pub(crate) type Back = crate::standin::StandIn;
+/// The executor the harness runs the kernel on.
+#[cfg(feature = "runtime")]
+pub(crate) type Back = wcontainers_executor_wasmtime::WasmtimeExecutor;
 
-/// The kernel's executor, the stand-in, with the memories and registers of its guest threads.
-pub type Machine = wcontainers_kernel_linux::GuestMachine<Back>;
+/// How a run's executors are made, kept so that every executor of the run (the kernel's own, the
+/// runner's, and each one a save brings back) is made alike.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Settings {
+    /// Where each process's address space ends, as the container asks.
+    address_space: u64,
+    /// Whether a run also ends once its slice has passed on the machine's clock.
+    #[cfg_attr(
+        feature = "runtime",
+        expect(dead_code, reason = "the WebAssembly executor has no clock of its own")
+    )]
+    wall_clock: bool,
+    /// The instructions (the WebAssembly executor: progress events) of a run's slice, if not the
+    /// executor's own.
+    slice: Option<u64>,
+}
 
-/// A kernel with its executor, the stand-in, as the driver runs it.
-type Driven = wcontainers_kernel_linux::KernelWithExecutor<Back, (), TestHost>;
+/// The end of the addresses the spaces of an executor made with `settings` hold: the
+/// WebAssembly executor's memories are 32-bit.
+fn space_end(settings: Settings) -> u64 {
+    if cfg!(feature = "runtime") {
+        settings.address_space.min(crate::standin::SPACE_32_BIT)
+    } else {
+        settings.address_space
+    }
+}
 
-fn back_end(address_space: u64, wall_clock: bool, slice_instructions: Option<u64>) -> Back {
-    let mut stand_in = crate::standin::StandIn::with_space(address_space);
-    if let Some(slice_instructions) = slice_instructions {
+/// A new executor for a run of `settings`.
+#[cfg(not(feature = "runtime"))]
+fn make_back(settings: Settings) -> Back {
+    let mut stand_in = crate::standin::StandIn::with_space(settings.address_space);
+    if let Some(slice_instructions) = settings.slice {
         stand_in = stand_in.configured(crate::standin::StandInConfig { slice_instructions });
     }
-    if wall_clock {
+    if settings.wall_clock {
         stand_in.on_wall_clock()
     } else {
         stand_in
     }
 }
+
+/// A new executor for a run of `settings`. It has no clock of its own: `wall_clock` changes
+/// nothing.
+#[cfg(feature = "runtime")]
+fn make_back(settings: Settings) -> Back {
+    let defaults = wcontainers_executor_wasmtime::WasmtimeTranslatorConfig::default();
+    Back::new(wcontainers_executor_wasmtime::WasmtimeTranslatorConfig {
+        slice: settings
+            .slice
+            .and_then(std::num::NonZeroU64::new)
+            .or(defaults.slice),
+        ..defaults
+    })
+}
+
+/// Another executor of the run that runs on what `back` made, with nothing translated or cached:
+/// the stand-in's copy on the same engine (it carries the settings `back` was made with).
+#[cfg(not(feature = "runtime"))]
+fn back_alongside(back: &Back, _settings: Settings) -> Back {
+    back.restored()
+}
+
+/// Another executor of the run that runs on what `back` made, with nothing translated or cached:
+/// every WebAssembly executor of the process shares one engine.
+#[cfg(feature = "runtime")]
+fn back_alongside(_back: &Back, settings: Settings) -> Back {
+    make_back(settings)
+}
+
+/// Hands what `saved` refused and the test has not taken yet to `kept`, which goes on in its
+/// place, so a refusal is still reported once.
+#[cfg(not(feature = "runtime"))]
+fn carry_refusals(saved: &mut Back, kept: &mut Back) {
+    let refused = saved.take_refused();
+    kept.refused_in_a_copy(refused);
+}
+
+/// The WebAssembly executor keeps no refusals the harness reads: nothing to carry.
+#[cfg(feature = "runtime")]
+fn carry_refusals(_saved: &mut Back, _kept: &mut Back) {}
+
+/// The instructions `back` ran in its last execution, which the repeatable clock moves by.
+#[cfg(not(feature = "runtime"))]
+fn last_instructions(back: &Back) -> u64 {
+    back.last_instructions
+}
+
+/// The WebAssembly executor counts no instructions: the repeatable clock then moves only as it is
+/// read.
+#[cfg(feature = "runtime")]
+fn last_instructions(_back: &Back) -> u64 {
+    0
+}
+
+/// The kernel's executor, the stand-in or the WebAssembly executor, with the memories and registers of its guest threads.
+pub type Machine = wcontainers_kernel_linux::GuestMachine<Back>;
+
+/// A kernel with its executor, as the driver runs it.
+type Driven = wcontainers_kernel_linux::KernelWithExecutor<Back, (), TestHost>;
 
 /// What a program did, in a form both runners produce.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1362,17 +1452,18 @@ pub fn run_prepared(
 
 /// A kernel interface's kernel on the stand-in, with the embedder's state `State`.
 pub type InterfaceKernel<State> =
-    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, State, TestHost>;
+    wcontainers_kernel_linux::KernelWithExecutor<Back, State, TestHost>;
 
 /// A runner of an [`InterfaceKernel`].
-pub type InterfaceRunner<State> =
-    wcontainers_kernel_linux::KernelRunner<crate::standin::StandIn, State, TestHost>;
+pub type InterfaceRunner<State> = wcontainers_kernel_linux::KernelRunner<Back, State, TestHost>;
 
 /// A runner of an [`InterfaceKernel`] with the stand-in it runs on, on the engine of the kernel's
 /// own stand-in, whose memories its turns run on.
 pub struct OnRunner<State> {
     pub runner: InterfaceRunner<State>,
-    pub executor: crate::standin::StandIn,
+    pub executor: Back,
+    /// How the run's executors are made, for the one a save brings back.
+    settings: Settings,
 }
 
 impl<State: Send> OnRunner<State> {
@@ -1393,7 +1484,13 @@ pub fn started_with_executor<State: Clone + Send + 'static>(
 ) -> (InterfaceKernel<State>, Vec<OnRunner<State>>, Arc<TestHost>) {
     let host = TestHost::repeatable(0, None);
     *host.streams() = Streams::new(prepared.client);
-    let cpu = crate::standin::StandIn::with_space(container.address_space);
+    let settings = Settings {
+        address_space: container.address_space,
+        wall_clock: false,
+        slice: None,
+    };
+    let cpu = make_back(settings);
+    let spaces_end = space_end(settings);
     let start = Start {
         path: kept(container.path.as_bytes()),
         arguments: kept_all(container.arguments),
@@ -1404,12 +1501,14 @@ pub fn started_with_executor<State: Clone + Send + 'static>(
         backend: None,
         standard: host.standard(),
         address_space_bytes: prepared.address_space_bytes,
-        memory_bytes: prepared.memory_bytes.unwrap_or(container.address_space),
-        ceiling: Some(executor_ceiling(prepared.ceiling, container.address_space)),
+        memory_bytes: prepared.memory_bytes.unwrap_or(spaces_end),
+        ceiling: Some(executor_ceiling(prepared.ceiling, spaces_end)),
         options: prepared.options,
     };
     let host = Arc::new(host);
-    let executors: Vec<_> = (0..parallelism.get()).map(|_| cpu.restored()).collect();
+    let executors: Vec<_> = (0..parallelism.get())
+        .map(|_| back_alongside(&cpu, settings))
+        .collect();
     let config = wcontainers_kernel_linux::KernelConfig::new(
         prepared.kernel,
         cpu,
@@ -1421,7 +1520,11 @@ pub fn started_with_executor<State: Clone + Send + 'static>(
     let (kernel, runners) = InterfaceKernel::<State>::new(config, parallelism);
     let runners = runners
         .zip(executors)
-        .map(|(runner, executor)| OnRunner { runner, executor })
+        .map(|(runner, executor)| OnRunner {
+            runner,
+            executor,
+            settings,
+        })
         .collect();
     (kernel, runners, host)
 }
@@ -1452,7 +1555,7 @@ fn serial_and_exact() -> wcontainers_kernel::ExecutionConfig<Back> {
     wcontainers_kernel::ExecutionConfig {
         thread_ordering: wcontainers_kernel::ThreadOrdering::Serial,
         replay_determinism: wcontainers_kernel::ReplayDeterminism::Exact,
-        translator: (),
+        translator: Default::default(),
     }
 }
 
@@ -1615,12 +1718,14 @@ fn run_hosted(
     } = prepared;
     // The kernel's own stand-in makes its memories; the runner runs its turns on another on the
     // same engine.
-    let cpu = back_end(
-        container.address_space,
+    let settings = Settings {
+        address_space: container.address_space,
         wall_clock,
-        injected_slice(seed, injections),
-    );
-    let executor = cpu.restored();
+        slice: injected_slice(seed, injections),
+    };
+    let cpu = make_back(settings);
+    let executor = back_alongside(&cpu, settings);
+    let spaces_end = space_end(settings);
     *held(&mut host.injecting) = Some(Injecting::new(seed, injections));
     *host.streams() = Streams::new(client);
     host.streams().echo = echo;
@@ -1650,8 +1755,8 @@ fn run_hosted(
         backend: container.backend.map(|backend| kept(backend.as_bytes())),
         standard: host.standard(),
         address_space_bytes,
-        memory_bytes: memory_bytes.unwrap_or(container.address_space),
-        ceiling: Some(executor_ceiling(ceiling, container.address_space)),
+        memory_bytes: memory_bytes.unwrap_or(spaces_end),
+        ceiling: Some(executor_ceiling(ceiling, spaces_end)),
         options,
     };
     let host = Arc::new(host);
@@ -1667,6 +1772,7 @@ fn run_hosted(
     let mut runner = OnRunner {
         runner: runners.next().expect("one runner"),
         executor,
+        settings,
     };
     driven.with_parts(|kernel, cpu| host.begin(kernel, cpu));
     let end = drive(&mut driven, &mut runner, &host);
@@ -1734,7 +1840,7 @@ fn drive(driven: &mut Driven, runner: &mut DrivenRunner, host: &Arc<TestHost>) -
                 panic!("the kernel's runner stopped: {stop:?}")
             }
         }
-        let progress = runner.executor.last_instructions;
+        let progress = last_instructions(&runner.executor);
         driven.with_parts(|kernel, cpu| host.arrived(kernel, cpu, progress));
         loop {
             let save = host.injecting().save_now();
@@ -1758,10 +1864,9 @@ fn save_and_bring_back(
     seed: u64,
 ) {
     let wall_step = host.injecting().wall_step;
-    let restored = runner.executor.restored();
+    let restored = back_alongside(&runner.executor, runner.settings);
     let mut saved = std::mem::replace(&mut runner.executor, restored);
-    let refused = saved.take_refused();
-    runner.executor.refused_in_a_copy(refused);
+    carry_refusals(&mut saved, &mut runner.executor);
     drop(saved);
     host.move_on(seed, wall_step);
     driven.with_parts(|kernel, cpu| kernel.restore(cpu, host));
