@@ -20,9 +20,9 @@ use crate::{Exception, INSTRUCTION_SIZE, Instruction, Processor, VIRTUAL_ADDRESS
 verus! {
 
 /// The register a branch with link writes its return address to.
-pub const LINK_REGISTER: u32 = 30;
+const LINK_REGISTER: u32 = 30;
 /// The bits of an address below its 4 KiB page, which ADRP clears.
-pub const PAGE_OFFSET_BITS: u32 = 12;
+const PAGE_OFFSET_BITS: u32 = 12;
 
 /// Whether a branch is taken when the register or bit it tests is zero, or when it is not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -112,7 +112,8 @@ pub open spec fn branch_outcome(operation: BranchOperation, address: u64, source
     -> Option<(Option<u64>, Option<u64>, Option<u64>)>
 {
     let count = sources.len();
-    let next = offset_address(address, INSTRUCTION_SIZE);
+    // The numbers are the pseudocode's own, not the constants the code uses: `PC64 + 4`, `base<11:0> = Zeros(12)`, X30.
+    let next = offset_address(address, 4);
     match operation {
         BranchOperation::FormAddress => if count == 1 {
             Some((Some(offset_address(address, sources[0])), None, None))
@@ -120,7 +121,7 @@ pub open spec fn branch_outcome(operation: BranchOperation, address: u64, source
             None
         },
         BranchOperation::FormPageAddress => if count == 1 {
-            let base = address as int - address as int % pow2(PAGE_OFFSET_BITS as nat) as int;
+            let base = address as int - address as int % pow2(12) as int;
             Some((Some(offset_address(base as u64, sources[0])), None, None))
         } else {
             None
@@ -182,14 +183,14 @@ pub open spec fn branch_effect<L>(processor: Processor<L>, word: u32, operands: 
     match operands_read(processor, word, operands) {
         None => Err(Exception::UndefinedInstruction),
         Some((destination, _, sources)) => {
-            let link = processor.general_purpose_registers@[LINK_REGISTER as int];
+            let link = processor.general_purpose_registers@[30];
             let values = sources.map_values(|value: int| value as u64);
             match branch_outcome(operation, processor.program_counter, values, processor.condition_flags, link) {
                 None => Err(Exception::UndefinedInstruction),
                 Some((written, linked, target)) => Ok((
                     match (written, destination, linked) {
                         (Some(value), Some((number, thirty_one)), _) => Some((number, value, thirty_one)),
-                        (_, _, Some(next)) => Some((LINK_REGISTER, next, RegisterThirtyOne::ZeroRegister)),
+                        (_, _, Some(next)) => Some((30, next, RegisterThirtyOne::ZeroRegister)),
                         _ => None,
                     },
                     match target {
