@@ -1409,7 +1409,13 @@ core::arch::global_asm!(
     action_flags_at = const ACTION_FLAGS,
     action_restorer = const ACTION_RESTORER,
     action_mask = const ACTION_MASK,
-    action_flags = const linux::SA_SIGINFO | linux::SA_ONSTACK | linux::SA_NODEFER | linux::SA_RESTORER,
+    // A fault's address keeps the top byte the chip reported (SA_EXPOSE_TAGBITS), so form P reports the address as
+    // the chip gives it.
+    action_flags = const linux::SA_SIGINFO
+        | linux::SA_ONSTACK
+        | linux::SA_NODEFER
+        | linux::SA_RESTORER
+        | linux::SA_EXPOSE_TAGBITS,
     uc_pc = const offset_of!(libc::ucontext_t, uc_mcontext) + offset_of!(libc::mcontext_t, pc),
     uc_sp = const offset_of!(libc::ucontext_t, uc_mcontext) + offset_of!(libc::mcontext_t, sp),
     uc_pstate = const offset_of!(libc::ucontext_t, uc_mcontext) + offset_of!(libc::mcontext_t, pstate),
