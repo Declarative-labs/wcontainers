@@ -13,8 +13,8 @@ cc -O1 -g -std=c11 -shared -fPIC -o "$work/fake/libEGL.so.1" "$generated/fakes/o
 # AddressSanitizer's region check.
 export RUSTFLAGS="-Zcrate-attr=feature(register_tool) -Zcrate-attr=register_tool(reviewable) -Zsanitizer=address -C force-frame-pointers=yes -C link-arg=-rdynamic"
 export RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=$work/asan
-cargo build -q -j "${ARM_JOBS:-12}" -p wcontainers-opengl-es-direct --release --target x86_64-unknown-linux-gnu --example fuzz 2>&1 | tail -3; echo "asan build status ${PIPESTATUS[0]}"
-binary=$work/asan/x86_64-unknown-linux-gnu/release/examples/fuzz
+cargo test -q -j "${ARM_JOBS:-12}" -p wcontainers-opengl-es-direct --release --target x86_64-unknown-linux-gnu --no-run 2>&1 | tail -3; echo "asan build status ${PIPESTATUS[0]}"
+binary=$(ls -t "$work"/asan/x86_64-unknown-linux-gnu/release/deps/conformance-* | grep -v '\.d$' | head -1)
 echo "binary $binary, $(nm "$binary" | grep -c __asan_report) __asan_report symbols"
 read -r mesa glvnd < <(nix build --inputs-from . nixpkgs#mesa nixpkgs#libglvnd --no-link --print-out-paths | paste -sd' ')
 export ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1
@@ -28,7 +28,7 @@ for run in $runs; do
             export WCONTAINERS_EGL_FOLDER=$work/fake FAKE_LIES=1 FAKE_SEED=$seed FAKE_SAY=1
         fi
         start=$(date +%s)
-        WCONTAINERS_FUZZ_SEED=$seed WCONTAINERS_FUZZ_CALLS=$calls timeout 14400 "$binary" > "$log" 2>&1
+        WCONTAINERS_FUZZ_SEED=$seed WCONTAINERS_FUZZ_CALLS=$calls timeout 14400 "$binary" --exact direct::fuzz_from_the_environment --nocapture --test-threads=1 > "$log" 2>&1
         echo "status $? seconds $(( $(date +%s) - start ))" >> "$log"
     ) &
 done

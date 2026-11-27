@@ -833,32 +833,38 @@ fn fuzz<M: MesaCompiler>(compiler: &M, seed: u64, calls: u64) -> Calls {
     made
 }
 
-/// A number the environment names; fails without it, so that a run asked for without its input does not pass.
-fn needed(name: &str) -> u64 {
-    std::env::var(name).ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or_else(|| panic!("{name} names a number"))
+/// The number the environment names, else `default`: a run asked for by name takes its input from the environment,
+/// and the suite's own run tests with the default (never nothing).
+fn given(name: &str, default: u64) -> u64 {
+    std::env::var(name).ok().map_or(default, |value| value.parse::<u64>().unwrap_or_else(|_| panic!("{name} names a number, not {value}")))
 }
 
-/// Runs `fuzz` with the seed and count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS give; fails without them, and
-/// when a method made nothing. A program of its own on each implementation (not in `tests!`, whose tests run with no
-/// input).
+/// The seed and calls the suite's own run fuzzes with.
+const FUZZ_SEED: u64 = 1;
+const FUZZ_CALLS: u64 = 10_000;
+
+/// Runs `fuzz` with the seed and count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS give (`FUZZ_SEED` and
+/// `FUZZ_CALLS` where they give none); fails when a method made nothing.
 pub fn fuzz_from_the_environment<M: MesaCompiler>(compiler: M) {
-    let (seed, calls) = (needed("WCONTAINERS_FUZZ_SEED"), needed("WCONTAINERS_FUZZ_CALLS"));
+    let (seed, calls) = (given("WCONTAINERS_FUZZ_SEED", FUZZ_SEED), given("WCONTAINERS_FUZZ_CALLS", FUZZ_CALLS));
     let made = fuzz(&compiler, seed, calls);
     println!("FUZZ seed {seed} calls {}", made.0);
     let never: Vec<&str> = METHODS.iter().copied().filter(|method| made.1.get(method).is_none_or(|(_, made)| *made == 0)).collect();
     assert!(never.is_empty(), "methods that made nothing in seed {seed}: {never:?}");
 }
 
-/// Runs one hostile case alone, as WCONTAINERS_PROBE names it ("case,seed"), so that a case that ends the process is
-/// found by itself; prints the number of cases first ("x" prints only that). Fails without it. A program of its own on
-/// each implementation, as `fuzz_from_the_environment`.
+/// Runs one hostile case alone, as WCONTAINERS_PROBE names it ("case,seed"; the first case's first seed where it names
+/// none), so that a case that ends the process is found by itself; prints the number of cases first ("x" prints only
+/// that).
 pub fn probe_from_the_environment<M: MesaCompiler>(compiler: M) {
-    let probe = std::env::var("WCONTAINERS_PROBE").expect("WCONTAINERS_PROBE names a case and a seed, or x");
+    let probe = std::env::var("WCONTAINERS_PROBE").unwrap_or_else(|_| "0,0".to_string());
     println!("CASES {CASES}");
     let parts: Vec<u64> = probe.split(',').filter_map(|part| part.parse().ok()).collect();
     if let [case, seed] = parts[..] {
         let calls = hostile_case(&compiler, usize::try_from(case).unwrap_or(usize::MAX), seed).map(|calls| calls.0);
         println!("PROBE {probe} ended, calls {calls:?}");
+    } else {
+        assert_eq!(probe, "x", "WCONTAINERS_PROBE names a case and a seed, or x");
     }
 }
 
@@ -878,6 +884,16 @@ macro_rules! tests {
         #[test]
         fn every_method_is_called() {
             $crate::every_method_is_called($value);
+        }
+
+        #[test]
+        fn probe_from_the_environment() {
+            $crate::probe_from_the_environment($value);
+        }
+
+        #[test]
+        fn fuzz_from_the_environment() {
+            $crate::fuzz_from_the_environment($value);
         }
     };
 }

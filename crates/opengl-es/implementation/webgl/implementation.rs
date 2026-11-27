@@ -6,6 +6,14 @@
 //! extension names and their count (WebGL's own names, of the extensions this context enabled), the version
 //! strings (OpenGL ES's form, WebGL's text in brackets), the lengths of logs and sources, the sample counts of a
 //! format, and the extension commands, called on the extension's object.
+//!
+//! A query's result, which OpenGL ES's QUERY_RESULT waits for, WebGL makes available only after control returns to
+//! the browser's event loop (WebGL 2 specification §5.15, getQueryParameter). Reading it, the implementation gives the
+//! browser turns until it is available: it suspends the WebAssembly stack on a promise a message posted to the page
+//! itself settles (JSPI: the import is wrapped in `WebAssembly.Suspending`), so the caller must have entered the
+//! module through `WebAssembly.promising`. A host without JSPI must stand in for `WebAssembly.Suspending` to load the
+//! module at all (`WebAssembly.Suspending ??= function (inner) { return inner; };`); there the wait sees that no turn
+//! was taken and stops, and the result reads as WebGL answers it within the task.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -23,6 +31,22 @@ use web_sys::{
 
 /// WebGL 2's value for the longest wait `clientWaitSync` takes (WebGL 2 specification §5.15).
 const MAX_CLIENT_WAIT_TIMEOUT_WEBGL: u32 = 0x9247;
+
+/// The state values that are lists of a length the context chooses, which the trait's get calls refuse.
+const VARIABLE_LISTS: [u32; 3] = [gl::COMPRESSED_TEXTURE_FORMATS, gl::PROGRAM_BINARY_FORMATS, gl::SHADER_BINARY_FORMATS];
+
+/// The channels a clear takes: OpenGL ES reads as many as the buffer has (four of a colour), WebGL refuses fewer than
+/// four; the caller's values, then zeros, as the direct implementation clears.
+fn channels<T: Copy + Default>(value: &[T]) -> [T; 4] {
+    let mut room = [T::default(); 4];
+    for (slot, given) in room.iter_mut().zip(value) {
+        *slot = *given;
+    }
+    room
+}
+
+/// Nanoseconds in a millisecond, the unit of the page's clock.
+const NANOSECONDS_PER_MILLISECOND: f64 = 1_000_000.0;
 
 /// WebGL's extension giving the timer queries of EXT_disjoint_timer_query to a WebGL 2 context.
 const TIMER_QUERY: &str = "EXT_disjoint_timer_query_webgl2";
@@ -45,6 +69,59 @@ static CONTEXTS: AtomicU64 = AtomicU64::new(0);
 pub struct Fence {
     context: u64,
     number: u64,
+}
+
+/// Giving the browser a turn of its event loop while a caller waits.
+#[expect(deprecated, reason = "wasm-bindgen marks every `suspending` import deprecated while it calls JSPI experimental; JSPI is the only way WebAssembly gives the browser a turn mid-call")]
+mod turn {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use js_sys::Promise;
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::prelude::wasm_bindgen;
+    use wasm_bindgen::{JsCast, JsValue};
+    use web_sys::MessageChannel;
+
+    #[wasm_bindgen]
+    extern "C" {
+        /// Suspends the calling WebAssembly stack until the promise settles: `Promise.resolve` imported through
+        /// `WebAssembly.Suspending`, which suspends on the promise it returns.
+        #[wasm_bindgen(js_namespace = Promise, js_name = resolve, suspending)]
+        fn settled(promise: &Promise);
+    }
+
+    thread_local! {
+        /// The channel a turn's message is posted through (a message is a task of its own, which a timer of no delay
+        /// nested in timers is not: browsers hold those to 4 ms).
+        static CHANNEL: RefCell<Option<MessageChannel>> = const { RefCell::new(None) };
+    }
+
+    /// Gives the browser one turn: suspends until a message posted to the page itself arrives. False when the host did
+    /// not suspend (a stand-in for `WebAssembly.Suspending` returns at once), so no turn was taken.
+    pub(crate) fn give() -> bool {
+        let channel = CHANNEL.with_borrow_mut(|kept| {
+            if kept.is_none() {
+                *kept = MessageChannel::new().ok();
+            }
+            kept.clone()
+        });
+        let Some(channel) = channel else { return false };
+        let turned = Rc::new(Cell::new(false));
+        let seen = Rc::clone(&turned);
+        let promise = Promise::new(&mut |resolve, _reject| {
+            let seen = Rc::clone(&seen);
+            let arrived = Closure::once_into_js(move || {
+                seen.set(true);
+                let _ = resolve.call0(&JsValue::UNDEFINED);
+            });
+            channel.port1().set_onmessage(Some(arrived.unchecked_ref()));
+            let _ = channel.port2().post_message(&JsValue::NULL);
+        });
+        settled(&promise);
+        channel.port1().set_onmessage(None);
+        turned.get()
+    }
 }
 
 /// A context's objects of one kind, under the numbers handed out for them (0 is never one).
@@ -129,6 +206,8 @@ pub struct WebGl {
     /// The extensions enabled, by WebGL name, with each one's object.
     extensions: Vec<(String, Object)>,
     longest_wait: f64,
+    /// The browser's turns the waits for query results have taken.
+    turns: Cell<u64>,
 }
 
 impl WebGl {
@@ -153,6 +232,37 @@ impl WebGl {
             refusals: Cell::new(0),
             extensions,
             longest_wait,
+            turns: Cell::new(0),
+        }
+    }
+
+    /// How many turns of the browser's event loop the waits for query results have taken.
+    pub fn turns(&self) -> u64 {
+        self.turns.get()
+    }
+
+    /// Whether an array buffer is bound, as the trait's vertex attribute pointers need (an offset into it); refused
+    /// (INVALID_OPERATION) where none is: WebGL takes offset 0 with none.
+    fn array_buffer_bound(&self) -> bool {
+        let bound = self.context.get_parameter(gl::ARRAY_BUFFER_BINDING).is_ok_and(|buffer| !buffer.is_null() && !buffer.is_undefined());
+        if !bound {
+            self.refuse(gl::INVALID_OPERATION);
+        }
+        bound
+    }
+
+    /// Waits, for QUERY_RESULT, until the query's result is available, as OpenGL ES does: gives the browser turns while
+    /// WebGL answers that it is not. Stops where WebGL gives no answer (a query never begun, or still active: its
+    /// error is WebGL's), where the context is lost, and where the host takes no turn.
+    fn wait_for_result(&self, query: &WebGlQuery, pname: u32) {
+        if pname != gl::QUERY_RESULT {
+            return;
+        }
+        while self.context.get_query_parameter(query, gl::QUERY_RESULT_AVAILABLE).as_bool() == Some(false) && !self.context.is_context_lost() {
+            if !turn::give() {
+                return;
+            }
+            self.turns.set(self.turns.get().saturating_add(1));
         }
     }
 
@@ -302,8 +412,13 @@ impl WebGl {
         self.number_of(value).map(|number| vec![f64::from(number)])
     }
 
-    /// The numbers of a state value, with the extension count answered here.
+    /// The numbers of a state value, with the extension count answered here; the three lists of variable length are
+    /// refused, as the trait's get calls refuse them.
     fn parameter(&self, name: u32) -> Option<Vec<f64>> {
+        if VARIABLE_LISTS.contains(&name) {
+            // Refused by the caller of `parameter`, which refuses an answer of none with INVALID_ENUM.
+            return None;
+        }
         if name == gl::NUM_EXTENSIONS {
             return Some(vec![self.extensions.len() as f64]);
         }
@@ -568,22 +683,30 @@ impl OpenGlEs for WebGl {
     }
 
     fn clear_bufferfv(&self, buffer: u32, drawbuffer: i32, value: &[f32]) {
-        self.context.clear_bufferfv_with_f32_array(buffer, drawbuffer, value);
+        self.context.clear_bufferfv_with_f32_array(buffer, drawbuffer, &channels(value));
     }
 
     fn clear_bufferiv(&self, buffer: u32, drawbuffer: i32, value: &[i32]) {
-        self.context.clear_bufferiv_with_i32_array(buffer, drawbuffer, value);
+        self.context.clear_bufferiv_with_i32_array(buffer, drawbuffer, &channels(value));
     }
 
     fn clear_bufferuiv(&self, buffer: u32, drawbuffer: i32, value: &[u32]) {
-        self.context.clear_bufferuiv_with_u32_array(buffer, drawbuffer, value);
+        self.context.clear_bufferuiv_with_u32_array(buffer, drawbuffer, &channels(value));
     }
 
     fn client_wait_sync(&self, sync: &Fence, flags: u32, timeout: u64) -> u32 {
-        match self.sync(sync) {
-            // WebGL 2 refuses a wait longer than its longest (often 0: a page's script may not block).
-            Some(sync) => self.context.client_wait_sync_with_f64(&sync, flags, (timeout as f64).min(self.longest_wait)),
-            None => gl::WAIT_FAILED,
+        let Some(sync) = self.sync(sync) else { return gl::WAIT_FAILED };
+        // WebGL 2 refuses a wait longer than its longest (often 0: a page's script may not block), and signals a fence
+        // only between the browser's tasks (§5.15): the browser is given turns until the fence is signalled or the
+        // timeout passed.
+        let start = js_sys::Date::now();
+        loop {
+            let answer = self.context.client_wait_sync_with_f64(&sync, flags, (timeout as f64).min(self.longest_wait));
+            let waited = (js_sys::Date::now() - start) * NANOSECONDS_PER_MILLISECOND;
+            if answer != gl::TIMEOUT_EXPIRED || waited >= timeout as f64 || self.context.is_context_lost() || !turn::give() {
+                return answer;
+            }
+            self.turns.set(self.turns.get().saturating_add(1));
         }
     }
 
@@ -893,6 +1016,7 @@ impl OpenGlEs for WebGl {
 
     fn get_query_objectuiv(&self, id: u32, pname: u32, params: &mut [u32]) {
         if let Some(query) = self.named(|objects| &objects.queries, id) {
+            self.wait_for_result(&query, pname);
             let answer = self.numbers(&self.context.get_query_parameter(&query, pname));
             self.write_numbers(answer, params, |value| value as u32);
         }
@@ -1276,11 +1400,15 @@ impl OpenGlEs for WebGl {
     }
 
     fn vertex_attrib_i_pointer(&self, index: u32, size: i32, type_: u32, stride: i32, pointer: u64) {
-        self.context.vertex_attrib_i_pointer_with_f64(index, size, type_, stride, pointer as f64);
+        if self.array_buffer_bound() {
+            self.context.vertex_attrib_i_pointer_with_f64(index, size, type_, stride, pointer as f64);
+        }
     }
 
     fn vertex_attrib_pointer(&self, index: u32, size: i32, type_: u32, normalized: bool, stride: i32, pointer: u64) {
-        self.context.vertex_attrib_pointer_with_f64(index, size, type_, normalized, stride, pointer as f64);
+        if self.array_buffer_bound() {
+            self.context.vertex_attrib_pointer_with_f64(index, size, type_, normalized, stride, pointer as f64);
+        }
     }
 
     fn viewport(&self, x: i32, y: i32, width: i32, height: i32) {
@@ -1314,6 +1442,7 @@ impl OpenGlEs for WebGl {
     fn get_query_objectui64v_ext(&self, id: u32, pname: u32, params: &mut [u64]) -> Option<()> {
         self.extension(TIMER_QUERY)?;
         if let Some(query) = self.named(|objects| &objects.queries, id) {
+            self.wait_for_result(&query, pname);
             let answer = self.numbers(&self.context.get_query_parameter(&query, pname));
             self.write_numbers(answer, params, |value| value as u64);
         }

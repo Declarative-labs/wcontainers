@@ -933,11 +933,6 @@ pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], out:
             std::fs::create_dir_all(&tests).map_err(|e| e.to_string())?;
             write(tests.join("conformance.rs"), &format!("{}{}", header(set), templates.gl_direct_test))?;
             write(tests.join("kept.rs"), &format!("{}{}", header(set), templates.gl_direct_kept))?;
-            // The runs asked for by name: programs of their own, each failing without its input.
-            let examples = direct.join("examples");
-            std::fs::create_dir_all(&examples).map_err(|e| e.to_string())?;
-            write(examples.join("fuzz.rs"), &format!("{}{}", header(set), templates.gl_direct_fuzz))?;
-            write(examples.join("measure.rs"), &format!("{}{}", header(set), templates.gl_direct_measure))?;
             write(conformance.join("suite.rs"), &write_suite(set, classified, templates.gl_suite))?;
             write(conformance.join("Cargo.toml"), templates.gl_suite_manifest)?;
         } else {
@@ -974,8 +969,6 @@ pub struct Templates {
     pub gl_manifest: &'static str,
     pub gl_direct_test: &'static str,
     pub gl_direct_kept: &'static str,
-    pub gl_direct_fuzz: &'static str,
-    pub gl_direct_measure: &'static str,
     pub gl_suite: &'static str,
     pub gl_suite_manifest: &'static str,
     pub fake: &'static str,
