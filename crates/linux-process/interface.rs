@@ -7,6 +7,7 @@ use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
 pub use rustix::io::Errno;
+pub use rustix::mm::ProtFlags;
 pub use rustix::process::Pid;
 pub use rustix::process::Signal;
 
@@ -43,6 +44,31 @@ pub trait LinuxProcess {
         address: usize,
         length: usize,
     ) -> Result<Self::FixedMapping, Errno>;
+
+    /// Replaces the pages `offset..offset + length` of the fixed mapping with a
+    /// [shared mapping](https://man7.org/linux/man-pages/man2/mmap.2.html) of the file's bytes from `file_offset`, with
+    /// the protection; its other pages stay, and its drop unmaps these too. `EINVAL` where the pages are not whole
+    /// pages inside it; `EPERM` for an executable protection, since bytes another party writes never run as this
+    /// process's code.
+    fn map_file_within(
+        &self,
+        mapping: &mut Self::FixedMapping,
+        offset: usize,
+        length: usize,
+        file: BorrowedFd<'_>,
+        file_offset: u64,
+        protection: ProtFlags,
+    ) -> Result<(), Errno>;
+
+    /// [Changes the protection](https://man7.org/linux/man-pages/man2/mprotect.2.html) of the pages
+    /// `offset..offset + length` of the fixed mapping; `EINVAL` and `EPERM` as [`Self::map_file_within`].
+    fn protect_within(
+        &self,
+        mapping: &mut Self::FixedMapping,
+        offset: usize,
+        length: usize,
+        protection: ProtFlags,
+    ) -> Result<(), Errno>;
 
     /// Makes a sealed [memory file](https://man7.org/linux/man-pages/man2/memfd_create.2.html) of the length, which
     /// cannot shrink, and maps it shared; `EINVAL` for an empty one, which mmap(2) refuses.

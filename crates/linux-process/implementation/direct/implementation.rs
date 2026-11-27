@@ -6,8 +6,8 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use rustix::fs::{MemfdFlags, SealFlags};
-use rustix::mm::{MapFlags, ProtFlags};
-use wcontainers_linux_process::{Errno, LinuxProcess, Pid, Signal};
+use rustix::mm::{MapFlags, MprotectFlags};
+use wcontainers_linux_process::{Errno, LinuxProcess, Pid, ProtFlags, Signal};
 #[cfg(target_arch = "aarch64")]
 use wcontainers_linux_process::{LARGEST_PREDICATE_BYTES, PredicatesAfterSystemCall};
 
@@ -84,6 +84,60 @@ impl LinuxProcess for DirectLinuxProcess {
             Ok(mapping)
         } else {
             Err(Errno::NOSYS)
+        }
+    }
+
+    fn map_file_within(
+        &self,
+        mapping: &mut DirectFixedMapping,
+        offset: usize,
+        length: usize,
+        file: BorrowedFd<'_>,
+        file_offset: u64,
+        protection: ProtFlags,
+    ) -> Result<(), Errno> {
+        let address = mapping.pages_within(offset, length, protection)?;
+        #[expect(
+            unsafe_code,
+            reason = "replaces pages at a fixed address, which rustix leaves to the caller to keep sound"
+        )]
+        // SAFETY: the pages lie inside the fixed mapping, which the handle alone holds (`&mut`) and through which no
+        // reference to this process's memory is made, so replacing them changes nothing any reference here points to;
+        // they are not executable.
+        let mapped = unsafe {
+            rustix::mm::mmap(
+                address as *mut c_void,
+                length,
+                protection,
+                MapFlags::SHARED | MapFlags::FIXED,
+                file,
+                file_offset,
+            )
+        }?;
+        debug_assert_eq!(mapped.addr(), address, "a fixed mapping lands where asked");
+        Ok(())
+    }
+
+    fn protect_within(
+        &self,
+        mapping: &mut DirectFixedMapping,
+        offset: usize,
+        length: usize,
+        protection: ProtFlags,
+    ) -> Result<(), Errno> {
+        let address = mapping.pages_within(offset, length, protection)?;
+        #[expect(
+            unsafe_code,
+            reason = "changes the protection at an address, which rustix leaves to the caller to keep sound"
+        )]
+        // SAFETY: as `map_file_within`: pages of the handle's own mapping, which no reference points into, made no
+        // more than readable and writable.
+        unsafe {
+            rustix::mm::mprotect(
+                address as *mut c_void,
+                length,
+                MprotectFlags::from_bits_truncate(protection.bits()),
+            )
         }
     }
 
@@ -217,6 +271,31 @@ impl LinuxProcess for DirectLinuxProcess {
             p0: [u8::MAX; LARGEST_PREDICATE_BYTES],
             ffr: [u8::MAX; LARGEST_PREDICATE_BYTES],
         }))
+    }
+}
+
+impl DirectFixedMapping {
+    /// The address of the pages `offset..offset + length` of the mapping: `EINVAL` unless they are whole pages inside
+    /// it, `EPERM` for an executable protection.
+    fn pages_within(
+        &self,
+        offset: usize,
+        length: usize,
+        protection: ProtFlags,
+    ) -> Result<usize, Errno> {
+        if protection.contains(ProtFlags::EXEC) {
+            return Err(Errno::PERM);
+        }
+        let page = rustix::param::page_size();
+        let end = offset.checked_add(length).ok_or(Errno::INVAL)?;
+        if length == 0
+            || !offset.is_multiple_of(page)
+            || !length.is_multiple_of(page)
+            || end > self.length
+        {
+            return Err(Errno::INVAL);
+        }
+        Ok(self.address + offset)
     }
 }
 

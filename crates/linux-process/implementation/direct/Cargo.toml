@@ -17,8 +17,8 @@ path = "conformance_run.rs"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wcontainers-linux-process = { path = "../.." }
-# The calls rustix offers: fixed mappings, memory files and their seals, unmapping.
-rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "mm", "process"] }
+# The calls rustix offers: fixed mappings, memory files and their seals, unmapping, the page size.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "mm", "param", "process"] }
 # tgkill, which rustix lacks.
 libc = "0.2.191"
 # The system call number of the SVE probe.
