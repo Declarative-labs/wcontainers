@@ -38,6 +38,9 @@ pub enum FixedOutcome {
     /// SYSENTER in 64-bit mode on Intel's chips: the kernel is entered at the MSRs Linux sets, with no return address
     /// kept.
     SystemEnter,
+    /// ENQCMD: #GP(0) with no PASID in IA32_PASID; with one, a device's answer decides ZF, so the form is forbidden
+    /// there and raises #UD as [`crate::FORBIDDEN_FORMS`] do.
+    EnqueueCommand,
 }
 
 /// How far a state may move the form's memory operand without its encoding becoming another form's.
@@ -179,7 +182,7 @@ pub static FIXED_FORMS: &[FixedForm] = &[
     fixed(Instruction::Prefetchrst2Memu8, NoOperation, All),
     // ENQCMDS needs CPL 0; ENQCMD needs a valid IA32_PASID, which Linux gives only a process bound to a device.
     fixed(Instruction::EnqcmdsGpraMemu32, GeneralProtection, Sample),
-    fixed(Instruction::EnqcmdGpraMemu32, GeneralProtection, Sample),
+    fixed(Instruction::EnqcmdGpraMemu32, FixedOutcome::EnqueueCommand, Sample),
     fixed(Instruction::Sysenter, FixedOutcome::SystemEnter, Sample),
 ];
 

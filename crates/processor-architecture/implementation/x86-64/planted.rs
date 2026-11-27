@@ -1367,6 +1367,8 @@ pub enum Bug {
     ArcTangentConstantTruncated,
     /// FPATAN of ±∞ over -∞ gives ±π/4, not ±3π/4.
     ArcTangentInfinitiesGiveQuarter,
+    /// ENQCMD raises #UD with no PASID bound too.
+    EnqueueForbiddenUnbound,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1998,6 +2000,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CompatibilityStepKeepsStackUpperHalf, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
     row(Bug::ArcTangentConstantTruncated, "FPATAN", Family::Forms(&[Instruction::Fpatan]), Origin::CheckFindings),
     row(Bug::ArcTangentInfinitiesGiveQuarter, "FPATAN", Family::Forms(&[Instruction::Fpatan]), Origin::CheckFindings),
+    row(Bug::EnqueueForbiddenUnbound, "ENQCMD", Family::Forms(&[Instruction::EnqcmdGpraMemu32]), Origin::CheckFindings),
 ];
 
 const FISTTP: &[Instruction] =
