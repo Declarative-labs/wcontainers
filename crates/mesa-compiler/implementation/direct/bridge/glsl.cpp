@@ -46,7 +46,7 @@
 #define WC_GL_WORKGROUP_BYTES 16384
 /* Atomic counters live in storage buffers (no hardware counters): st/mesa's count for that case. */
 #define WC_GL_ATOMIC_COUNTERS MAX_ATOMIC_COUNTERS
-/* One vertex stream (no geometry programs); OpenGL's minimum of transform feedback buffers. */
+/* One vertex stream; OpenGL's minimum of transform feedback buffers. */
 #define WC_GL_VERTEX_STREAMS 1
 #define WC_GL_TRANSFORM_FEEDBACK_BUFFERS 4
 /* The common form's fragment coordinates: origin at the upper left, pixel centres at half. */
@@ -120,7 +120,16 @@ report_capabilities(struct gl_context *ctx)
    }
    ctx->Const.MaxComputeWorkGroupSize[ARRAY_SIZE(ctx->Const.MaxComputeWorkGroupSize) - 1] =
       WC_GL_WORKGROUP_DEPTH;
-   const mesa_shader_stage stages[] = {MESA_SHADER_VERTEX, MESA_SHADER_FRAGMENT, MESA_SHADER_COMPUTE};
+   /* The geometry and tessellation limits the driver reports (crates/opengl screen.rs): Mesa's own. */
+   ctx->Const.MaxGeometryOutputVertices = MAX_GEOMETRY_OUTPUT_VERTICES;
+   ctx->Const.MaxGeometryTotalOutputComponents = MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS;
+   ctx->Const.MaxGeometryShaderInvocations = MAX_GEOMETRY_SHADER_INVOCATIONS;
+   ctx->Const.MaxPatchVertices = MAX_PATCH_VERTICES;
+   ctx->Const.MaxTessGenLevel = MAX_TESS_GEN_LEVEL;
+   ctx->Const.MaxTessPatchComponents = MAX_TESS_PATCH_COMPONENTS;
+   ctx->Const.MaxTessControlTotalOutputComponents = MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS;
+   const mesa_shader_stage stages[] = {MESA_SHADER_VERTEX, MESA_SHADER_FRAGMENT, MESA_SHADER_COMPUTE,
+                                       MESA_SHADER_GEOMETRY, MESA_SHADER_TESS_CTRL, MESA_SHADER_TESS_EVAL};
    for (unsigned s = 0; s < ARRAY_SIZE(stages); s++) {
       struct gl_program_constants *p = &ctx->Const.Program[stages[s]];
       p->MaxAttribs = WC_GL_VERTEX_ATTRIBUTES;
@@ -148,6 +157,12 @@ gl_stage(enum wc_stage stage)
       return GL_FRAGMENT_SHADER;
    case WC_STAGE_COMPUTE:
       return GL_COMPUTE_SHADER;
+   case WC_STAGE_GEOMETRY:
+      return GL_GEOMETRY_SHADER;
+   case WC_STAGE_TESS_CONTROL:
+      return GL_TESS_CONTROL_SHADER;
+   case WC_STAGE_TESS_EVALUATION:
+      return GL_TESS_EVALUATION_SHADER;
    case WC_STAGES:
       break;
    }

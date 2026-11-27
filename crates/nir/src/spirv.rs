@@ -1,4 +1,4 @@
-//! Candidate A's second step: SPIR-V written from NIR, read by naga into a validated module.
+//! SPIR-V words as instructions, and the validation of a module with what the common form allows it.
 
 use crate::ConvertError;
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
@@ -23,41 +23,6 @@ pub fn instructions(words: &[u32]) -> impl Iterator<Item = (u32, &[u32])> {
     })
 }
 
-/// The built-ins that need the `DrawParameters` capability.
-const DRAW_PARAMETERS: [spirv::BuiltIn; 3] = [
-    spirv::BuiltIn::BaseVertex,
-    spirv::BuiltIn::BaseInstance,
-    spirv::BuiltIn::DrawIndex,
-];
-
-/// The module without what Zink writes that says nothing and that naga's reader refuses or misreads:
-/// `Index 0` decorations (the first input of blending, which no decoration also says; read as
-/// dual-source blending), and the `DrawParameters` capability where no built-in needs it (Zink
-/// declares it for every vertex program reading its instance index).
-fn cleaned(words: &[u32]) -> Vec<u32> {
-    let decorates = |inst: &[u32], decoration: spirv::Decoration| matches!(inst, [_, _, d, ..] if *d == decoration as u32);
-    let draw_parameters = instructions(words).any(|(opcode, inst)| {
-        opcode == spirv::Op::Decorate as u32
-            && decorates(inst, spirv::Decoration::BuiltIn)
-            && DRAW_PARAMETERS
-                .iter()
-                .any(|&b| inst.last() == Some(&(b as u32)))
-    });
-    let mut out = words[..HEADER_WORDS.min(words.len())].to_vec();
-    for (opcode, inst) in instructions(words) {
-        let index_zero = opcode == spirv::Op::Decorate as u32
-            && decorates(inst, spirv::Decoration::Index)
-            && matches!(inst, [_, _, _, 0]);
-        let unneeded = opcode == spirv::Op::Capability as u32
-            && !draw_parameters
-            && inst.get(1) == Some(&(spirv::Capability::DrawParameters as u32));
-        if !index_zero && !unneeded {
-            out.extend_from_slice(inst);
-        }
-    }
-    out
-}
-
 /// What the common form allows the module: the shaders crate's capabilities, and immediates where the
 /// module reads them (the back ends size them from its `Immediate` globals).
 fn capabilities(module: &naga::Module) -> Capabilities {
@@ -68,17 +33,6 @@ fn capabilities(module: &naga::Module) -> Capabilities {
     let mut capabilities = wcontainers_shaders::capabilities(module);
     capabilities.set(Capabilities::IMMEDIATES, immediates);
     capabilities
-}
-
-/// Reads SPIR-V words into a naga module and validates it with what the common form allows it.
-pub fn read(words: &[u32]) -> Result<(naga::Module, ModuleInfo), ConvertError> {
-    let options = naga::front::spv::Options::default();
-    let words = cleaned(words);
-    let module = naga::front::spv::Frontend::new(words.iter().copied(), &options)
-        .parse()
-        .map_err(|e| ConvertError::Reader(chain(&e)))?;
-    let info = validate(&module)?;
-    Ok((module, info))
 }
 
 /// Validates a module with what the common form allows it.

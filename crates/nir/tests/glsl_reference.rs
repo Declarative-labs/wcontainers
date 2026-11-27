@@ -76,7 +76,7 @@ fn drawn(source: &str) -> (Vec<wcontainers_nir::mesa::GlslName>, Flattened) {
         .received
         .prepare()
         .unwrap()
-        .variant(Stage::Compute, &DrawSettings::default(), &[], &[])
+        .variant(&DrawSettings::default(), &[], &[])
         .unwrap()
         .flatten(0)
         .unwrap();

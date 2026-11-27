@@ -17,17 +17,30 @@ pub enum Stage {
     Vertex,
     Fragment,
     Compute,
+    Geometry,
+    TessControl,
+    TessEvaluation,
 }
 
 impl Stage {
     /// Every stage, in the bridge's order (`WC_STAGES`).
-    pub const ALL: &[Stage] = &[Stage::Vertex, Stage::Fragment, Stage::Compute];
+    pub const ALL: &[Stage] = &[
+        Stage::Vertex,
+        Stage::Fragment,
+        Stage::Compute,
+        Stage::Geometry,
+        Stage::TessControl,
+        Stage::TessEvaluation,
+    ];
 
+    /// The stage whose set the program's resources bind in: a geometry or control program runs
+    /// as the stage helper's compute work, and an evaluation program draws the tessellated points
+    /// as a vertex program does.
     pub const fn shader_stage(self) -> ShaderStage {
         match self {
-            Stage::Vertex => ShaderStage::Vertex,
+            Stage::Vertex | Stage::TessEvaluation => ShaderStage::Vertex,
             Stage::Fragment => ShaderStage::Fragment,
-            Stage::Compute => ShaderStage::Compute,
+            Stage::Compute | Stage::Geometry | Stage::TessControl => ShaderStage::Compute,
         }
     }
 
@@ -38,9 +51,56 @@ impl Stage {
             Stage::Vertex => constants::STAGE_VERTEX,
             Stage::Fragment => constants::STAGE_FRAGMENT,
             Stage::Compute => constants::STAGE_COMPUTE,
+            Stage::Geometry => constants::STAGE_GEOMETRY,
+            Stage::TessControl => constants::STAGE_TESS_CONTROL,
+            Stage::TessEvaluation => constants::STAGE_TESS_EVALUATION,
         }
     }
 }
+
+/// A stage's program as a value of the compiler's type for that stage.
+pub enum Staged<V, F, C, G, TC, TE> {
+    Vertex(V),
+    Fragment(F),
+    Compute(C),
+    Geometry(G),
+    TessControl(TC),
+    TessEvaluation(TE),
+}
+
+impl<V, F, C, G, TC, TE> Staged<V, F, C, G, TC, TE> {
+    /// The stage the program is of.
+    pub const fn stage(&self) -> Stage {
+        match self {
+            Staged::Vertex(_) => Stage::Vertex,
+            Staged::Fragment(_) => Stage::Fragment,
+            Staged::Compute(_) => Stage::Compute,
+            Staged::Geometry(_) => Stage::Geometry,
+            Staged::TessControl(_) => Stage::TessControl,
+            Staged::TessEvaluation(_) => Stage::TessEvaluation,
+        }
+    }
+}
+
+/// A stage as st/mesa hands it to the driver, of the compiler's type for its stage.
+type ReceivedShader<M> = Staged<
+    <M as MesaCompiler>::ReceivedVertex,
+    <M as MesaCompiler>::ReceivedFragment,
+    <M as MesaCompiler>::ReceivedCompute,
+    <M as MesaCompiler>::ReceivedGeometry,
+    <M as MesaCompiler>::ReceivedTessControl,
+    <M as MesaCompiler>::ReceivedTessEvaluation,
+>;
+
+/// A stage after the driver's steps at its creation, of the compiler's type for its stage.
+type PreparedShader<M> = Staged<
+    <M as MesaCompiler>::PreparedVertex,
+    <M as MesaCompiler>::PreparedFragment,
+    <M as MesaCompiler>::PreparedCompute,
+    <M as MesaCompiler>::PreparedGeometry,
+    <M as MesaCompiler>::PreparedTessControl,
+    <M as MesaCompiler>::PreparedTessEvaluation,
+>;
 
 /// What a name of a GLSL program, or a state value, is in one stage (`enum wc_glsl_name_kind`).
 #[repr(u32)]
@@ -366,14 +426,14 @@ pub struct GlslStage<M: MesaCompiler> {
 /// A stage as the OpenGL driver receives it from st/mesa.
 pub struct Received<M: MesaCompiler> {
     compiler: M,
-    shader: M::Received,
+    shader: ReceivedShader<M>,
 }
 
 /// A stage after the driver's steps at its creation, and what the driver reads of it then and at
 /// its draws.
 pub struct Prepared<M: MesaCompiler> {
     compiler: M,
-    shader: M::Prepared,
+    shader: PreparedShader<M>,
     /// The cache's key of the prepared program.
     pub key: [u8; blake3::OUT_LEN],
     /// The outputs it streams (its transform feedback, none without it); `None` when one is a value
@@ -501,15 +561,7 @@ impl<M: MesaCompiler + Clone> SpirvProgram<M> {
 }
 
 impl<M: MesaCompiler + Clone> CommonProgram<M> {
-    #[cfg(feature = "standalone")]
-    /// Candidate A's first step: SPIR-V written by Zink's compiler.
-    pub fn into_spirv(self) -> Result<Vec<u32>, ConvertError> {
-        self.compiler
-            .spirv_common_to_spirv(self.shader)
-            .ok_or(ConvertError::Mesa(NIR_TO_SPIRV))
-    }
-
-    /// Candidate B's first step: the program out of SSA and flattened.
+    /// Route B's first step: the program out of SSA and flattened.
     pub fn flatten(self) -> Result<wcontainers_mesa_compiler::Flat, ConvertError> {
         self.compiler
             .spirv_common_flatten(self.shader)
@@ -538,22 +590,29 @@ impl<M: MesaCompiler + Clone> GlslStage<M> {
         let program = compiler
             .glsl_to_nir(texts)
             .map_err(|log| ConvertError::Glsl(String::from_utf8_lossy(&log).into_owned()))?;
-        Stage::ALL
-            .iter()
-            .zip(program.stages.into_iter().zip(program.names))
-            .filter_map(|(stage, (shader, names))| shader.map(|shader| (*stage, shader, names)))
-            .map(
-                |(stage, shader, names)| -> Result<GlslStage<M>, ConvertError> {
-                    Ok(GlslStage {
-                        stage,
-                        received: Received {
-                            compiler: compiler.clone(),
-                            shader,
-                        },
-                        names: names.into_iter().map(glsl_name).collect::<Result<_, _>>()?,
-                    })
-                },
-            )
+        // In `Stage::ALL`'s order, which is the bridge's.
+        let stages: [Option<ReceivedShader<M>>; constants::STAGES as usize] = [
+            program.vertex.map(Staged::Vertex),
+            program.fragment.map(Staged::Fragment),
+            program.compute.map(Staged::Compute),
+            program.geometry.map(Staged::Geometry),
+            program.tess_control.map(Staged::TessControl),
+            program.tess_evaluation.map(Staged::TessEvaluation),
+        ];
+        stages
+            .into_iter()
+            .zip(program.names)
+            .filter_map(|(shader, names)| shader.map(|shader| (shader, names)))
+            .map(|(shader, names)| -> Result<GlslStage<M>, ConvertError> {
+                Ok(GlslStage {
+                    stage: shader.stage(),
+                    received: Received {
+                        compiler: compiler.clone(),
+                        shader,
+                    },
+                    names: names.into_iter().map(glsl_name).collect::<Result<_, _>>()?,
+                })
+            })
             .collect()
     }
 }
@@ -567,47 +626,80 @@ impl<M: MesaCompiler + Clone> Received<M> {
     /// program's pass-through programs made.
     pub fn prepare(self) -> Result<Prepared<M>, ConvertError> {
         let Received { compiler, shader } = self;
-        let form = compiler.received_prepare(shader);
-        let shader = form.shader.ok_or(ConvertError::Mesa(NIR_SERIALIZE))?;
-        let streamed = (!form.streams_elsewhere).then(|| {
-            form.streamed
-                .iter()
-                .map(|o| StreamedOutput {
-                    buffer: o.buffer,
-                    offset: o.offset,
-                    location: o.location,
-                    position: o.position,
-                    first_component: o.first_component,
-                    components: o.components,
-                })
-                .collect()
-        });
-        let owned = |shader: M::Made| Made {
-            compiler: compiler.clone(),
-            shader,
-        };
-        let pass_through = form
-            .passes_through
-            .then(|| form.pass_through.map(|made| made.map(owned)));
-        Ok(Prepared {
-            key: keyed(&form.key),
-            streamed,
-            strides: form.strides,
-            reads_sample_positions: form.reads_sample_positions,
-            writes_sample_mask: form.writes_sample_mask,
-            fetches_target: form.fetches_target,
-            formatless_images: form.formatless_images,
-            integer_sampled_units: form.integer_sampled_units,
-            named_layer: (form.named_layer != NO_NAMED_LAYER).then_some(form.named_layer),
-            pass_through,
-            generic_end: form.generic_end,
-            geometry_vertices_out: form.geometry_vertices_out,
-            control_points_out: form.control_points_out,
-            makes_points: form.makes_points,
-            compiler,
-            shader,
-        })
+        match shader {
+            Staged::Vertex(s) => {
+                let form = compiler.received_vertex_prepare(s);
+                prepared(compiler, form, Staged::Vertex)
+            }
+            Staged::Fragment(s) => {
+                let form = compiler.received_fragment_prepare(s);
+                prepared(compiler, form, Staged::Fragment)
+            }
+            Staged::Compute(s) => {
+                let form = compiler.received_compute_prepare(s);
+                prepared(compiler, form, Staged::Compute)
+            }
+            Staged::Geometry(s) => {
+                let form = compiler.received_geometry_prepare(s);
+                prepared(compiler, form, Staged::Geometry)
+            }
+            Staged::TessControl(s) => {
+                let form = compiler.received_tess_control_prepare(s);
+                prepared(compiler, form, Staged::TessControl)
+            }
+            Staged::TessEvaluation(s) => {
+                let form = compiler.received_tess_evaluation_prepare(s);
+                prepared(compiler, form, Staged::TessEvaluation)
+            }
+        }
     }
+}
+
+/// The stage the compiler prepared as `form`, its program put in its stage's place by `place`.
+fn prepared<M: MesaCompiler + Clone, P>(
+    compiler: M,
+    form: wcontainers_mesa_compiler::PreparedForm<P, M::Made>,
+    place: fn(P) -> PreparedShader<M>,
+) -> Result<Prepared<M>, ConvertError> {
+    let shader = place(form.shader.ok_or(ConvertError::Mesa(NIR_SERIALIZE))?);
+    let streamed = (!form.streams_elsewhere).then(|| {
+        form.streamed
+            .iter()
+            .map(|o| StreamedOutput {
+                buffer: o.buffer,
+                offset: o.offset,
+                location: o.location,
+                position: o.position,
+                first_component: o.first_component,
+                components: o.components,
+            })
+            .collect()
+    });
+    let owned = |shader: M::Made| Made {
+        compiler: compiler.clone(),
+        shader,
+    };
+    let pass_through = form
+        .passes_through
+        .then(|| form.pass_through.map(|made| made.map(owned)));
+    Ok(Prepared {
+        key: keyed(&form.key),
+        streamed,
+        strides: form.strides,
+        reads_sample_positions: form.reads_sample_positions,
+        writes_sample_mask: form.writes_sample_mask,
+        fetches_target: form.fetches_target,
+        formatless_images: form.formatless_images,
+        integer_sampled_units: form.integer_sampled_units,
+        named_layer: (form.named_layer != NO_NAMED_LAYER).then_some(form.named_layer),
+        pass_through,
+        generic_end: form.generic_end,
+        geometry_vertices_out: form.geometry_vertices_out,
+        control_points_out: form.control_points_out,
+        makes_points: form.makes_points,
+        compiler,
+        shader,
+    })
 }
 
 /// The variant the compiler made, its result checked, its bindings in the set of `stage`.
@@ -649,6 +741,11 @@ fn variant<M: MesaCompiler + Clone>(
     })
 }
 
+/// Why a step taken only on programs of other stages refused a program of `stage`.
+fn not_of_stage(step: &str, stage: Stage) -> ConvertError {
+    ConvertError::Unsupported(format!("{step}, for a program of the {stage:?} stage"))
+}
+
 /// What drawing points as squares made, its kind checked.
 fn squares<M: MesaCompiler + Clone>(
     compiler: &M,
@@ -677,24 +774,39 @@ impl<M: MesaCompiler + Clone> Prepared<M> {
     /// transformed, integer textures' samplings made nearest loads at the units of `samplers`, the
     /// textures at the units of `swizzles` swizzled, the first target's texels read from the
     /// settings' unit, the sample masks fitted, reads at offsets and samples made from the
-    /// interpolated values; the key taken; the common form, its bindings in the set of `stage`.
+    /// interpolated values; the key taken; the common form, its bindings in the set of its stage.
     /// Refused by name where the program gathers an integer cube map, or reads at the positions of a
     /// sample count whose positions are not known (one, and the standard patterns of two, four, eight
     /// and sixteen, are).
     pub fn variant(
         &self,
-        stage: Stage,
         settings: &DrawSettings,
         swizzles: &[TextureSwizzle],
         samplers: &[NearestSampler],
     ) -> Result<Variant<M>, ConvertError> {
-        let form = self.compiler.prepared_variant(
-            &self.shader,
+        let stage = self.stage();
+        let (given, swizzles, samplers) = (
             variant_settings(settings, stage),
             &bridge_swizzles(swizzles),
             &bridge_samplers(samplers),
         );
+        let c = &self.compiler;
+        let form = match &self.shader {
+            Staged::Vertex(s) => c.prepared_vertex_variant(s, given, swizzles, samplers),
+            Staged::Fragment(s) => c.prepared_fragment_variant(s, given, swizzles, samplers),
+            Staged::Compute(s) => c.prepared_compute_variant(s, given, swizzles, samplers),
+            Staged::Geometry(s) => c.prepared_geometry_variant(s, given, swizzles, samplers),
+            Staged::TessControl(s) => c.prepared_tess_control_variant(s, given, swizzles, samplers),
+            Staged::TessEvaluation(s) => {
+                c.prepared_tess_evaluation_variant(s, given, swizzles, samplers)
+            }
+        };
         variant(&self.compiler, form, stage, settings.samples)
+    }
+
+    /// The stage the program is of.
+    pub const fn stage(&self) -> Stage {
+        self.shader.stage()
     }
 
     /// A vertex program's points drawn as squares where the host draws points of one size: a
@@ -702,10 +814,17 @@ impl<M: MesaCompiler + Clone> Prepared<M> {
     /// drawing each point as a square of two triangles, its size that point size clamped to
     /// 1..`largest` or else the first word of uniform block 0, whose next three are half a pixel's
     /// clip-space length over w in x and in y and the direction of `gl_PointCoord`'s t.
+    /// Refused by name for a program of another stage than vertex or tessellation evaluation.
     pub fn points_as_squares(&self, at: u32, largest: f32) -> Result<Squares<M>, ConvertError> {
-        let made = self
-            .compiler
-            .prepared_points_as_squares(&self.shader, at, largest);
+        let made = match &self.shader {
+            Staged::Vertex(s) => self
+                .compiler
+                .prepared_vertex_points_as_squares(s, at, largest),
+            Staged::TessEvaluation(s) => self
+                .compiler
+                .prepared_tess_evaluation_points_as_squares(s, at, largest),
+            other => return Err(not_of_stage("points drawn as squares", other.stage())),
+        };
         squares(&self.compiler, made)
     }
 
@@ -717,9 +836,15 @@ impl<M: MesaCompiler + Clone> Prepared<M> {
         largest: f32,
         block: u32,
     ) -> Result<Squares<M>, ConvertError> {
-        let made =
-            self.compiler
-                .prepared_geometry_points_as_squares(&self.shader, at, largest, block);
+        let Staged::Geometry(s) = &self.shader else {
+            return Err(not_of_stage(
+                "a geometry program's points drawn as squares",
+                self.stage(),
+            ));
+        };
+        let made = self
+            .compiler
+            .prepared_geometry_points_as_squares(s, at, largest, block);
         squares(&self.compiler, made)
     }
 }
@@ -811,7 +936,6 @@ pub const EGL: &str = env!("WCONTAINERS_EGL");
 /// The steps named in `ConvertError::Mesa`.
 pub const SPIRV_TO_NIR: &str = "spirv_read";
 pub const NIR_SERIALIZE: &str = "nir_serialize";
-pub const NIR_TO_SPIRV: &str = "spirv_common_to_spirv";
 
 /// The enumerations named in `ConvertError::Unknown`.
 pub const BIND_RESULT: &str = "enum wc_bind_result";

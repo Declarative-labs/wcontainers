@@ -398,6 +398,9 @@ fn shader_type(stage: Stage) -> u32 {
         Stage::Vertex => glow::VERTEX_SHADER,
         Stage::Fragment => glow::FRAGMENT_SHADER,
         Stage::Compute => glow::COMPUTE_SHADER,
+        Stage::Geometry => glow::GEOMETRY_SHADER,
+        Stage::TessControl => glow::TESS_CONTROL_SHADER,
+        Stage::TessEvaluation => glow::TESS_EVALUATION_SHADER,
     }
 }
 

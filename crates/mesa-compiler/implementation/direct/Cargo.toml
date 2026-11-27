@@ -26,6 +26,11 @@ wcontainers-mesa-compiler = { path = "../.." }
 [dev-dependencies]
 wcontainers-mesa-compiler-conformance = { path = "../../conformance" }
 
+# The conformance suite over the bridge and the pinned Mesa.
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
 [build-dependencies]
 cc = "1"
 serde = { version = "1", features = ["derive"] }

@@ -16,6 +16,9 @@ use wcontainers_nir::mesa::{
 };
 use wcontainers_shaders::ENTRY_POINT;
 
+/// The stages a GLSL program has a source for (`enum wc_stage`).
+const STAGES: usize = constants::STAGES as usize;
+
 /// What the stand-in gives back.
 #[derive(Clone)]
 struct Given {
@@ -57,8 +60,18 @@ struct Hostile;
 impl MesaCompiler for Hostile {
     type SpirvShader = ();
     type SpirvCommon = ();
-    type Received = ();
-    type Prepared = ();
+    type ReceivedVertex = ();
+    type ReceivedFragment = ();
+    type ReceivedCompute = ();
+    type ReceivedGeometry = ();
+    type ReceivedTessControl = ();
+    type ReceivedTessEvaluation = ();
+    type PreparedVertex = ();
+    type PreparedFragment = ();
+    type PreparedCompute = ();
+    type PreparedGeometry = ();
+    type PreparedTessControl = ();
+    type PreparedTessEvaluation = ();
     type Made = ();
     type Variant = ();
 
@@ -79,20 +92,32 @@ impl MesaCompiler for Hostile {
             result: given.common_form_result,
         }
     }
-    fn spirv_common_to_spirv(&self, _: ()) -> Option<Vec<u32>> {
-        None
-    }
     fn spirv_common_flatten(&self, _: ()) -> Option<Flat> {
         given().flat
     }
-    fn glsl_to_nir(&self, _: [Option<&core::ffi::CStr>; 3]) -> Result<GlslProgram<()>, Vec<u8>> {
+    fn glsl_to_nir(
+        &self,
+        _: [Option<&core::ffi::CStr>; STAGES],
+    ) -> Result<GlslProgram<(), (), (), (), (), ()>, Vec<u8>> {
+        // A vertex stage only, whatever the sources.
         Ok(GlslProgram {
-            stages: [Some(()), None, None],
-            names: [given().glsl_names, Vec::new(), Vec::new()],
+            vertex: Some(()),
+            fragment: None,
+            compute: None,
+            geometry: None,
+            tess_control: None,
+            tess_evaluation: None,
+            names: std::array::from_fn(|at| {
+                if at == 0 {
+                    given().glsl_names
+                } else {
+                    Vec::new()
+                }
+            }),
             log: None,
         })
     }
-    fn received_prepare(&self, _: ()) -> PreparedForm<(), ()> {
+    fn received_vertex_prepare(&self, _: ()) -> PreparedForm<(), ()> {
         PreparedForm {
             shader: Some(()),
             key: Vec::new(),
@@ -113,7 +138,7 @@ impl MesaCompiler for Hostile {
             makes_points: false,
         }
     }
-    fn prepared_variant(
+    fn prepared_vertex_variant(
         &self,
         _: &(),
         _: VariantSettings,
@@ -127,7 +152,7 @@ impl MesaCompiler for Hostile {
             bindings: Vec::new(),
         }
     }
-    fn prepared_points_as_squares(&self, _: &(), _: u32, _: f32) -> Squares<()> {
+    fn prepared_vertex_points_as_squares(&self, _: &(), _: u32, _: f32) -> Squares<()> {
         Squares {
             kind: given().squares_kind,
             sized: false,
@@ -135,14 +160,82 @@ impl MesaCompiler for Hostile {
             geometry: None,
         }
     }
+    fn prepared_tess_evaluation_points_as_squares(
+        &self,
+        tes: &(),
+        at: u32,
+        largest: f32,
+    ) -> Squares<()> {
+        self.prepared_vertex_points_as_squares(tes, at, largest)
+    }
     fn prepared_geometry_points_as_squares(
         &self,
-        vs: &(),
+        gs: &(),
         at: u32,
         largest: f32,
         _: u32,
     ) -> Squares<()> {
-        self.prepared_points_as_squares(vs, at, largest)
+        self.prepared_vertex_points_as_squares(gs, at, largest)
+    }
+    fn received_fragment_prepare(&self, shader: ()) -> PreparedForm<(), ()> {
+        self.received_vertex_prepare(shader)
+    }
+    fn received_compute_prepare(&self, shader: ()) -> PreparedForm<(), ()> {
+        self.received_vertex_prepare(shader)
+    }
+    fn received_geometry_prepare(&self, shader: ()) -> PreparedForm<(), ()> {
+        self.received_vertex_prepare(shader)
+    }
+    fn received_tess_control_prepare(&self, shader: ()) -> PreparedForm<(), ()> {
+        self.received_vertex_prepare(shader)
+    }
+    fn received_tess_evaluation_prepare(&self, shader: ()) -> PreparedForm<(), ()> {
+        self.received_vertex_prepare(shader)
+    }
+    fn prepared_fragment_variant(
+        &self,
+        shader: &(),
+        settings: VariantSettings,
+        swizzles: &[TextureSwizzle],
+        samplers: &[NearestSampler],
+    ) -> VariantForm<()> {
+        self.prepared_vertex_variant(shader, settings, swizzles, samplers)
+    }
+    fn prepared_compute_variant(
+        &self,
+        shader: &(),
+        settings: VariantSettings,
+        swizzles: &[TextureSwizzle],
+        samplers: &[NearestSampler],
+    ) -> VariantForm<()> {
+        self.prepared_vertex_variant(shader, settings, swizzles, samplers)
+    }
+    fn prepared_geometry_variant(
+        &self,
+        shader: &(),
+        settings: VariantSettings,
+        swizzles: &[TextureSwizzle],
+        samplers: &[NearestSampler],
+    ) -> VariantForm<()> {
+        self.prepared_vertex_variant(shader, settings, swizzles, samplers)
+    }
+    fn prepared_tess_control_variant(
+        &self,
+        shader: &(),
+        settings: VariantSettings,
+        swizzles: &[TextureSwizzle],
+        samplers: &[NearestSampler],
+    ) -> VariantForm<()> {
+        self.prepared_vertex_variant(shader, settings, swizzles, samplers)
+    }
+    fn prepared_tess_evaluation_variant(
+        &self,
+        shader: &(),
+        settings: VariantSettings,
+        swizzles: &[TextureSwizzle],
+        samplers: &[NearestSampler],
+    ) -> VariantForm<()> {
+        self.prepared_vertex_variant(shader, settings, swizzles, samplers)
     }
     fn made_key(&self, _: &()) -> Option<Vec<u8>> {
         Some(Vec::new())
@@ -157,7 +250,7 @@ impl MesaCompiler for Hostile {
         swizzles: &[TextureSwizzle],
         samplers: &[NearestSampler],
     ) -> VariantForm<()> {
-        self.prepared_variant(shader, settings, swizzles, samplers)
+        self.prepared_vertex_variant(shader, settings, swizzles, samplers)
     }
     fn variant_flatten(&self, _: (), _: u32) -> Option<Flat> {
         given().flat
@@ -316,7 +409,7 @@ fn a_glsl_name_kind_outside_its_enumeration_is_refused_by_name() {
 fn a_variant_result_outside_its_enumeration_is_refused_by_name() {
     GIVEN.with(|g| g.borrow_mut().variant_result = BEYOND);
     let refused = prepared()
-        .variant(Stage::Compute, &DrawSettings::default(), &[], &[])
+        .variant(&DrawSettings::default(), &[], &[])
         .map(|_| ());
     assert_eq!(refused, Err(ConvertError::Unknown(VARIANT_RESULT, BEYOND)));
 }

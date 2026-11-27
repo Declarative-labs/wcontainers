@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The choice between the NIR route's two candidates (plan 15.3): the corpus through both routes and the
-# comparison, optimised, one shader and route at a time on the cores WC_NIR_TIMING_CORES names (a
-# taskset list), so that the times per shader are each route's alone. The last lines give each route's counts and its times on the shaders both match.
+# The NIR route's timed corpus run (plan 15.3; route B, the one left since candidate A went with the Mesa compiler
+# trait's spirv_common_to_spirv): the corpus through the route and the comparison, optimised, one shader at a time
+# on the cores WC_NIR_TIMING_CORES names (a taskset list), so that the times per shader are the route's alone. The
+# last lines give the route's counts and its times on the shaders it matches.
 #
 #   WC_NIR_TIMING_CORES=<cores> crates/nir/corpus/choose [results file]
 #

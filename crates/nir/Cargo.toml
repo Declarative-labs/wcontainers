@@ -16,7 +16,7 @@ standalone = []
 
 [dependencies]
 blake3 = { version = "1", default-features = false }
-naga = { workspace = true, features = ["spv-in"] }
+naga = { workspace = true }
 spirv = "0.4"
 wcontainers-gpu = { path = "../gpu" }
 wcontainers-mesa-compiler = { path = "../mesa-compiler" }

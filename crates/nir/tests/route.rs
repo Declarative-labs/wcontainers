@@ -446,22 +446,22 @@ fn prepared(stage: Stage, source: &str) -> Prepared {
 }
 
 /// A prepared program's variant for single-sampled targets with nothing else asked, in the set of
-/// `stage`, flattened.
-fn drawn(program: &Prepared, stage: Stage) -> Flattened {
+/// its stage, flattened.
+fn drawn(program: &Prepared) -> Flattened {
     program
-        .variant(stage, &DrawSettings::default(), &[], &[])
+        .variant(&DrawSettings::default(), &[], &[])
         .unwrap()
         .flatten(0)
         .unwrap()
 }
 
 #[test]
-fn a_compute_program_goes_through_zink_and_back() {
+fn a_compute_program_is_serialized_and_reaches_route_b() {
     let program = read(&spirv(COMPUTE), Stage::Compute);
     assert!(!program.serialized().unwrap().is_empty());
     let (common, _) = program.to_common_form(Stage::Compute).unwrap();
-    let words = common.into_spirv().unwrap();
-    let (module, _) = wcontainers_nir::spirv::read(&words).unwrap();
+    let module = wcontainers_nir::direct::module(common.flatten().unwrap()).unwrap();
+    wcontainers_nir::spirv::validate(&module).unwrap();
     assert_eq!(module.entry_points.len(), 1);
     assert_eq!(module.entry_points[0].stage, naga::ShaderStage::Compute);
 }
@@ -486,7 +486,9 @@ fn resources_are_numbered_by_kind_in_the_stage_set() {
             (SlotKind::Texture, 0, 3, set, first(SlotKind::Texture)),
         ]
     );
-    let (module, _) = wcontainers_nir::spirv::read(&common.into_spirv().unwrap()).unwrap();
+    let module = wcontainers_nir::direct::module(common.flatten().unwrap()).unwrap();
+    wcontainers_nir::spirv::validate(&module).unwrap();
+    assert_eq!(module.entry_points[0].stage, naga::ShaderStage::Fragment);
     let mut bound: Vec<_> = module
         .global_variables
         .iter()
@@ -503,29 +505,6 @@ fn the_key_follows_the_nir() {
     let key = |wgsl| read(&spirv(wgsl), Stage::Compute).key().unwrap();
     assert_eq!(key(COMPUTE), key(COMPUTE));
     assert_ne!(key(COMPUTE), key(&COMPUTE.replace("3u", "5u")));
-}
-
-#[test]
-fn both_routes_bind_a_sampling_program_alike() {
-    let bound = |module: &naga::Module| {
-        let mut b: Vec<_> = module
-            .global_variables
-            .iter()
-            .filter_map(|(_, g)| g.binding)
-            .map(|b| (b.group, b.binding))
-            .collect();
-        b.sort();
-        b
-    };
-    let (a, _) = read(&spirv(SAMPLED), Stage::Fragment)
-        .to_common_form(Stage::Fragment)
-        .unwrap();
-    let (through_zink, _) = wcontainers_nir::spirv::read(&a.into_spirv().unwrap()).unwrap();
-    let direct =
-        wcontainers_nir::direct::module(flat_of(&spirv(SAMPLED), Stage::Fragment)).unwrap();
-    wcontainers_nir::spirv::validate(&direct).unwrap();
-    assert_eq!(bound(&direct), bound(&through_zink));
-    assert_eq!(direct.entry_points[0].stage, naga::ShaderStage::Fragment);
 }
 
 #[test]
@@ -597,7 +576,7 @@ fn route_b_reads_a_linked_glsl_program() {
         stage, received, ..
     } in stages
     {
-        let Flattened { flat, bindings, .. } = drawn(&received.prepare().unwrap(), stage);
+        let Flattened { flat, bindings, .. } = drawn(&received.prepare().unwrap());
         let module = wcontainers_nir::direct::module(flat).unwrap();
         wcontainers_nir::spirv::validate(&module).unwrap();
         let kinds = |kind| bindings.iter().filter(|b| b.kind == kind).count();
@@ -656,7 +635,7 @@ fn vertex_module(vertex: &str) -> naga::Module {
         (Stage::Fragment, UNPOSITIONED_FRAGMENT),
     ])
     .swap_remove(0);
-    let flat = drawn(&stage.received.prepare().unwrap(), Stage::Vertex).flat;
+    let flat = drawn(&stage.received.prepare().unwrap()).flat;
     let module = wcontainers_nir::direct::module(flat).unwrap();
     wcontainers_nir::spirv::validate(&module).unwrap();
     module
@@ -724,7 +703,7 @@ fn rewritten(
         flat,
         key,
         bindings,
-    } = drawn(&prepared(stage, source), stage);
+    } = drawn(&prepared(stage, source));
     let routed = wcontainers_nir::direct::route(flat).unwrap();
     routed_check(&routed);
     let (module, reflection) = wcontainers_nir::direct::rewrite(
@@ -830,12 +809,7 @@ fn repeating(unit: u32, mipmapped: bool) -> NearestSampler {
 fn an_integer_cube_map_array_sampled_is_loaded_from_a_2d_array_of_its_faces() {
     let program = prepared(Stage::Fragment, INTEGER_CUBE_ARRAY_SAMPLED);
     let flat = program
-        .variant(
-            Stage::Fragment,
-            &DrawSettings::default(),
-            &[],
-            &[repeating(0, true)],
-        )
+        .variant(&DrawSettings::default(), &[], &[repeating(0, true)])
         .unwrap()
         .flatten(0)
         .unwrap()
@@ -857,12 +831,7 @@ fn an_integer_cube_map_array_sampled_is_loaded_from_a_2d_array_of_its_faces() {
 fn an_integer_cube_map_array_gathered_is_refused_by_name() {
     // Its gather, of a cube made a 2D array of faces, would read no texel of the next face.
     let program = prepared(Stage::Fragment, INTEGER_CUBE_ARRAY);
-    let refused = program.variant(
-        Stage::Fragment,
-        &DrawSettings::default(),
-        &[],
-        &[repeating(0, true)],
-    );
+    let refused = program.variant(&DrawSettings::default(), &[], &[repeating(0, true)]);
     assert!(
         matches!(refused, Err(ConvertError::Unsupported(ref why)) if why.contains("integer cube")),
         "{:?}",
@@ -876,10 +845,7 @@ fn at_samples(program: &Prepared, samples: u32) -> Result<naga::Module, ConvertE
         samples,
         ..DrawSettings::default()
     };
-    let flat = program
-        .variant(Stage::Fragment, &settings, &[], &[])?
-        .flatten(0)?
-        .flat;
+    let flat = program.variant(&settings, &[], &[])?.flatten(0)?.flat;
     let module = wcontainers_nir::direct::module(flat)?;
     wcontainers_nir::spirv::validate(&module).unwrap();
     Ok(module)
@@ -950,13 +916,13 @@ fn an_image_without_a_format_is_declared_in_the_format_the_variant_names() {
     let program = prepared(Stage::Compute, FORMATLESS);
     let unit = 1;
     assert_eq!(program.formatless_images, 1 << unit);
-    let Flattened { key, bindings, .. } = drawn(&program, Stage::Compute);
+    let Flattened { key, bindings, .. } = drawn(&program);
     let found = bindings
         .iter()
         .find(|b| b.kind == SlotKind::Storage && b.register == unit)
         .unwrap();
     let slot = found.binding - SLOT_KINDS[found.kind as usize].first_binding;
-    let routed = || wcontainers_nir::direct::route(drawn(&program, Stage::Compute).flat).unwrap();
+    let routed = || wcontainers_nir::direct::route(drawn(&program).flat).unwrap();
     assert_eq!(routed().rewrites.formatless, [slot]);
     let unnamed = wcontainers_gpu::reflect::VariantKey::default();
     assert!(wcontainers_nir::direct::rewrite(routed(), bindings.clone(), &unnamed, &key).is_err());
@@ -994,7 +960,7 @@ fn an_array_of_integer_textures_indexed_at_run_time_is_loaded_alike_through_ever
     let program = prepared(Stage::Fragment, INTEGER_ARRAY);
     let with = |samplers: &[NearestSampler]| {
         program
-            .variant(Stage::Fragment, &DrawSettings::default(), &[], samplers)
+            .variant(&DrawSettings::default(), &[], samplers)
             .unwrap()
             .flatten(0)
             .unwrap()
@@ -1025,7 +991,7 @@ fn an_array_of_arrays_of_textures_is_one_array_of_its_elements() {
 
 #[test]
 fn a_fragment_programs_layer_is_a_flat_input_the_driver_places() {
-    let flat = drawn(&prepared(Stage::Fragment, LAYER_READ), Stage::Fragment).flat;
+    let flat = drawn(&prepared(Stage::Fragment, LAYER_READ)).flat;
     let module = wcontainers_nir::direct::module(flat).unwrap();
     let layer = module.entry_points[0]
         .function
@@ -1075,7 +1041,7 @@ fn points_are_drawn_as_squares_passing_their_coordinate_after_every_location() {
     let at = vertex.generic_end.max(fragment.generic_end);
     let locations = 2;
     assert_eq!(at, locations);
-    let module = wcontainers_nir::direct::module(drawn(&fragment, Stage::Fragment).flat).unwrap();
+    let module = wcontainers_nir::direct::module(drawn(&fragment).flat).unwrap();
     let coord = module.entry_points[0]
         .function
         .arguments
@@ -1160,4 +1126,237 @@ fn a_vertex_program_using_storage_gets_a_pass_through_for_every_primitive_it_may
         assert_eq!(geometry.flat.geometry.max_vertices, vertices(assembled));
         through_the_stage_helper(geometry);
     }
+}
+
+/// A vertex program drawing points of its own size, before a geometry or tessellation stage.
+const POINT_VERTEX: &str = "#version 450
+layout(location = 0) in vec4 at;
+layout(location = 0) out vec4 passed;
+void main() {
+    gl_Position = at;
+    gl_PointSize = at.w;
+    passed = at;
+}
+";
+
+/// A geometry program taking a point and making two, each with its point size and a layer it names.
+const POINT_GEOMETRY: &str = "#version 450
+layout(points) in;
+layout(points, max_vertices = 2) out;
+layout(location = 0) in vec4 passed[];
+layout(location = 0) out vec4 shaded;
+void main() {
+    for (int copy = 0; copy < 2; copy++) {
+        gl_Position = gl_in[0].gl_Position + vec4(float(copy));
+        gl_PointSize = gl_in[0].gl_PointSize;
+        gl_Layer = copy;
+        shaded = passed[0];
+        EmitVertex();
+    }
+}
+";
+
+/// A geometry program making a triangle of each point, in the layer the point's w names.
+const LAYERED_GEOMETRY: &str = "#version 450
+layout(points) in;
+layout(triangle_strip, max_vertices = 3) out;
+layout(location = 0) in vec4 passed[];
+layout(location = 0) out vec4 shaded;
+void main() {
+    for (int corner = 0; corner < 3; corner++) {
+        gl_Position = gl_in[0].gl_Position + vec4(float(corner), float(corner & 1), 0.0, 0.0);
+        gl_Layer = int(passed[0].w);
+        shaded = passed[0];
+        EmitVertex();
+    }
+    EndPrimitive();
+}
+";
+
+/// A tessellation control program of three control points, passing each on.
+const CONTROL: &str = "#version 450
+layout(vertices = 3) out;
+layout(location = 0) in vec4 passed[];
+layout(location = 0) out vec4 handed[];
+void main() {
+    handed[gl_InvocationID] = passed[gl_InvocationID];
+    gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
+    gl_TessLevelOuter[0] = 2.0;
+    gl_TessLevelOuter[1] = 2.0;
+    gl_TessLevelOuter[2] = 2.0;
+    gl_TessLevelInner[0] = 2.0;
+}
+";
+
+/// A tessellation evaluation program making triangles from the control program's patch.
+const EVALUATION: &str = "#version 450
+layout(triangles, equal_spacing, ccw) in;
+layout(location = 0) in vec4 handed[];
+layout(location = 0) out vec4 shaded;
+void main() {
+    gl_Position = gl_TessCoord.x * gl_in[0].gl_Position + gl_TessCoord.y * gl_in[1].gl_Position
+        + gl_TessCoord.z * gl_in[2].gl_Position;
+    shaded = handed[0];
+}
+";
+
+/// A fragment program after the geometry or evaluation program.
+const SHADED_FRAGMENT: &str = "#version 450
+layout(location = 0) in vec4 shaded;
+layout(location = 0) out vec4 colour;
+void main() { colour = shaded; }
+";
+
+/// The control points of the control program's patch, its evaluation program's input.
+const CONTROL_POINTS: u32 = 3;
+
+/// The stages of a linked program, in the bridge's order.
+fn stages_of(stages: &[GlslStage]) -> Vec<Stage> {
+    stages.iter().map(|s| s.stage).collect()
+}
+
+/// The stage `stage` of a linked program, prepared as the driver prepares it at its creation.
+fn prepared_stage(stages: Vec<GlslStage>, stage: Stage) -> Prepared {
+    stages
+        .into_iter()
+        .find(|s| s.stage == stage)
+        .unwrap()
+        .received
+        .prepare()
+        .unwrap()
+}
+
+/// The geometry program of a linked program with [`POINT_VERTEX`] and [`SHADED_FRAGMENT`],
+/// prepared.
+fn prepared_geometry(source: &str) -> Prepared {
+    let stages = compile(&[
+        (Stage::Vertex, POINT_VERTEX),
+        (Stage::Fragment, SHADED_FRAGMENT),
+        (Stage::Geometry, source),
+    ]);
+    assert_eq!(
+        stages_of(&stages),
+        [Stage::Vertex, Stage::Fragment, Stage::Geometry]
+    );
+    prepared_stage(stages, Stage::Geometry)
+}
+
+#[test]
+fn a_geometry_program_from_glsl_goes_through_route_b_and_the_stage_helper() {
+    let corners = 3;
+    let layered = prepared_geometry(LAYERED_GEOMETRY);
+    assert!(!layered.makes_points);
+    assert!(prepared_geometry(POINT_GEOMETRY).makes_points);
+    // As WebGPU draws: points of one size, so no stage writes a point size (route B takes none
+    // out of a geometry program).
+    let fixed = PositionTransform {
+        fixed_point_size: true,
+        ..PositionTransform::default()
+    };
+    let settings = DrawSettings {
+        transform: fixed,
+        key_transform: fixed,
+        ..DrawSettings::default()
+    };
+    let drawn_geometry = layered
+        .variant(&settings, &[], &[])
+        .unwrap()
+        .flatten(0)
+        .unwrap();
+    assert_eq!(drawn_geometry.flat.geometry.max_vertices, corners);
+    through_the_stage_helper(drawn_geometry);
+}
+
+#[test]
+fn a_geometry_program_writing_a_point_size_is_drawn_as_squares_naming_its_layer() {
+    let geometry = prepared_geometry(POINT_GEOMETRY);
+    let largest = 64.0;
+    let size_block = 0;
+    let Squares::Made {
+        geometry: square, ..
+    } = geometry
+        .geometry_points_as_squares(geometry.generic_end, largest, size_block)
+        .unwrap()
+    else {
+        panic!("a geometry program's sized points are drawn as squares");
+    };
+    assert!(square.named_layer_location().is_some());
+    through_the_stage_helper(made_drawn(&square, &DrawSettings::default()));
+}
+
+#[test]
+fn a_tessellation_pair_from_glsl_goes_through_route_b_and_the_stage_helper() {
+    let stages = compile(&[
+        (Stage::Vertex, POINT_VERTEX),
+        (Stage::Fragment, SHADED_FRAGMENT),
+        (Stage::TessControl, CONTROL),
+        (Stage::TessEvaluation, EVALUATION),
+    ]);
+    assert_eq!(
+        stages_of(&stages),
+        [
+            Stage::Vertex,
+            Stage::Fragment,
+            Stage::TessControl,
+            Stage::TessEvaluation
+        ]
+    );
+    // The vertex and fragment stages first, then the pair, as asserted.
+    let drawn_before = 2;
+    let mut pair = stages
+        .into_iter()
+        .skip(drawn_before)
+        .map(|s| s.received.prepare().unwrap());
+    let (control, evaluation) = (pair.next().unwrap(), pair.next().unwrap());
+    // An evaluation program's points reach the bridge's step for that stage.
+    assert!(
+        evaluation
+            .points_as_squares(evaluation.generic_end, 64.0)
+            .is_ok()
+    );
+    let flattened = |program: &Prepared| {
+        program
+            .variant(&DrawSettings::default(), &[], &[])
+            .unwrap()
+            .flatten(CONTROL_POINTS)
+            .unwrap()
+    };
+    let unnamed = wcontainers_gpu::reflect::VariantKey::default();
+    let Flattened {
+        flat,
+        key,
+        bindings,
+    } = flattened(&evaluation);
+    let routed = wcontainers_nir::direct::route(flat).unwrap();
+    let tessellator = routed
+        .tessellator
+        .expect("an evaluation program gives its tessellator");
+    let domain = wcontainers_nir::direct::domain(routed, bindings, &unnamed, &key).unwrap();
+    let Flattened {
+        flat,
+        key,
+        bindings,
+    } = flattened(&control);
+    let routed = wcontainers_nir::direct::route(flat).unwrap();
+    let hull =
+        wcontainers_nir::direct::hull(routed, bindings, tessellator, &unnamed, &key).unwrap();
+    for form in domain.modules.iter().chain(&hull.modules) {
+        wcontainers_nir::spirv::validate(&form.module).unwrap();
+    }
+}
+
+#[test]
+fn points_are_drawn_as_squares_only_from_the_stages_that_make_them() {
+    let largest = 64.0;
+    let fragment = prepared(Stage::Fragment, SPRITE);
+    assert!(matches!(
+        fragment.points_as_squares(fragment.generic_end, largest),
+        Err(ConvertError::Unsupported(_))
+    ));
+    let vertex = prepared(Stage::Vertex, SIZED_POINTS);
+    let size_block = 0;
+    assert!(matches!(
+        vertex.geometry_points_as_squares(vertex.generic_end, largest, size_block),
+        Err(ConvertError::Unsupported(_))
+    ));
 }

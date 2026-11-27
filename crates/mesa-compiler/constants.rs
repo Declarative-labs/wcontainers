@@ -219,8 +219,14 @@ pub const STAGE_VERTEX: u32 = 0;
 pub const STAGE_FRAGMENT: u32 = 1;
 /// `WC_STAGE_COMPUTE` of `enum wc_stage`.
 pub const STAGE_COMPUTE: u32 = 2;
+/// `WC_STAGE_GEOMETRY` of `enum wc_stage`.
+pub const STAGE_GEOMETRY: u32 = 3;
+/// `WC_STAGE_TESS_CONTROL` of `enum wc_stage`.
+pub const STAGE_TESS_CONTROL: u32 = 4;
+/// `WC_STAGE_TESS_EVALUATION` of `enum wc_stage`.
+pub const STAGE_TESS_EVALUATION: u32 = 5;
 /// `WC_STAGES` of `enum wc_stage`.
-pub const STAGES: u32 = 3;
+pub const STAGES: u32 = 6;
 /// `WC_FLAT_VERTEX` of `enum wc_stage_kind`.
 pub const FLAT_VERTEX: u32 = 0;
 /// `WC_FLAT_FRAGMENT` of `enum wc_stage_kind`.

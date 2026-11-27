@@ -1,6 +1,6 @@
 // Written by tools/api-crate-generator from the Mesa compiler bridge's bridge.h and flat.h (crates/mesa-compiler/implementation/direct/bridge). Do not edit.
 //! Mesa's shader compiler as our C bridge offers it (crates/mesa-compiler/implementation/direct/bridge: NIR made from SPIR-V or GLSL, changed for the
-//! routes, read as a flat form, written as SPIR-V), as a safe trait. Every enumeration the bridge writes is a `u32` the
+//! routes, read as a flat form), as a safe trait. Every enumeration the bridge writes is a `u32` the
 //! caller converts by a checked `TryFrom`.
 
 /// The bridge's `struct wc_flat_type`, owned.
@@ -247,11 +247,21 @@ pub struct GlslName {
 
 /// One GLSL program's stages as the OpenGL driver receives them, by enum wc_stage (NULL where the program has none), each stage's names, and the compiler's and linker's messages; given back with wc_glsl_program_free.
 #[derive(Debug)]
-pub struct GlslProgram<Received> {
-    /// The bridge's `stages`.
-    pub stages: [Option<Received>; 3],
+pub struct GlslProgram<ReceivedVertex, ReceivedFragment, ReceivedCompute, ReceivedGeometry, ReceivedTessControl, ReceivedTessEvaluation> {
+    /// The bridge's `stages[WC_STAGE_VERTEX]`: the vertex stage, if any.
+    pub vertex: Option<ReceivedVertex>,
+    /// The bridge's `stages[WC_STAGE_FRAGMENT]`: the fragment stage, if any.
+    pub fragment: Option<ReceivedFragment>,
+    /// The bridge's `stages[WC_STAGE_COMPUTE]`: the compute stage, if any.
+    pub compute: Option<ReceivedCompute>,
+    /// The bridge's `stages[WC_STAGE_GEOMETRY]`: the geometry stage, if any.
+    pub geometry: Option<ReceivedGeometry>,
+    /// The bridge's `stages[WC_STAGE_TESS_CONTROL]`: the tess control stage, if any.
+    pub tess_control: Option<ReceivedTessControl>,
+    /// The bridge's `stages[WC_STAGE_TESS_EVALUATION]`: the tess evaluation stage, if any.
+    pub tess_evaluation: Option<ReceivedTessEvaluation>,
     /// The bridge's `names`.
-    pub names: [Vec<GlslName>; 3],
+    pub names: [Vec<GlslName>; 6],
     /// The bridge's `log`.
     pub log: Option<Vec<u8>>,
 }
@@ -411,11 +421,41 @@ pub trait MesaCompiler: Sized {
     /// A program read from SPIR-V in the common form: what the corpus's candidates convert (run.rs:570 and 671).
     type SpirvCommon;
 
-    /// A stage as the OpenGL driver receives it from st/mesa (state.rs:1124 to 1138): here from Mesa's GLSL compiler and st/mesa's steps (glsl.cpp).
-    type Received;
+    /// A stage as the OpenGL driver receives it from st/mesa (state.rs:1124 to 1138): here from Mesa's GLSL compiler and st/mesa's steps (glsl.cpp). Of the vertex stage.
+    type ReceivedVertex;
 
-    /// A stage after the driver's steps at its creation (state.rs:1139 to 1180), which nothing changes after.
-    type Prepared;
+    /// A stage as the OpenGL driver receives it from st/mesa (state.rs:1124 to 1138): here from Mesa's GLSL compiler and st/mesa's steps (glsl.cpp). Of the fragment stage.
+    type ReceivedFragment;
+
+    /// A stage as the OpenGL driver receives it from st/mesa (state.rs:1124 to 1138): here from Mesa's GLSL compiler and st/mesa's steps (glsl.cpp). Of the compute stage.
+    type ReceivedCompute;
+
+    /// A stage as the OpenGL driver receives it from st/mesa (state.rs:1124 to 1138): here from Mesa's GLSL compiler and st/mesa's steps (glsl.cpp). Of the geometry stage.
+    type ReceivedGeometry;
+
+    /// A stage as the OpenGL driver receives it from st/mesa (state.rs:1124 to 1138): here from Mesa's GLSL compiler and st/mesa's steps (glsl.cpp). Of the tess control stage.
+    type ReceivedTessControl;
+
+    /// A stage as the OpenGL driver receives it from st/mesa (state.rs:1124 to 1138): here from Mesa's GLSL compiler and st/mesa's steps (glsl.cpp). Of the tess evaluation stage.
+    type ReceivedTessEvaluation;
+
+    /// A stage after the driver's steps at its creation (state.rs:1139 to 1180), which nothing changes after. Of the vertex stage.
+    type PreparedVertex;
+
+    /// A stage after the driver's steps at its creation (state.rs:1139 to 1180), which nothing changes after. Of the fragment stage.
+    type PreparedFragment;
+
+    /// A stage after the driver's steps at its creation (state.rs:1139 to 1180), which nothing changes after. Of the compute stage.
+    type PreparedCompute;
+
+    /// A stage after the driver's steps at its creation (state.rs:1139 to 1180), which nothing changes after. Of the geometry stage.
+    type PreparedGeometry;
+
+    /// A stage after the driver's steps at its creation (state.rs:1139 to 1180), which nothing changes after. Of the tess control stage.
+    type PreparedTessControl;
+
+    /// A stage after the driver's steps at its creation (state.rs:1139 to 1180), which nothing changes after. Of the tess evaluation stage.
+    type PreparedTessEvaluation;
 
     /// A program the driver's steps make: a pass-through geometry program (state.rs:1175), a vertex program with its point size also at a location, or a geometry program drawing points as squares (draw.rs:3426 to 3441 and 3514 to 3522).
     type Made;
@@ -441,11 +481,6 @@ pub trait MesaCompiler: Sized {
     /// Calls the bridge's `wc_spirv_to_common_form`.
     fn spirv_to_common_form(&self, taken: Self::SpirvShader, set: u32, ranges: &[SlotRange; 4]) -> SpirvCommonForm<Self::SpirvCommon>;
 
-    /// Candidate A: the program written as SPIR-V by Zink's compiler in its native Vulkan mode (run.rs:672). False for a program not in the form that mode takes.
-    ///
-    /// Calls the bridge's `wc_spirv_common_to_spirv`.
-    fn spirv_common_to_spirv(&self, taken: Self::SpirvCommon) -> Option<Vec<u32>>;
-
     /// Candidate B: the program out of SSA and flattened (run.rs:571, through crates/nir/src/direct.rs:974 to 984).
     ///
     /// Calls the bridge's `wc_spirv_common_flatten`.
@@ -454,27 +489,82 @@ pub trait MesaCompiler: Sized {
     /// Compiles and links the sources (by enum wc_stage, NULL for none) with Mesa's GLSL compiler, then takes st/mesa's steps for the OpenGL driver's capabilities; false when either step fails.
     ///
     /// Calls the bridge's `wc_glsl_to_nir`.
-    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 3]) -> Result<GlslProgram<Self::Received>, Vec<u8>>;
+    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 6]) -> Result<GlslProgram<Self::ReceivedVertex, Self::ReceivedFragment, Self::ReceivedCompute, Self::ReceivedGeometry, Self::ReceivedTessControl, Self::ReceivedTessEvaluation>, Vec<u8>>;
 
     /// The driver's steps at a stage's creation, in its order (state.rs:1139 to 1180): the name dropped, uniform blocks as words, resource arrays split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a fragment program's gl_FragColor written to every draw buffer; the last stage before the rasterizer's point size streamed at a location; the facts read; a vertex or evaluation program's pass-through programs made.
     ///
-    /// Calls the bridge's `wc_received_prepare`.
-    fn received_prepare(&self, taken: Self::Received) -> PreparedForm<Self::Prepared, Self::Made>;
+    /// Calls the bridge's `wc_received_prepare` on a shader of the vertex stage.
+    fn received_vertex_prepare(&self, taken: Self::ReceivedVertex) -> PreparedForm<Self::PreparedVertex, Self::Made>;
+
+    /// The driver's steps at a stage's creation, in its order (state.rs:1139 to 1180): the name dropped, uniform blocks as words, resource arrays split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a fragment program's gl_FragColor written to every draw buffer; the last stage before the rasterizer's point size streamed at a location; the facts read; a vertex or evaluation program's pass-through programs made.
+    ///
+    /// Calls the bridge's `wc_received_prepare` on a shader of the fragment stage.
+    fn received_fragment_prepare(&self, taken: Self::ReceivedFragment) -> PreparedForm<Self::PreparedFragment, Self::Made>;
+
+    /// The driver's steps at a stage's creation, in its order (state.rs:1139 to 1180): the name dropped, uniform blocks as words, resource arrays split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a fragment program's gl_FragColor written to every draw buffer; the last stage before the rasterizer's point size streamed at a location; the facts read; a vertex or evaluation program's pass-through programs made.
+    ///
+    /// Calls the bridge's `wc_received_prepare` on a shader of the compute stage.
+    fn received_compute_prepare(&self, taken: Self::ReceivedCompute) -> PreparedForm<Self::PreparedCompute, Self::Made>;
+
+    /// The driver's steps at a stage's creation, in its order (state.rs:1139 to 1180): the name dropped, uniform blocks as words, resource arrays split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a fragment program's gl_FragColor written to every draw buffer; the last stage before the rasterizer's point size streamed at a location; the facts read; a vertex or evaluation program's pass-through programs made.
+    ///
+    /// Calls the bridge's `wc_received_prepare` on a shader of the geometry stage.
+    fn received_geometry_prepare(&self, taken: Self::ReceivedGeometry) -> PreparedForm<Self::PreparedGeometry, Self::Made>;
+
+    /// The driver's steps at a stage's creation, in its order (state.rs:1139 to 1180): the name dropped, uniform blocks as words, resource arrays split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a fragment program's gl_FragColor written to every draw buffer; the last stage before the rasterizer's point size streamed at a location; the facts read; a vertex or evaluation program's pass-through programs made.
+    ///
+    /// Calls the bridge's `wc_received_prepare` on a shader of the tess control stage.
+    fn received_tess_control_prepare(&self, taken: Self::ReceivedTessControl) -> PreparedForm<Self::PreparedTessControl, Self::Made>;
+
+    /// The driver's steps at a stage's creation, in its order (state.rs:1139 to 1180): the name dropped, uniform blocks as words, resource arrays split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a fragment program's gl_FragColor written to every draw buffer; the last stage before the rasterizer's point size streamed at a location; the facts read; a vertex or evaluation program's pass-through programs made.
+    ///
+    /// Calls the bridge's `wc_received_prepare` on a shader of the tess evaluation stage.
+    fn received_tess_evaluation_prepare(&self, taken: Self::ReceivedTessEvaluation) -> PreparedForm<Self::PreparedTessEvaluation, Self::Made>;
 
     /// The driver's steps at a draw, in its order (draw.rs:779 to 818), on a copy of the program: the position transformed, integer textures' samplings made nearest loads at the units of `samplers`, the textures at the units of `swizzles` swizzled, the first target's texels read from `fetch_unit` (a program that reads them), the sample masks fitted, reads at offsets and samples made from the interpolated values; the key taken; the common form.
     ///
-    /// Calls the bridge's `wc_prepared_variant`.
-    fn prepared_variant(&self, shader: &Self::Prepared, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Self::Variant>;
+    /// Calls the bridge's `wc_prepared_variant` on a shader of the vertex stage.
+    fn prepared_vertex_variant(&self, shader: &Self::PreparedVertex, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Self::Variant>;
+
+    /// The driver's steps at a draw, in its order (draw.rs:779 to 818), on a copy of the program: the position transformed, integer textures' samplings made nearest loads at the units of `samplers`, the textures at the units of `swizzles` swizzled, the first target's texels read from `fetch_unit` (a program that reads them), the sample masks fitted, reads at offsets and samples made from the interpolated values; the key taken; the common form.
+    ///
+    /// Calls the bridge's `wc_prepared_variant` on a shader of the fragment stage.
+    fn prepared_fragment_variant(&self, shader: &Self::PreparedFragment, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Self::Variant>;
+
+    /// The driver's steps at a draw, in its order (draw.rs:779 to 818), on a copy of the program: the position transformed, integer textures' samplings made nearest loads at the units of `samplers`, the textures at the units of `swizzles` swizzled, the first target's texels read from `fetch_unit` (a program that reads them), the sample masks fitted, reads at offsets and samples made from the interpolated values; the key taken; the common form.
+    ///
+    /// Calls the bridge's `wc_prepared_variant` on a shader of the compute stage.
+    fn prepared_compute_variant(&self, shader: &Self::PreparedCompute, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Self::Variant>;
+
+    /// The driver's steps at a draw, in its order (draw.rs:779 to 818), on a copy of the program: the position transformed, integer textures' samplings made nearest loads at the units of `samplers`, the textures at the units of `swizzles` swizzled, the first target's texels read from `fetch_unit` (a program that reads them), the sample masks fitted, reads at offsets and samples made from the interpolated values; the key taken; the common form.
+    ///
+    /// Calls the bridge's `wc_prepared_variant` on a shader of the geometry stage.
+    fn prepared_geometry_variant(&self, shader: &Self::PreparedGeometry, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Self::Variant>;
+
+    /// The driver's steps at a draw, in its order (draw.rs:779 to 818), on a copy of the program: the position transformed, integer textures' samplings made nearest loads at the units of `samplers`, the textures at the units of `swizzles` swizzled, the first target's texels read from `fetch_unit` (a program that reads them), the sample masks fitted, reads at offsets and samples made from the interpolated values; the key taken; the common form.
+    ///
+    /// Calls the bridge's `wc_prepared_variant` on a shader of the tess control stage.
+    fn prepared_tess_control_variant(&self, shader: &Self::PreparedTessControl, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Self::Variant>;
+
+    /// The driver's steps at a draw, in its order (draw.rs:779 to 818), on a copy of the program: the position transformed, integer textures' samplings made nearest loads at the units of `samplers`, the textures at the units of `swizzles` swizzled, the first target's texels read from `fetch_unit` (a program that reads them), the sample masks fitted, reads at offsets and samples made from the interpolated values; the key taken; the common form.
+    ///
+    /// Calls the bridge's `wc_prepared_variant` on a shader of the tess evaluation stage.
+    fn prepared_tess_evaluation_variant(&self, shader: &Self::PreparedTessEvaluation, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Self::Variant>;
 
     /// A vertex program's points drawn as squares where the back end draws points of one size (draw.rs:3426 to 3441): a copy writing its point size also at the generic slot `at`; nothing where every point is a pixel; the geometry program drawing the squares (sized to at most `largest`), its uniform blocks as words.
     ///
-    /// Calls the bridge's `wc_prepared_points_as_squares`.
-    fn prepared_points_as_squares(&self, vs: &Self::Prepared, at: u32, largest: f32) -> Squares<Self::Made>;
+    /// Calls the bridge's `wc_prepared_points_as_squares` on a shader of the vertex stage.
+    fn prepared_vertex_points_as_squares(&self, vs: &Self::PreparedVertex, at: u32, largest: f32) -> Squares<Self::Made>;
+
+    /// A vertex program's points drawn as squares where the back end draws points of one size (draw.rs:3426 to 3441): a copy writing its point size also at the generic slot `at`; nothing where every point is a pixel; the geometry program drawing the squares (sized to at most `largest`), its uniform blocks as words.
+    ///
+    /// Calls the bridge's `wc_prepared_points_as_squares` on a shader of the tess evaluation stage.
+    fn prepared_tess_evaluation_points_as_squares(&self, vs: &Self::PreparedTessEvaluation, at: u32, largest: f32) -> Squares<Self::Made>;
 
     /// A geometry program's points drawn as squares (draw.rs:3514 to 3522): nothing where every point is a pixel; the program rewritten to draw squares, of at most `largest`, its size else read from uniform block `block`.
     ///
-    /// Calls the bridge's `wc_prepared_geometry_points_as_squares`.
-    fn prepared_geometry_points_as_squares(&self, gs: &Self::Prepared, at: u32, largest: f32, block: u32) -> Squares<Self::Made>;
+    /// Calls the bridge's `wc_prepared_geometry_points_as_squares` on a shader of the geometry stage.
+    fn prepared_geometry_points_as_squares(&self, gs: &Self::PreparedGeometry, at: u32, largest: f32, block: u32) -> Squares<Self::Made>;
 
     /// The cache's key of a made program (state.rs:1186, draw.rs:3445 and 3525).
     ///

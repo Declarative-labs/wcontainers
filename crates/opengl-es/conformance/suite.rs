@@ -1120,14 +1120,17 @@ pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64, c
     [calls, (counts.gl)(&made.gl) + (counts.gl)(&other.gl), (counts.egl)(&made.egl)]
 }
 
-/// Runs `fuzz` with the seed and call count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS name; nothing when
-/// they name none.
+/// A number the environment names; fails without it, so that a run asked for without its input does not pass.
+fn needed(name: &str) -> u64 {
+    std::env::var(name).ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or_else(|| panic!("{name} names a number"))
+}
+
+/// Runs `fuzz` with the seed and call count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS name; fails without
+/// them.
 pub fn fuzz_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
-    let number = |name: &str| std::env::var(name).ok().and_then(|value| value.parse::<u64>().ok());
-    if let (Some(seed), Some(calls)) = (number("WCONTAINERS_FUZZ_SEED"), number("WCONTAINERS_FUZZ_CALLS")) {
-        let [made, refused, egl_refused] = fuzz::<E, G>(folder, seed, calls, counts);
-        println!("FUZZ seed {seed} calls {made}, refused by the implementation itself: OpenGL ES {refused}, EGL {egl_refused}");
-    }
+    let (seed, calls) = (needed("WCONTAINERS_FUZZ_SEED"), needed("WCONTAINERS_FUZZ_CALLS"));
+    let [made, refused, egl_refused] = fuzz::<E, G>(folder, seed, calls, counts);
+    println!("FUZZ seed {seed} calls {made}, refused by the implementation itself: OpenGL ES {refused}, EGL {egl_refused}");
 }
 
 /// The nanoseconds each of `times` calls takes, timed together.
@@ -1172,9 +1175,9 @@ pub fn draw_costs<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, draws: u32) -> [f6
     [draw, answered, state]
 }
 
-/// Prints `draw_costs` for WCONTAINERS_MEASURE_DRAWS draws, five times; nothing when it names none.
+/// Prints `draw_costs` for WCONTAINERS_MEASURE_DRAWS draws, five times; fails when it names none.
 pub fn measure_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>) {
-    let Some(draws) = std::env::var("WCONTAINERS_MEASURE_DRAWS").ok().and_then(|value| value.parse::<u32>().ok()) else { return };
+    let draws = u32::try_from(needed("WCONTAINERS_MEASURE_DRAWS")).expect("WCONTAINERS_MEASURE_DRAWS fits 32 bits");
     let made = make::<E, G>(folder, &CONTEXT_ES3);
     let mut most = [0_i32];
     made.gl.get_integerv(gl::MAX_VERTEX_ATTRIBS, &mut most);
@@ -1252,11 +1255,13 @@ macro_rules! tests {
         }
 
         #[test]
+        #[ignore = "the fuzzing: run by name with WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS"]
         fn fuzz_from_the_environment() {
             $crate::fuzz_from_the_environment::<$egl, $gl>($folder.as_deref(), &counts());
         }
 
         #[test]
+        #[ignore = "the measurement: run by name with WCONTAINERS_MEASURE_DRAWS"]
         fn measure_from_the_environment() {
             $crate::measure_from_the_environment::<$egl, $gl>($folder.as_deref());
         }

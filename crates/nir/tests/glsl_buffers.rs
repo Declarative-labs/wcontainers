@@ -139,7 +139,7 @@ fn opengl_buffers_as_words_compute_what_glsl_says() {
         .prepare()
         .expect("the driver prepares it");
     let drawn = prepared
-        .variant(Stage::Compute, &DrawSettings::default(), &[], &[])
+        .variant(&DrawSettings::default(), &[], &[])
         .expect("it binds")
         .flatten(0)
         .expect("it flattens");

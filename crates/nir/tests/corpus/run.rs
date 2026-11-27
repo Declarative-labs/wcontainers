@@ -49,10 +49,10 @@ const REFERENCE_CRASHED: &str = "the reference crashed";
 /// How many of a crashed child's last lines of errors its reason keeps.
 const CRASH_LINES: usize = 3;
 
-/// The candidate routes of plan 15.3, by name in the results.
-pub const ROUTE_ZINK: &str = "zink-spirv-naga";
+/// The route of plan 15.3 the corpus measures (route B), by name in the results. Candidate A (Zink's SPIR-V writer
+/// read back by naga) went with the Mesa compiler trait's `spirv_common_to_spirv`, which no Mesa driver calls.
 pub const ROUTE_DIRECT: &str = "nir-naga";
-pub const ROUTES: [&str; 2] = [ROUTE_ZINK, ROUTE_DIRECT];
+pub const ROUTES: [&str; 1] = [ROUTE_DIRECT];
 /// A route's outcome while it runs, replaced by the crash's reason if the child dies in it.
 const IN_ROUTE: &str = "in the route";
 /// The same while the converted shader is held to the reference.
@@ -67,8 +67,6 @@ const SHADERS: &str = "WC_NIR_SHADERS";
 const JOBS: &str = "WC_NIR_JOBS";
 /// The input sets of each run when `WC_NIR_INPUT_SETS` is unset.
 const DEFAULT_INPUT_SETS: u32 = 64;
-/// A folder for each route's intermediate form, for diagnosis.
-const DUMP: &str = "WC_NIR_DUMP";
 /// Lavapipe's worker threads, none: every run in the child's own thread, so a program whose
 /// invocations race gives the same result each time.
 const DRIVER_THREADS_VARIABLE: &str = "LP_NUM_THREADS";
@@ -476,10 +474,10 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
         return result;
     };
     result.stage = Some(format!("{:?}", entry.model));
-    let stage = match entry.model {
-        spirv::ExecutionModel::Vertex => Stage::Vertex,
-        spirv::ExecutionModel::Fragment => Stage::Fragment,
-        spirv::ExecutionModel::GLCompute => Stage::Compute,
+    let (stage, compared) = match entry.model {
+        spirv::ExecutionModel::Vertex => (Stage::Vertex, lavapipe::Stage::Vertex),
+        spirv::ExecutionModel::Fragment => (Stage::Fragment, lavapipe::Stage::Fragment),
+        spirv::ExecutionModel::GLCompute => (Stage::Compute, lavapipe::Stage::Compute),
         other => {
             result.refused = Some(format!("stage {other:?} is not in the common form"));
             return result;
@@ -511,12 +509,8 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
         },
     );
     match route {
-        ROUTE_ZINK | ROUTE_DIRECT => {
-            let (mut route, converted) = if route == ROUTE_ZINK {
-                zink_route(nir, stage, file)
-            } else {
-                direct_route(nir, stage)
-            };
+        ROUTE_DIRECT => {
+            let (mut route, converted) = direct_route(nir, stage);
             if converted.is_some() && alpha_to_one {
                 route.outcome = Outcome::Compared(Verdict::NotRun(HELD_BY_CTS.into()));
             } else if let Some((module, reflection)) = converted {
@@ -533,15 +527,10 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
                     seed: knob(SEED).unwrap_or(DEFAULT_SEED),
                     input_sets: knob(INPUT_SETS).unwrap_or(DEFAULT_INPUT_SETS),
                 };
-                let stage = match stage {
-                    Stage::Vertex => lavapipe::Stage::Vertex,
-                    Stage::Fragment => lavapipe::Stage::Fragment,
-                    Stage::Compute => lavapipe::Stage::Compute,
-                };
                 route.outcome = Outcome::Compared(compare::compare(
                     &words,
                     &entry.name,
-                    stage,
+                    compared,
                     &module,
                     &reflection,
                     options,
@@ -557,8 +546,7 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
 /// Candidate B: the common form's step, then NIR read straight into naga and validated; with the
 /// shaders crate's rewrites (15.4) where the module needs them, each storage image without a
 /// format bound as a view of its kind (`bound_views`), as a driver names the bound view. The cache
-/// key, which both candidates take from the same NIR, is made outside the time measured, as
-/// candidate A's is.
+/// key is made outside the time measured.
 fn direct_route(
     nir: SpirvProgram,
     stage: Stage,
@@ -582,7 +570,7 @@ fn glsl_direct_route(
     let started = Instant::now();
     let converted = received.prepare().and_then(|prepared| {
         let drawn = prepared
-            .variant(stage, &DrawSettings::default(), &[], &[])?
+            .variant(&DrawSettings::default(), &[], &[])?
             .flatten(0)?;
         direct_module(drawn.flat, drawn.bindings, &drawn.key)
     });
@@ -642,24 +630,6 @@ fn direct_result(
     }
 }
 
-/// Candidate A on a GLSL stage: not taken. The Mesa compiler's trait writes SPIR-V by Zink's writer
-/// only for a program read from SPIR-V; a GLSL stage reaches the common form as a draw's variant,
-/// which it gives only flattened.
-fn glsl_zink_route() -> (RouteResult, Option<(naga::Module, Vec<ReflectedBinding>)>) {
-    (
-        RouteResult {
-            route: ROUTE_ZINK.into(),
-            outcome: Outcome::Compared(Verdict::NotRun(GLSL_WITHOUT_ZINK.into())),
-            convert_ns: 0,
-            inputs_seed: None,
-        },
-        None,
-    )
-}
-
-/// Why candidate A takes no GLSL stage.
-const GLSL_WITHOUT_ZINK: &str = "candidate A takes only programs read from SPIR-V: the Mesa compiler's trait gives a draw's variant no SPIR-V writer";
-
 /// The format of the view bound at each storage slot route B declared without one, of the kind its
 /// placeholder has: one 32-bit component where the program reads and writes it (the only storage
 /// formats the common form reads and writes), else four.
@@ -708,57 +678,6 @@ fn bound_views(routed: &Routed) -> Vec<(u32, Format)> {
             Some((slot, view))
         })
         .collect()
-}
-
-/// Candidate A: the binding rule, Zink's SPIR-V, naga's reader and validation. With `WC_NIR_DUMP` set, Zink's SPIR-V
-/// is also written there (outside the time measured), under the shader's own path.
-fn zink_route(
-    nir: SpirvProgram,
-    stage: Stage,
-    file: &Path,
-) -> (RouteResult, Option<(naga::Module, Vec<ReflectedBinding>)>) {
-    let started = Instant::now();
-    let (common, reflection) = match nir.to_common_form(stage) {
-        Ok((common, reflection)) => (Some(common), Ok(reflection)),
-        Err(e) => (None, Err(e)),
-    };
-    let words = common.map_or_else(
-        || {
-            Err(wcontainers_nir::ConvertError::Mesa(
-                wcontainers_nir::mesa::NIR_TO_SPIRV,
-            ))
-        },
-        |common| common.into_spirv(),
-    );
-    let mut elapsed = started.elapsed();
-    if let (Some(dir), Ok(words)) = (std::env::var_os(DUMP), &words) {
-        let relative: PathBuf = file
-            .components()
-            .filter(|c| matches!(c, std::path::Component::Normal(_)))
-            .collect();
-        let path = Path::new(&dir).join(relative);
-        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        std::fs::create_dir_all(path.parent().expect("a file has a folder"))
-            .expect("the dump folder takes the file");
-        std::fs::write(&path, bytes).expect("the dump folder takes the file");
-    }
-    let started = Instant::now();
-    let converted = words.and_then(|words| wcontainers_nir::spirv::read(&words));
-    elapsed += started.elapsed();
-    let convert_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
-    let mut result = RouteResult {
-        route: ROUTE_ZINK.into(),
-        outcome: Outcome::Failed(IN_ROUTE.into()),
-        convert_ns,
-        inputs_seed: None,
-    };
-    match (converted, reflection) {
-        (Ok((module, _)), Ok(reflection)) => (result, Some((module, reflection))),
-        (Err(e), _) | (_, Err(e)) => {
-            result.outcome = Outcome::Failed(e.to_string());
-            (result, None)
-        }
-    }
 }
 
 /// A GLSL program (a piglit test, a bgfx shader, a dEQP case or a Godot variant): its stages through Mesa's compiler, each through the route; a
@@ -821,7 +740,6 @@ fn glsl_program(file: &Path, route: &str) -> ShaderResult {
     let mut converted = Vec::new();
     for stage in stages {
         let (one, module) = match route {
-            ROUTE_ZINK => glsl_zink_route(),
             ROUTE_DIRECT => glsl_direct_route(stage.received, stage.stage),
             other => panic!("no route named {other}"),
         };
@@ -852,7 +770,7 @@ fn glsl_program(file: &Path, route: &str) -> ShaderResult {
         ([(Stage::Compute, names, (module, reflection))], [(_, source)]) => {
             glsl::compare_compute(source, names, module, reflection, options)
         }
-        _ => drawn_comparison(&sources, route, options),
+        _ => drawn_comparison(&sources, options),
     });
     result.routes.push(taken);
     result
@@ -860,7 +778,7 @@ fn glsl_program(file: &Path, route: &str) -> ShaderResult {
 
 /// A GLSL program's vertex and fragment stages drawn (`glsl::drawn_program`), the drawn program
 /// through the same route, held to llvmpipe.
-fn drawn_comparison(sources: &[(Stage, String)], route: &str, options: CompareOptions) -> Verdict {
+fn drawn_comparison(sources: &[(Stage, String)], options: CompareOptions) -> Verdict {
     let drawn = match glsl::drawn_program(sources) {
         Ok(d) => d,
         Err(e) => return Verdict::NotRun(e),
@@ -872,10 +790,7 @@ fn drawn_comparison(sources: &[(Stage, String)], route: &str, options: CompareOp
     };
     let mut routed = Vec::new();
     for stage in stages {
-        let (one, module) = match route {
-            ROUTE_ZINK => glsl_zink_route(),
-            _ => glsl_direct_route(stage.received, stage.stage),
-        };
+        let (one, module) = glsl_direct_route(stage.received, stage.stage);
         match module {
             Some(m) => routed.push((stage.stage, stage.names, m)),
             None => {

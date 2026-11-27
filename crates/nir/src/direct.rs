@@ -3251,7 +3251,7 @@ impl Builder<'_> {
     }
 
     /// The common form's clip space has y upwards (WGSL's), Vulkan's downwards: the position's y
-    /// is negated on its way out, as naga's SPIR-V reader does for candidate A.
+    /// is negated on its way out, as naga's SPIR-V reader does for a Vulkan program.
     fn flip_y(&mut self, position: Handle<Expression>) {
         let pointer = self.add(Expression::AccessIndex {
             base: position,
