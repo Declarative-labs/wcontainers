@@ -306,6 +306,7 @@ shared!(
     a_capture_after_a_draw_of_its_stream_in_an_earlier_pass_writes_its_vertices,
     a_capture_after_an_indexed_draw_of_its_buffers_in_an_earlier_pass_writes_its_vertices,
     depth_copies_through_buffers_keep_their_pitches_and_values,
+    every_24_bit_depth_word_copies_out_as_written,
 );
 
 thread_local! {
