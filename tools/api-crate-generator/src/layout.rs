@@ -24,6 +24,8 @@ const HEADERS: &[&str] = &[
     "d3d11sdklayers.h",
     "d3d11shader.h",
     "d3d11shadertracing.h",
+    "d3d12.h",
+    "d3d12sdklayers.h",
 ];
 
 fn primitive(ty: &Type) -> Option<(u64, u64)> {

@@ -369,7 +369,7 @@ pub(crate) struct GraphicsCommandListTable {
     pub(crate) graphics_command_list_so_set_targets:
         unsafe extern "system" fn(Raw, u32, u32, *mut u8),
     pub(crate) graphics_command_list_om_set_render_targets:
-        unsafe extern "system" fn(Raw, u32, *const u8, i32, *const u8),
+        unsafe extern "system" fn(Raw, u32, *mut u8, i32, *mut u8),
     pub(crate) graphics_command_list_clear_depth_stencil_view:
         unsafe extern "system" fn(Raw, u64, i32, f32, u8, u32, *mut u8),
     pub(crate) graphics_command_list_clear_render_target_view:

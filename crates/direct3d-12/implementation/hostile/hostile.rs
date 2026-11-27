@@ -2269,10 +2269,7 @@ impl<A: Hostile> direct3d_12::GraphicsCommandList for HostileGraphicsCommandList
         let _ = &render_target_descriptors;
         let _ = &r_ts_single_handle_to_descriptor_range;
         let _ = &depth_stencil_descriptor;
-        record(format!(
-            "ID3D12GraphicsCommandList::OMSetRenderTargets(num_render_target_descriptors={:?}, r_ts_single_handle_to_descriptor_range={:?})",
-            num_render_target_descriptors, r_ts_single_handle_to_descriptor_range
-        ));
+        record("ID3D12GraphicsCommandList::OMSetRenderTargets()".to_string());
     }
     fn clear_render_target_view(
         &self,
@@ -4641,6 +4638,16 @@ pub fn drive_where(
             true
         });
     }
+    // ID3D12DescriptorHeap::GetDesc on DescriptorHeap
+    if wanted(ID_3D12_DESCRIPTOR_HEAP) {
+        driven.attempt(|| {
+            let Some(this) = o.k53.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_12::DescriptorHeap::get_desc(this);
+            true
+        });
+    }
     // ID3D12Device::CreateCommandQueue on Device
     if wanted(ID_3D12_DEVICE) {
         driven.attempt(|| {
@@ -5022,6 +5029,16 @@ pub fn drive_where(
             true
         });
     }
+    // ID3D12Resource::GetDesc on Resource
+    if wanted(ID_3D12_RESOURCE) {
+        driven.attempt(|| {
+            let Some(this) = o.k59.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_12::Resource::get_desc(this);
+            true
+        });
+    }
     // D3D12CreateDevice
     if wanted(D_3D12_CREATE_DEVICE) {
         driven.attempt(|| {
@@ -5043,12 +5060,16 @@ const D_3D12_CREATE_DEVICE: &str = "D3D12CreateDevice";
 const ID_3D12_COMMAND_ALLOCATOR: &str = "ID3D12CommandAllocator";
 /// The interface (or export) `ID3D12CommandQueue`, by its name in the header.
 const ID_3D12_COMMAND_QUEUE: &str = "ID3D12CommandQueue";
+/// The interface (or export) `ID3D12DescriptorHeap`, by its name in the header.
+const ID_3D12_DESCRIPTOR_HEAP: &str = "ID3D12DescriptorHeap";
 /// The interface (or export) `ID3D12Device`, by its name in the header.
 const ID_3D12_DEVICE: &str = "ID3D12Device";
 /// The interface (or export) `ID3D12Fence`, by its name in the header.
 const ID_3D12_FENCE: &str = "ID3D12Fence";
 /// The interface (or export) `ID3D12GraphicsCommandList`, by its name in the header.
 const ID_3D12_GRAPHICS_COMMAND_LIST: &str = "ID3D12GraphicsCommandList";
+/// The interface (or export) `ID3D12Resource`, by its name in the header.
+const ID_3D12_RESOURCE: &str = "ID3D12Resource";
 /// The interface (or export) `ID3DBlob`, by its name in the header.
 const ID_3D_BLOB: &str = "ID3DBlob";
 /// The interface (or export) `ID3DDestructionNotifier`, by its name in the header.
@@ -5152,8 +5173,21 @@ fn fuzz_3(o: &Objects, r: &mut Rng) -> bool {
     true
 }
 
-/// ID3D12Device::CreateCommandQueue on Device, of random arguments.
+/// ID3D12DescriptorHeap::GetDesc on DescriptorHeap, of random arguments.
 fn fuzz_4(o: &Objects, r: &mut Rng) -> bool {
+    let Some(this) = o.k53.as_ref() else {
+        return false;
+    };
+    let count = r.below(SLICE_LENGTHS);
+    let _ =
+        <direct3d_12_direct::SystemDescriptorHeap<Api> as direct3d_12::DescriptorHeap>::get_desc(
+            this,
+        );
+    true
+}
+
+/// ID3D12Device::CreateCommandQueue on Device, of random arguments.
+fn fuzz_5(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5169,7 +5203,7 @@ fn fuzz_4(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Device::CreateCommandAllocator on Device, of random arguments.
-fn fuzz_5(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_6(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5184,7 +5218,7 @@ fn fuzz_5(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Device::CreateCommandList on Device, of random arguments.
-fn fuzz_6(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_7(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5204,7 +5238,7 @@ fn fuzz_6(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Device::CreateDescriptorHeap on Device, of random arguments.
-fn fuzz_7(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_8(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5220,7 +5254,7 @@ fn fuzz_7(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Device::GetDescriptorHandleIncrementSize on Device, of random arguments.
-fn fuzz_8(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_9(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5230,7 +5264,7 @@ fn fuzz_8(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Device::CreateRootSignature on Device, of random arguments.
-fn fuzz_9(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_10(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5246,7 +5280,7 @@ fn fuzz_9(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Device::CreateCommittedResource on Device, of random arguments.
-fn fuzz_10(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_11(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5278,7 +5312,7 @@ fn fuzz_10(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Device::CreateFence on Device, of random arguments.
-fn fuzz_11(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_12(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5293,7 +5327,7 @@ fn fuzz_11(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Device::GetCopyableFootprints on Device, of random arguments.
-fn fuzz_12(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_13(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5311,7 +5345,7 @@ fn fuzz_12(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Device::CreateQueryHeap on Device, of random arguments.
-fn fuzz_13(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_14(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -5327,7 +5361,7 @@ fn fuzz_13(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Fence::GetCompletedValue on Fence, of random arguments.
-fn fuzz_14(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_15(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k55.as_ref() else {
         return false;
     };
@@ -5337,7 +5371,7 @@ fn fuzz_14(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12Fence::SetEventOnCompletion on Fence, of random arguments.
-fn fuzz_15(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_16(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k55.as_ref() else {
         return false;
     };
@@ -5351,7 +5385,7 @@ fn fuzz_15(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::Close on GraphicsCommandList, of random arguments.
-fn fuzz_16(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_17(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5361,7 +5395,7 @@ fn fuzz_16(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::Reset on GraphicsCommandList, of random arguments.
-fn fuzz_17(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_18(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5374,7 +5408,7 @@ fn fuzz_17(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::DrawInstanced on GraphicsCommandList, of random arguments.
-fn fuzz_18(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_19(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5384,7 +5418,7 @@ fn fuzz_18(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::DrawIndexedInstanced on GraphicsCommandList, of random arguments.
-fn fuzz_19(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_20(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5394,7 +5428,7 @@ fn fuzz_19(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::Dispatch on GraphicsCommandList, of random arguments.
-fn fuzz_20(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_21(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5404,7 +5438,7 @@ fn fuzz_20(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::CopyBufferRegion on GraphicsCommandList, of random arguments.
-fn fuzz_21(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_22(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5420,7 +5454,7 @@ fn fuzz_21(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::IASetPrimitiveTopology on GraphicsCommandList, of random arguments.
-fn fuzz_22(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_23(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5430,7 +5464,7 @@ fn fuzz_22(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::SetPipelineState on GraphicsCommandList, of random arguments.
-fn fuzz_23(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_24(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5443,7 +5477,7 @@ fn fuzz_23(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::SetDescriptorHeaps on GraphicsCommandList, of random arguments.
-fn fuzz_24(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_25(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5456,7 +5490,7 @@ fn fuzz_24(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::SetComputeRootSignature on GraphicsCommandList, of random arguments.
-fn fuzz_25(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_26(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5466,7 +5500,7 @@ fn fuzz_25(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::SetGraphicsRootSignature on GraphicsCommandList, of random arguments.
-fn fuzz_26(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_27(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5476,7 +5510,7 @@ fn fuzz_26(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::BeginQuery on GraphicsCommandList, of random arguments.
-fn fuzz_27(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_28(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5489,7 +5523,7 @@ fn fuzz_27(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::EndQuery on GraphicsCommandList, of random arguments.
-fn fuzz_28(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_29(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5502,7 +5536,7 @@ fn fuzz_28(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::ResolveQueryData on GraphicsCommandList, of random arguments.
-fn fuzz_29(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_30(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5517,8 +5551,18 @@ fn fuzz_29(o: &Objects, r: &mut Rng) -> bool {
     true
 }
 
+/// ID3D12Resource::GetDesc on Resource, of random arguments.
+fn fuzz_31(o: &Objects, r: &mut Rng) -> bool {
+    let Some(this) = o.k59.as_ref() else {
+        return false;
+    };
+    let count = r.below(SLICE_LENGTHS);
+    let _ = <direct3d_12_direct::SystemResource<Api> as direct3d_12::Resource>::get_desc(this);
+    true
+}
+
 /// D3D12CreateDevice, of random arguments.
-fn fuzz_30(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_32(o: &Objects, r: &mut Rng) -> bool {
     let count = r.below(SLICE_LENGTHS);
     let _ = <Api as direct3d_12::Direct3D12>::create_device(
         &o.api,
@@ -5540,10 +5584,11 @@ fn drop_some(o: &mut Objects, r: &mut Rng, one_in: usize) {
 }
 
 /// Every method's fuzzer, picked from at random.
-const FUZZERS: [fn(&Objects, &mut Rng) -> bool; 31] = [
+const FUZZERS: [fn(&Objects, &mut Rng) -> bool; 33] = [
     fuzz_0, fuzz_1, fuzz_2, fuzz_3, fuzz_4, fuzz_5, fuzz_6, fuzz_7, fuzz_8, fuzz_9, fuzz_10,
     fuzz_11, fuzz_12, fuzz_13, fuzz_14, fuzz_15, fuzz_16, fuzz_17, fuzz_18, fuzz_19, fuzz_20,
     fuzz_21, fuzz_22, fuzz_23, fuzz_24, fuzz_25, fuzz_26, fuzz_27, fuzz_28, fuzz_29, fuzz_30,
+    fuzz_31, fuzz_32,
 ];
 
 /// Calls `calls` methods picked at random, each of random arguments; every `REMAKE_EVERY` calls drops some objects and

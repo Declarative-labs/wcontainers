@@ -934,11 +934,20 @@ pub enum Uint64 {
     /// A `D3D12_GPU_VIRTUAL_ADDRESS`: an address in the GPU's memory, carried only as (resource, offset) checked against
     /// the resource's recorded size; until that line is written, the method is refused.
     GpuAddress,
+    /// A descriptor handle's address (`D3D12_CPU_DESCRIPTOR_HANDLE.ptr`, a SIZE_T): where the system writes descriptors,
+    /// carried only as (heap, index) checked against the heap's recorded description; until then, refused.
+    DescriptorAddress,
 }
 
-/// Each UINT64 of the Direct3D 12 subset's methods and structures, as (method or structure, parameter, field or
-/// `return`), judged by d3d12.h's declaration.
+/// Each UINT64 and SIZE_T of the Direct3D 12 subset's methods and structures, as (method or structure, parameter, field
+/// or `return`), judged by d3d12.h's declaration.
 pub const UINT64_JUDGED: &[(&str, &str, Uint64)] = &[
+    ("D3D12_CPU_DESCRIPTOR_HANDLE", "ptr", Uint64::DescriptorAddress),
+    ("D3D12_CACHED_PIPELINE_STATE", "CachedBlobSizeInBytes", Uint64::Number),
+    ("D3D12_SHADER_BYTECODE", "BytecodeLength", Uint64::Number),
+    ("D3D12_RANGE", "Begin", Uint64::Number),
+    ("D3D12_RANGE", "End", Uint64::Number),
+    ("ID3D12Device::CreateRootSignature", "blobLengthInBytes", Uint64::Number),
     ("ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView", "BufferLocation", Uint64::GpuAddress),
     ("ID3D12GraphicsCommandList::SetComputeRootConstantBufferView", "BufferLocation", Uint64::GpuAddress),
     ("ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView", "BufferLocation", Uint64::GpuAddress),

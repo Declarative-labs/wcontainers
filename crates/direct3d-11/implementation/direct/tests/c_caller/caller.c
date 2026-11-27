@@ -7526,13 +7526,14 @@ static void call_slot(State *s, uint64_t which, void *right) {
     case 457: { /* ID3D12DescriptorHeap::GetDesc */
         void *this = pick_this(s, right);
         if (this == right) s->reached[457]++;
-        uint8_t *w0 = out_bytes_fixed(s, 16);
         typedef uint8_t * (*F)(void *, uint8_t *);
         F f = (F)((*(void ***)right)[8]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        (void)f(this, w0);
-        if (w0) { for (uint64_t i = 0; i < 16; i++) if (w0[i]) { s->counted[REFUSED_WRONG]++; break; } free(w0); }
-        s->counted[REFUSED]++;
+        uint8_t *a0 = out_bytes_fixed(s, 16);
+        (void)f(this, a0);
+        int ok = 1;
+        s->counted[ok ? SUCCEEDED : FAILED]++;
+        free((void *)a0);
         break;
     }
     case 458: { /* ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart */
@@ -8505,18 +8506,11 @@ static void call_slot(State *s, uint64_t which, void *right) {
     case 538: { /* ID3D12GraphicsCommandList::OMSetRenderTargets */
         void *this = pick_this(s, right);
         if (this == right) s->reached[538]++;
-        typedef void (*F)(void *, uint32_t, const uint8_t *, int32_t, const uint8_t *);
+        typedef void (*F)(void *, uint32_t, uint8_t *, int32_t, uint8_t *);
         F f = (F)((*(void ***)right)[46]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        uint32_t a0 = (uint32_t)pick_value(s);
-        uint8_t *a1 = maybe_bytes(s, 8);
-        int32_t a2 = (int32_t)pick_value(s);
-        uint8_t *a3 = maybe_bytes(s, 8);
-        f(this, a0, a1, a2, a3);
-        int ok = 1;
-        s->counted[ok ? SUCCEEDED : FAILED]++;
-        free((void *)a1);
-        free((void *)a3);
+        f(this, (uint32_t)pick_value(s), (uint8_t *)pick_object(s, 1), (int32_t)pick_value(s), (uint8_t *)pick_object(s, 1));
+        s->counted[REFUSED]++;
         break;
     }
     case 539: { /* ID3D12GraphicsCommandList::ClearDepthStencilView */
@@ -8745,13 +8739,14 @@ static void call_slot(State *s, uint64_t which, void *right) {
     case 559: { /* ID3D12Resource::GetDesc */
         void *this = pick_this(s, right);
         if (this == right) s->reached[559]++;
-        uint8_t *w0 = out_bytes_fixed(s, 56);
         typedef uint8_t * (*F)(void *, uint8_t *);
         F f = (F)((*(void ***)right)[10]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        (void)f(this, w0);
-        if (w0) { for (uint64_t i = 0; i < 56; i++) if (w0[i]) { s->counted[REFUSED_WRONG]++; break; } free(w0); }
-        s->counted[REFUSED]++;
+        uint8_t *a0 = out_bytes_fixed(s, 56);
+        (void)f(this, a0);
+        int ok = 1;
+        s->counted[ok ? SUCCEEDED : FAILED]++;
+        free((void *)a0);
         break;
     }
     case 560: { /* ID3D12Resource::GetGPUVirtualAddress */

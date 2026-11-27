@@ -1878,10 +1878,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &render_target_descriptors;
         let _ = &r_ts_single_handle_to_descriptor_range;
         let _ = &depth_stencil_descriptor;
-        record(format!(
-            "ID3D12GraphicsCommandList::OMSetRenderTargets(num_render_target_descriptors={:?}, r_ts_single_handle_to_descriptor_range={:?})",
-            num_render_target_descriptors, r_ts_single_handle_to_descriptor_range
-        ));
+        record("ID3D12GraphicsCommandList::OMSetRenderTargets()".to_string());
     }
     fn clear_render_target_view(
         &self,

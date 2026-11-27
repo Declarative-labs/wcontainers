@@ -1583,10 +1583,21 @@ impl<A: System> direct3d_12::Object for SystemCommandQueue<A> {
 
 impl<A: System> direct3d_12::DescriptorHeap for SystemDescriptorHeap<A> {
     fn get_desc(&self) -> direct3d_12::structures::DescriptorHeapDesc {
-        // Refused by its form (the report's NOT GLUED): the system is not called.
-        decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(
-            &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12D3d12DescriptorHeapDescLayout>()],
-        )
+        let mut ret_val = Aligned::<
+            { size_of::<WindowsWin32GraphicsDirect3d12D3d12DescriptorHeapDescLayout>() },
+        >::default();
+        #[expect(unsafe_code, reason = "ID3D12DescriptorHeap::GetDesc, called out")]
+        // SAFETY: a live object whose table holds `ID3D12DescriptorHeap::GetDesc` where the metadata orders it; every pointer passed is ours for the call.
+        let returned = unsafe {
+            (self.object.entry_points().descriptor_heap_get_desc)(
+                self.object.raw(),
+                ret_val.0.as_mut_ptr(),
+            )
+        };
+        let ret_val =
+            decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&ret_val.0);
+        let _ = returned;
+        ret_val
     }
     fn get_cpu_descriptor_handle_for_heap_start(
         &self,
@@ -2620,10 +2631,20 @@ impl<A: System> direct3d_12::Resource for SystemResource<A> {
         // Refused by its kinds (src/kinds.rs), the system never called: pWrittenRange: D3D12_RANGE.Begin: an integer of pointer width, which the system may take as an address; pWrittenRange: D3D12_RANGE.End: an integer of pointer width, which the system may take as an address.
     }
     fn get_desc(&self) -> direct3d_12::structures::ResourceDesc {
-        // Refused by its form (the report's NOT GLUED): the system is not called.
-        decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(
-            &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12D3d12ResourceDescLayout>()],
-        )
+        let mut ret_val = Aligned::<
+            { size_of::<WindowsWin32GraphicsDirect3d12D3d12ResourceDescLayout>() },
+        >::default();
+        #[expect(unsafe_code, reason = "ID3D12Resource::GetDesc, called out")]
+        // SAFETY: a live object whose table holds `ID3D12Resource::GetDesc` where the metadata orders it; every pointer passed is ours for the call.
+        let returned = unsafe {
+            (self.object.entry_points().resource_get_desc)(
+                self.object.raw(),
+                ret_val.0.as_mut_ptr(),
+            )
+        };
+        let ret_val = decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&ret_val.0);
+        let _ = returned;
+        ret_val
     }
     fn get_gpu_virtual_address(&self) -> u64 {
         // Refused by its form (the report's NOT GLUED): the system is not called.

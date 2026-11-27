@@ -113,7 +113,7 @@ impl<V: direct3d_12::DescriptorHeap> Tables<V> {
         object_set_private_data_interface: object_set_private_data_interface_refused,
         object_set_name: object_set_name_refused,
         device_child_get_device: device_child_get_device_refused,
-        descriptor_heap_get_desc: descriptor_heap_get_desc_refused,
+        descriptor_heap_get_desc: descriptor_heap_get_desc::<V>,
         descriptor_heap_get_cpu_descriptor_handle_for_heap_start:
             descriptor_heap_get_cpu_descriptor_handle_for_heap_start_refused,
         descriptor_heap_get_gpu_descriptor_handle_for_heap_start:
@@ -286,7 +286,7 @@ impl<V: direct3d_12::GraphicsCommandList> Tables<V> {
                 graphics_command_list_ia_set_vertex_buffers_refused,
             graphics_command_list_so_set_targets: graphics_command_list_so_set_targets_refused,
             graphics_command_list_om_set_render_targets:
-                graphics_command_list_om_set_render_targets::<V>,
+                graphics_command_list_om_set_render_targets_refused,
             graphics_command_list_clear_depth_stencil_view:
                 graphics_command_list_clear_depth_stencil_view_refused,
             graphics_command_list_clear_render_target_view:
@@ -386,7 +386,7 @@ impl<V: direct3d_12::Resource> Tables<V> {
         device_child_get_device: device_child_get_device_refused,
         resource_map: resource_map_refused,
         resource_unmap: resource_unmap::<V>,
-        resource_get_desc: resource_get_desc_refused,
+        resource_get_desc: resource_get_desc::<V>,
         resource_get_gpu_virtual_address: resource_get_gpu_virtual_address_refused,
         resource_write_to_subresource: resource_write_to_subresource_refused,
         resource_read_from_subresource: resource_read_from_subresource_refused,
@@ -956,7 +956,7 @@ pub(crate) unsafe extern "system" fn command_queue_get_clock_calibration_refused
 }
 
 /// `ID3D12CommandQueue::GetDesc` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, 16 zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it.
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -977,30 +977,50 @@ pub(crate) unsafe extern "system" fn command_queue_get_desc_refused(
     p0
 }
 
-/// `ID3D12DescriptorHeap::GetDesc` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, 16 zero bytes written through it.
+/// `ID3D12DescriptorHeap::GetDesc` as the C side calls it.
 ///
 /// # Safety
-/// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
+/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
 #[expect(
     unsafe_code,
     reason = "ID3D12DescriptorHeap::GetDesc, which the C side calls"
 )]
-pub(crate) unsafe extern "system" fn descriptor_heap_get_desc_refused(
-    _this: Raw,
-    p0: *mut u8,
+pub(crate) unsafe extern "system" fn descriptor_heap_get_desc<V: direct3d_12::DescriptorHeap>(
+    this: Raw,
+    ret_val: *mut u8,
 ) -> *mut u8 {
-    #[expect(
-        unsafe_code,
-        reason = "ID3D12DescriptorHeap::GetDesc: RetVal, as the header declares it for the C side"
-    )]
-    // SAFETY: the metadata's `RetVal` is `Out`: one value of this size to write, or null, for the call.
-    let _ = unsafe { write_bytes(p0, &[u8::MIN; 16]) };
-    p0
+    #[deny(unsafe_code)]
+    let body = move || {
+        let answer = guarded(None, move || {
+            let found = object::<V>(KEY, this.addr())?;
+            let ret_val_value = found.value().get_desc();
+            drop(found);
+            let mut ret_val_bytes =
+                [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12D3d12DescriptorHeapDescLayout>()];
+            encode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(
+                &ret_val_value,
+                &mut ret_val_bytes,
+            );
+            Some((ret_val_bytes,))
+        });
+        let ret_val_written = answer.as_ref().as_ref().map_or(
+            [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12D3d12DescriptorHeapDescLayout>()],
+            |written| written.0,
+        );
+        #[expect(
+            unsafe_code,
+            reason = "ID3D12DescriptorHeap::GetDesc: RetVal, as the header declares it for the C side"
+        )]
+        // SAFETY: the metadata's `RetVal` is `Out`: one value of this size to write, or null, for the call.
+        let _ = unsafe { write_bytes(ret_val.cast::<u8>(), &ret_val_written) };
+        let _ = answer;
+        ret_val
+    };
+    guarded(ret_val, body)
 }
 
 /// `ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, 8 zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it.
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -1022,7 +1042,7 @@ pub(crate) unsafe extern "system" fn descriptor_heap_get_cpu_descriptor_handle_f
 }
 
 /// `ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, 8 zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it.
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3304,7 +3324,7 @@ pub(crate) extern "system" fn device_copy_descriptors_simple_refused(
 }
 
 /// `ID3D12Device::GetResourceAllocationInfo` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, 16 zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it.
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3329,7 +3349,7 @@ pub(crate) unsafe extern "system" fn device_get_resource_allocation_info_refused
 }
 
 /// `ID3D12Device::GetCustomHeapProperties` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, 20 zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it.
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3597,7 +3617,7 @@ pub(crate) unsafe extern "system" fn device_get_resource_tiling_refused(
 }
 
 /// `ID3D12Device::GetAdapterLuid` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, 8 zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it.
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -4143,88 +4163,6 @@ pub(crate) unsafe extern "system" fn graphics_command_list_set_graphics_root_sig
     guarded((), body)
 }
 
-/// `ID3D12GraphicsCommandList::OMSetRenderTargets` as the C side calls it.
-///
-/// # Safety
-/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D12GraphicsCommandList::OMSetRenderTargets, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn graphics_command_list_om_set_render_targets<
-    V: direct3d_12::GraphicsCommandList,
->(
-    this: Raw,
-    num_render_target_descriptors: u32,
-    render_target_descriptors: *const u8,
-    r_ts_single_handle_to_descriptor_range: i32,
-    depth_stencil_descriptor: *const u8,
-) {
-    #[deny(unsafe_code)]
-    let body = move || {
-        let answer = guarded(None, move || {
-            let found = object::<V>(KEY, this.addr())?;
-            let num_render_target_descriptors = num_render_target_descriptors;
-            let mut render_target_descriptors_bytes = [u8::MIN;
-                size_of::<WindowsWin32GraphicsDirect3d12D3d12CpuDescriptorHandleLayout>()];
-            let render_target_descriptors_null = render_target_descriptors.is_null();
-            #[expect(
-                unsafe_code,
-                reason = "ID3D12GraphicsCommandList::OMSetRenderTargets: pRenderTargetDescriptors, as the header declares it for the C side"
-            )]
-            // SAFETY: the metadata's `pRenderTargetDescriptors` is `In` and `Const`: one `CpuDescriptorHandle` of 8 bytes, readable for the call.
-            let render_target_descriptors_read = unsafe {
-                read_bytes(
-                    render_target_descriptors,
-                    &mut render_target_descriptors_bytes,
-                )
-            };
-            let render_target_descriptors = render_target_descriptors_read.then(|| {
-                decode_windows_win32_graphics_direct_3d12_d_3d12_cpu_descriptor_handle(
-                    &render_target_descriptors_bytes,
-                )
-            });
-            if !render_target_descriptors_read && !render_target_descriptors_null {
-                return None;
-            }
-            let r_ts_single_handle_to_descriptor_range =
-                r_ts_single_handle_to_descriptor_range != 0;
-            let mut depth_stencil_descriptor_bytes = [u8::MIN;
-                size_of::<WindowsWin32GraphicsDirect3d12D3d12CpuDescriptorHandleLayout>()];
-            let depth_stencil_descriptor_null = depth_stencil_descriptor.is_null();
-            #[expect(
-                unsafe_code,
-                reason = "ID3D12GraphicsCommandList::OMSetRenderTargets: pDepthStencilDescriptor, as the header declares it for the C side"
-            )]
-            // SAFETY: the metadata's `pDepthStencilDescriptor` is `In` and `Const`: one `CpuDescriptorHandle` of 8 bytes, readable for the call.
-            let depth_stencil_descriptor_read = unsafe {
-                read_bytes(
-                    depth_stencil_descriptor,
-                    &mut depth_stencil_descriptor_bytes,
-                )
-            };
-            let depth_stencil_descriptor = depth_stencil_descriptor_read.then(|| {
-                decode_windows_win32_graphics_direct_3d12_d_3d12_cpu_descriptor_handle(
-                    &depth_stencil_descriptor_bytes,
-                )
-            });
-            if !depth_stencil_descriptor_read && !depth_stencil_descriptor_null {
-                return None;
-            }
-            let () = found.value().om_set_render_targets(
-                num_render_target_descriptors,
-                render_target_descriptors.as_ref(),
-                r_ts_single_handle_to_descriptor_range,
-                depth_stencil_descriptor.as_ref(),
-            );
-            drop(found);
-            Some(())
-        });
-        let _ = answer;
-    };
-    guarded((), body)
-}
-
 /// `ID3D12GraphicsCommandList::BeginQuery` as the C side calls it.
 ///
 /// # Safety
@@ -4584,6 +4522,17 @@ pub(crate) extern "system" fn graphics_command_list_so_set_targets_refused(
 ) {
 }
 
+/// `ID3D12GraphicsCommandList::OMSetRenderTargets` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
+/// answers no result (nothing done).
+pub(crate) extern "system" fn graphics_command_list_om_set_render_targets_refused(
+    _this: Raw,
+    _p0: u32,
+    _p1: *mut u8,
+    _p2: i32,
+    _p3: *mut u8,
+) {
+}
+
 /// `ID3D12GraphicsCommandList::ClearDepthStencilView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
 /// answers no result (nothing done).
 pub(crate) extern "system" fn graphics_command_list_clear_depth_stencil_view_refused(
@@ -4789,6 +4738,48 @@ pub(crate) unsafe extern "system" fn resource_unmap<V: direct3d_12::Resource>(
     guarded((), body)
 }
 
+/// `ID3D12Resource::GetDesc` as the C side calls it.
+///
+/// # Safety
+/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
+#[expect(
+    unsafe_code,
+    reason = "ID3D12Resource::GetDesc, which the C side calls"
+)]
+pub(crate) unsafe extern "system" fn resource_get_desc<V: direct3d_12::Resource>(
+    this: Raw,
+    ret_val: *mut u8,
+) -> *mut u8 {
+    #[deny(unsafe_code)]
+    let body = move || {
+        let answer = guarded(None, move || {
+            let found = object::<V>(KEY, this.addr())?;
+            let ret_val_value = found.value().get_desc();
+            drop(found);
+            let mut ret_val_bytes =
+                [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12D3d12ResourceDescLayout>()];
+            encode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(
+                &ret_val_value,
+                &mut ret_val_bytes,
+            );
+            Some((ret_val_bytes,))
+        });
+        let ret_val_written = answer.as_ref().as_ref().map_or(
+            [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12D3d12ResourceDescLayout>()],
+            |written| written.0,
+        );
+        #[expect(
+            unsafe_code,
+            reason = "ID3D12Resource::GetDesc: RetVal, as the header declares it for the C side"
+        )]
+        // SAFETY: the metadata's `RetVal` is `Out`: one value of this size to write, or null, for the call.
+        let _ = unsafe { write_bytes(ret_val.cast::<u8>(), &ret_val_written) };
+        let _ = answer;
+        ret_val
+    };
+    guarded(ret_val, body)
+}
+
 /// `ID3D12Resource::Map` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
 /// answers E_NOTIMPL.
 ///
@@ -4808,25 +4799,6 @@ pub(crate) unsafe extern "system" fn resource_map_refused(
     // SAFETY: the metadata's `ppData` is `Out`: one pointer to write (COM's null on failure), or null, for the call.
     let _ = unsafe { write_bytes(p2, &[u8::MIN; size_of::<usize>()]) };
     wcontainers_component_object_model::constants::E_NOTIMPL.0
-}
-
-/// `ID3D12Resource::GetDesc` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, 56 zero bytes written through it.
-///
-/// # Safety
-/// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D12Resource::GetDesc, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn resource_get_desc_refused(_this: Raw, p0: *mut u8) -> *mut u8 {
-    #[expect(
-        unsafe_code,
-        reason = "ID3D12Resource::GetDesc: RetVal, as the header declares it for the C side"
-    )]
-    // SAFETY: the metadata's `RetVal` is `Out`: one value of this size to write, or null, for the call.
-    let _ = unsafe { write_bytes(p0, &[u8::MIN; 56]) };
-    p0
 }
 
 /// `ID3D12Resource::GetGPUVirtualAddress` as the C side calls it, refused by its form: nothing is read, the method is not called, and it

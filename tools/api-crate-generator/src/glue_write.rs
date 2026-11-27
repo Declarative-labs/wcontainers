@@ -83,6 +83,9 @@ impl Writer<'_, '_> {
         }
         let returned = if glued.status {
             "i32".to_string()
+        } else if glued.returns_pointer {
+            // d3d12.h's C form of a structure returned by value: the caller's pointer, filled and returned.
+            "*mut u8".to_string()
         } else {
             match &glued.returned {
                 Some(Part::Value { c, .. }) => c.clone(),
@@ -932,11 +935,22 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "        wcontainers_component_object_model_direct::status(&answer)");
         } else if glued.returned.is_some() {
             let _ = writeln!(text, "        answer.map_or(Default::default(), |written| written.0)");
+        } else if glued.returns_pointer {
+            let pointer = glued.parts.first().map_or("ret_val", |(name, _)| name.as_str());
+            let _ = writeln!(text, "        let _ = answer;\n        {pointer}");
         } else {
             let _ = writeln!(text, "        let _ = answer;");
         }
         let _ = writeln!(text, "    }};");
-        let failed_code = if status { "E_FAIL.0".to_string() } else if returned == "()" { "()".to_string() } else { "Default::default()".to_string() };
+        let failed_code = if status {
+            "E_FAIL.0".to_string()
+        } else if glued.returns_pointer {
+            glued.parts.first().map_or("ret_val", |(name, _)| name.as_str()).to_string()
+        } else if returned == "()" {
+            "()".to_string()
+        } else {
+            "Default::default()".to_string()
+        };
         let _ = writeln!(text, "    guarded({failed_code}, body)\n}}\n");
         text
     }
