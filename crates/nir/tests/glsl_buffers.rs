@@ -26,7 +26,10 @@ mod lavapipe;
 use ash::vk;
 use lavapipe::{Descriptor, Element, Job, Lavapipe};
 use wcontainers_gpu::reflect::SlotKind;
-use wcontainers_nir::mesa::{Nir, Stage};
+use wcontainers_nir::mesa::Stage;
+
+/// One shader's NIR, owned by Mesa's compiler through our bridge.
+type Nir = wcontainers_nir::mesa::Nir<wcontainers_mesa_compiler_direct::Bridge>;
 
 const PROGRAM: &str = "#version 450
 layout(local_size_x = 4) in;

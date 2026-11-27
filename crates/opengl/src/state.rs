@@ -16,7 +16,7 @@ use wcontainers_gpu::{
     state::RenderTargetBlend, state::StencilFace, state::StencilOp, state::StepMode,
     state::VertexAttribute, state::VertexFormat, state::VertexLayoutDesc, state::VertexStream,
 };
-use wcontainers_nir::mesa::{Assembled, NearestSampler, Nir, Wrap};
+use wcontainers_nir::mesa::{Assembled, NearestSampler, Wrap};
 use wcontainers_shaders::stage::{STREAM_BUFFERS, StreamOutput};
 
 use crate::context::{self, Context};
@@ -26,6 +26,9 @@ use crate::packed::{Packed, packed_format};
 use crate::resource;
 use crate::screen::{DRIVER_NAME, Screen};
 use crate::stream;
+
+/// One shader's NIR, owned by Mesa's compiler through our bridge, the one the driver is linked into.
+pub type Nir = wcontainers_nir::mesa::Nir<wcontainers_mesa_compiler_direct::Bridge>;
 
 /// What a refusal unwinds with to the guest call it ends ([`guest_call`]), its reason already
 /// warned of.

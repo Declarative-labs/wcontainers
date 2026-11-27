@@ -15,6 +15,7 @@ naga = { workspace = true }
 pollster = "1.0.1"
 wcontainers-gpu = { path = "../gpu" }
 wcontainers-gpu-webgpu = { path = "../gpu/implementation/webgpu" }
+wcontainers-mesa-compiler-direct = { path = "../mesa-compiler/implementation/direct" }
 wcontainers-nir = { path = "../nir", default-features = false }
 wcontainers-shaders = { path = "../shaders" }
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "vulkan"] }

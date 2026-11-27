@@ -1,15 +1,15 @@
-//! NIR from the pinned Mesa, owned, with the steps the routes take on it (through `bridge/bridge.c`).
+//! NIR from the pinned Mesa, owned, with the steps the routes take on it, through Mesa's compiler as
+//! the `wcontainers-mesa-compiler` trait gives it (our bridge, `bridge/bridge.c`, behind it).
 
 use crate::ConvertError;
 use crate::bind::{self, KINDS};
 #[cfg(feature = "standalone")]
-use std::ffi::{CStr, CString, c_char};
-#[cfg(feature = "standalone")]
-use std::sync::Once;
+use std::ffi::{CStr, CString};
 use wcontainers_gpu::{reflect::ReflectedBinding, reflect::SLOT_KINDS, shader::ShaderStage};
+use wcontainers_mesa_compiler::{MesaCompiler, constants};
+use zerocopy::TryFromBytes;
 
 /// The program stages the routes take (`enum wc_stage`).
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Vertex,
@@ -28,55 +28,21 @@ impl Stage {
             Stage::Compute => ShaderStage::Compute,
         }
     }
-}
 
-#[repr(C)]
-struct SlotRange {
-    first: u32,
-    slots: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Binding {
-    kind: u32,
-    set: u32,
-    binding: u32,
-    count: u32,
-    new_binding: u32,
-    stride: u32,
-}
-
-#[repr(C)]
-struct Bindings {
-    data: *mut Binding,
-    count: usize,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code, reason = "the bridge makes every value")]
-enum BindResult {
-    Ok,
-    BeyondLimit,
-    Unbounded,
-    OutOfMemory,
-}
-
-#[repr(C)]
-pub(crate) struct NirShader {
-    _opaque: [u8; 0],
-}
-
-#[repr(C)]
-struct Bytes {
-    data: *mut u8,
-    size: usize,
+    /// The stage's number in the bridge's `enum wc_stage`.
+    #[cfg(feature = "standalone")]
+    const fn bridge(self) -> u32 {
+        match self {
+            Stage::Vertex => constants::STAGE_VERTEX,
+            Stage::Fragment => constants::STAGE_FRAGMENT,
+            Stage::Compute => constants::STAGE_COMPUTE,
+        }
+    }
 }
 
 /// What a name of a GLSL program, or a state value, is in one stage (`enum wc_glsl_name_kind`).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 pub enum GlslNameKind {
     /// A default-block uniform: `at` its first word in uniform buffer 0, `count` its words.
@@ -106,8 +72,8 @@ pub enum GlslNameKind {
 }
 
 /// A stage value's interpolation qualifier (`enum wc_glsl_interpolation`).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 pub enum Interpolation {
     Unqualified,
@@ -133,122 +99,15 @@ pub struct GlslName {
 }
 
 /// One stage of a linked GLSL program.
-pub struct GlslStage {
+pub struct GlslStage<M: MesaCompiler> {
     pub stage: Stage,
-    pub nir: Nir,
+    pub nir: Nir<M>,
     pub names: Vec<GlslName>,
-}
-
-#[cfg(feature = "standalone")]
-#[repr(C)]
-struct RawGlslName {
-    kind: GlslNameKind,
-    name: *mut c_char,
-    ty: *mut c_char,
-    interpolation: Interpolation,
-    at: u32,
-    count: u32,
-    element: u32,
-}
-
-#[cfg(feature = "standalone")]
-#[repr(C)]
-struct RawGlslNames {
-    data: *mut RawGlslName,
-    count: usize,
-}
-
-#[cfg(feature = "standalone")]
-#[repr(C)]
-struct GlslProgram {
-    stages: [*mut NirShader; Stage::ALL.len()],
-    names: [RawGlslNames; Stage::ALL.len()],
-    log: *mut c_char,
-}
-
-#[cfg(feature = "standalone")]
-/// A string the bridge owns, copied.
-fn owned_string(text: *const c_char) -> String {
-    if text.is_null() {
-        return String::new();
-    }
-    // SAFETY: the bridge's strings are NUL-terminated until the program is freed.
-    unsafe { CStr::from_ptr(text) }
-        .to_string_lossy()
-        .into_owned()
-}
-
-#[cfg(feature = "standalone")]
-#[repr(C)]
-struct Words {
-    data: *mut u32,
-    count: usize,
-}
-
-unsafe extern "C" {
-    fn wc_compiler_options() -> *const std::ffi::c_void;
-    fn wc_nir_to_common_form(
-        nir: *mut NirShader,
-        set: u32,
-        ranges: *const SlotRange,
-        out: *mut Bindings,
-    ) -> BindResult;
-    fn wc_bindings_free(bindings: *mut Bindings);
-    fn wc_nir_alpha_to_one(nir: *mut NirShader);
-    fn wc_nir_serialize(nir: *const NirShader, out: *mut Bytes) -> bool;
-    fn wc_nir_free(nir: *mut NirShader);
-    fn wc_bytes_free(bytes: *mut Bytes);
-    fn wc_nir_clone(nir: *const NirShader) -> *mut NirShader;
-    fn wc_nir_number_vertex_elements(nir: *mut NirShader) -> u64;
-    fn wc_nir_geometry_vertices_out(nir: *const NirShader) -> u32;
-    fn wc_nir_control_points_out(nir: *const NirShader) -> u32;
-    fn wc_nir_makes_points(nir: *const NirShader) -> bool;
-    fn wc_nir_named_layer_location(nir: *const NirShader) -> u32;
-    fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
-    fn wc_nir_uniform_blocks_as_words(nir: *mut NirShader);
-    fn wc_nir_split_resource_arrays(nir: *mut NirShader);
-    fn wc_nir_textures_1d_as_2d(nir: *mut NirShader);
-    fn wc_nir_drop_name(nir: *mut NirShader);
-    fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
-    fn wc_nir_reads_sample_positions(nir: *mut NirShader) -> bool;
-    fn wc_nir_interpolate_elsewhere(nir: *mut NirShader, samples: u32) -> bool;
-    fn wc_nir_fit_sample_masks(nir: *mut NirShader, single_sampled: bool);
-    fn wc_nir_writes_sample_mask(nir: *mut NirShader) -> bool;
-    fn wc_nir_fetches_target(nir: *mut NirShader) -> bool;
-    fn wc_nir_formatless_images(nir: *mut NirShader) -> u64;
-    fn wc_nir_fetch_from_texture(nir: *mut NirShader, unit: u32, multisampled: bool);
-    fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
-    fn wc_nir_nearest_integer_textures(
-        nir: *mut NirShader,
-        samplers: *const NearestSampler,
-        count: usize,
-    ) -> bool;
-    fn wc_nir_integer_sampled_units(nir: *mut NirShader) -> u64;
-    fn wc_nir_stream_point_size_at_a_location(nir: *mut NirShader);
-    fn wc_nir_generic_end(nir: *const NirShader) -> u32;
-    fn wc_nir_point_size_also_at(nir: *mut NirShader, at: u32) -> bool;
-    fn wc_nir_point_size_at_most(nir: *const NirShader, size: f32) -> bool;
-    fn wc_nir_point_square(vs: *const NirShader, at: u32, largest: f32) -> *mut NirShader;
-    fn wc_nir_geometry_squares(
-        gs: *const NirShader,
-        at: u32,
-        largest: f32,
-        block: u32,
-    ) -> *mut NirShader;
-    fn wc_nir_storage_pass_through(last: *mut NirShader, made: *mut *mut NirShader) -> bool;
-    fn wc_nir_stream_outputs(
-        nir: *const NirShader,
-        outputs: *mut StreamedOutput,
-        capacity: u32,
-        strides: *mut u32,
-        buffers: u32,
-    ) -> u32;
 }
 
 /// One output a vertex program streams (`struct wc_stream_output`): its buffer, its byte offset in
 /// each vertex there, where the route places it (a generic location, or the position), and its
 /// components.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StreamedOutput {
     pub buffer: u32,
@@ -278,7 +137,6 @@ pub enum Swizzle {
 }
 
 /// The swizzle of the texture bound at one texture unit (`struct wc_texture_swizzle`).
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TextureSwizzle {
     pub unit: u32,
@@ -300,7 +158,6 @@ pub enum Wrap {
 /// The sampler at one texture unit whose texture holds integers (`struct wc_nearest_sampler`):
 /// its wraps, whether it selects a level by the level of detail, that level's bounds (as f32
 /// bits), and the border colour's integers.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NearestSampler {
     pub unit: u32,
@@ -336,7 +193,6 @@ impl Assembled {
 
 /// How a vertex program's position (and point size) is changed to meet the host's clip space,
 /// viewport and points (`struct wc_position_transform`).
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PositionTransform {
     /// y negated before the route's own negation, for a Gallium viewport whose y scale is
@@ -351,132 +207,126 @@ pub struct PositionTransform {
     pub fixed_point_size: bool,
 }
 
+/// One shader's NIR, owned by Mesa's compiler `M` and given back when dropped.
+pub struct Nir<M: MesaCompiler> {
+    compiler: M,
+    shader: M::Shader,
+}
+
+/// Each binding kind's range of binding numbers, in the bridge's order of kinds (`enum wc_slot_kind`).
+fn slot_ranges() -> [wcontainers_mesa_compiler::SlotRange; KINDS.len()] {
+    KINDS.map(|k| wcontainers_mesa_compiler::SlotRange {
+        first: SLOT_KINDS[k as usize].first_binding,
+        slots: SLOT_KINDS[k as usize].slots,
+    })
+}
+
+/// A name of a GLSL program as the compiler gave it, its two enumerations checked.
 #[cfg(feature = "standalone")]
-unsafe extern "C" {
-    fn wc_init();
-    fn wc_spirv_to_nir(
-        words: *const u32,
-        count: usize,
-        stage: Stage,
-        entry_point: *const c_char,
-    ) -> *mut NirShader;
-    fn wc_glsl_to_nir(sources: *const *const c_char, out: *mut GlslProgram) -> bool;
-    fn wc_glsl_program_free(program: *mut GlslProgram);
-    fn wc_nir_to_spirv(nir: *mut NirShader, out: *mut Words) -> bool;
-    fn wc_words_free(words: *mut Words);
+fn glsl_name(name: wcontainers_mesa_compiler::GlslName) -> Result<GlslName, ConvertError> {
+    let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+    Ok(GlslName {
+        kind: crate::checked(name.kind, GLSL_NAME_KIND)?,
+        name: name.name.map(text).unwrap_or_default(),
+        ty: name.type_.map(text),
+        interpolation: crate::checked(name.interpolation, GLSL_INTERPOLATION)?,
+        at: name.at,
+        count: name.count,
+        element: name.element,
+    })
 }
 
-/// The `nir_shader_compiler_options` every route takes, a static of the process: a Mesa driver
-/// reports them so that the NIR it is handed has the routes' shape.
-pub fn compiler_options() -> *const std::ffi::c_void {
-    // SAFETY: the bridge returns a pointer to a static.
-    unsafe { wc_compiler_options() }
-}
-
-/// One shader's NIR, freed on drop.
-pub struct Nir(*mut NirShader);
-
-#[cfg(feature = "standalone")]
-/// Mesa's type tables, held for the life of the process (Mesa counts their references).
-fn initialised() {
-    static INIT: Once = Once::new();
-    // SAFETY: wc_init only takes a reference on Mesa's process-wide type tables.
-    INIT.call_once(|| unsafe { wc_init() });
-}
-
-impl Nir {
-    pub(crate) fn raw(&mut self) -> *mut NirShader {
-        self.0
+impl<M: MesaCompiler + Clone> Nir<M> {
+    /// A shader the compiler made, owned with it.
+    fn owned(&self, shader: M::Shader) -> Nir<M> {
+        Nir {
+            compiler: self.compiler.clone(),
+            shader,
+        }
     }
 
-    /// Takes the NIR a Mesa driver was handed (a Gallium shader state's `ir.nir`), freed on drop.
-    ///
-    /// # Safety
-    /// `nir` is a live `nir_shader` the caller owns and does not use again.
-    pub unsafe fn from_raw(nir: *mut std::ffi::c_void) -> Nir {
-        Nir(nir.cast())
+    /// Route B's flat form of the shader (`wc_nir_flatten`), for a tessellation program whose
+    /// input patches have `points_in` control points; `None` when the bridge cannot flatten it.
+    pub(crate) fn flatten(&mut self, points_in: u32) -> Option<wcontainers_mesa_compiler::Flat> {
+        self.compiler.flatten(&mut self.shader, points_in)
     }
 
     /// A copy of the shader, owned apart from it; None when Mesa runs out of memory.
-    pub fn try_clone(&self) -> Option<Nir> {
-        // SAFETY: self.0 is a live shader; the clone is a new allocation.
-        let copy = unsafe { wc_nir_clone(self.0) };
-        (!copy.is_null()).then_some(Nir(copy))
+    pub fn try_clone(&self) -> Option<Nir<M>> {
+        let copy = self.compiler.cloned(&self.shader)?;
+        Some(self.owned(copy))
     }
 
     /// A vertex program's inputs numbered as st/mesa hands its vertex elements over: each
     /// attribute at its rank among those read. Returns the attribute slots read before.
     pub fn number_vertex_elements(&mut self) -> u64 {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_number_vertex_elements(self.0) }
+        self.compiler.number_vertex_elements(&mut self.shader)
     }
 
     /// The most vertices a geometry program emits an invocation; zero for another stage.
     pub fn geometry_vertices_out(&self) -> u32 {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_geometry_vertices_out(self.0) }
+        self.compiler.geometry_vertices_out(&self.shader)
     }
 
     /// For a geometry program writing `gl_Layer`, the location after its generic outputs, where
     /// its pass-through can pass the layer it names on; `None` for one that writes none.
     pub fn named_layer_location(&self) -> Option<u32> {
-        // SAFETY: self.0 is a live shader.
-        let at = unsafe { wc_nir_named_layer_location(self.0) };
+        let at = self.compiler.named_layer_location(&self.shader);
         (at != NO_NAMED_LAYER).then_some(at)
     }
 
     /// The control points of a tessellation control program's output patch; zero for another
     /// stage.
     pub fn control_points_out(&self) -> u32 {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_control_points_out(self.0) }
+        self.compiler.control_points_out(&self.shader)
     }
 
     /// An evaluation program in point mode, or a geometry program whose output is points.
     pub fn makes_points(&self) -> bool {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_makes_points(self.0) }
+        self.compiler.makes_points(&self.shader)
     }
 
     /// gl_FragColor written to each of the first `buffers` draw buffers. Nothing for a program
     /// that does not write it, or of another stage.
     pub fn fragcolor_to_buffers(&mut self, buffers: u32) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_fragcolor_to_buffers(self.0, buffers) }
+        self.compiler
+            .fragcolor_to_buffers(&mut self.shader, buffers);
     }
 
     /// Arrays of textures and samplers read only at constant indices as one variable an
     /// element, at the element's binding.
     pub fn split_resource_arrays(&mut self) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_split_resource_arrays(self.0) }
+        self.compiler.split_resource_arrays(&mut self.shader);
     }
 
     /// Every 1D texture the program samples as a 2D texture of one row, for a driver making its 1D
     /// textures 2D.
     pub fn textures_1d_as_2d(&mut self) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_textures_1d_as_2d(self.0) }
+        self.compiler.textures_1d_as_2d(&mut self.shader);
     }
 
     /// The program's name and label dropped (st/mesa names each by the API program's number), so
     /// that programs of equal content have one [`key`](Nir::key).
     pub fn drop_name(&mut self) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_drop_name(self.0) }
+        self.compiler.drop_name(&mut self.shader);
     }
 
     /// Every uniform block access st/mesa hands over (`load_ubo`, the default uniforms as block
     /// 0) as derefs of one array of words a block, each sized by its block's declared type.
     pub fn uniform_blocks_as_words(&mut self) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_uniform_blocks_as_words(self.0) }
+        self.compiler.uniform_blocks_as_words(&mut self.shader);
     }
 
     /// Every result read from the textures at the units listed rearranged by their swizzle.
     pub fn swizzle_textures(&mut self, swizzles: &[TextureSwizzle]) {
-        // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
-        unsafe { wc_nir_swizzle_textures(self.0, swizzles.as_ptr(), swizzles.len()) }
+        let swizzles: Vec<wcontainers_mesa_compiler::TextureSwizzle> = swizzles
+            .iter()
+            .map(|s| wcontainers_mesa_compiler::TextureSwizzle {
+                unit: s.unit,
+                swizzle: s.swizzle.map(|c| c as u8),
+            })
+            .collect();
+        self.compiler.swizzle_textures(&mut self.shader, &swizzles);
     }
 
     /// Every sampling of an integer texture at the units of `samplers` made a load of its
@@ -486,43 +336,50 @@ impl Nir {
     /// the edge, not the next face's, which is not built.
     #[must_use]
     pub fn nearest_integer_textures(&mut self, samplers: &[NearestSampler]) -> bool {
-        // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
-        unsafe { wc_nir_nearest_integer_textures(self.0, samplers.as_ptr(), samplers.len()) }
+        let samplers: Vec<wcontainers_mesa_compiler::NearestSampler> = samplers
+            .iter()
+            .map(|s| wcontainers_mesa_compiler::NearestSampler {
+                unit: s.unit,
+                wrap: s.wrap.map(|w| w as u8),
+                mipmapped: s.mipmapped,
+                min_lod: f32::from_bits(s.min_lod),
+                max_lod: f32::from_bits(s.max_lod),
+                border: s.border,
+            })
+            .collect();
+        self.compiler
+            .nearest_integer_textures(&mut self.shader, &samplers)
     }
 
     /// The texture units the program samples integers at (not loads, gathers or queries), a bit
     /// each: an integer texture there is sampled by [`Self::nearest_integer_textures`].
     pub fn integer_sampled_units(&mut self) -> u64 {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_integer_sampled_units(self.0) }
+        self.compiler.integer_sampled_units(&mut self.shader)
     }
 
     /// A streamed point size (a built-in the common form keeps and the stage helper does not
     /// stream) also written at a location no output takes, which the stream then names.
     pub fn stream_point_size_at_a_location(&mut self) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_stream_point_size_at_a_location(self.0) }
+        self.compiler
+            .stream_point_size_at_a_location(&mut self.shader);
     }
 
     /// Where the generic locations a fragment program reads, or another stage's program writes,
     /// end.
     pub fn generic_end(&self) -> u32 {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_generic_end(self.0) }
+        self.compiler.generic_end(&self.shader)
     }
 
     /// A vertex program's point size also written at the generic location `at`; false where it
     /// writes none.
     pub fn point_size_also_at(&mut self, at: u32) -> bool {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_point_size_also_at(self.0, at) }
+        self.compiler.point_size_also_at(&mut self.shader, at)
     }
 
     /// Every point size the program writes is a constant no larger than `size`; false where it
     /// writes none. Read after [`Self::point_size_also_at`], which lowers its outputs.
     pub fn point_size_at_most(&self, size: f32) -> bool {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_point_size_at_most(self.0, size) }
+        self.compiler.point_size_at_most(&self.shader, size)
     }
 
     /// A geometry program drawing each point of this vertex program as a square of two triangles
@@ -533,10 +390,9 @@ impl Nir {
     /// as the viewport's scale) and the direction of `gl_PointCoord`'s t (1 where it grows with the
     /// rows, -1 where it falls). `None` for a program writing clip distances or outputs at offsets
     /// known only when run.
-    pub fn point_square(&self, at: u32, largest: f32) -> Option<Nir> {
-        // SAFETY: self.0 is a live shader; the result is a new shader or null.
-        let square = unsafe { wc_nir_point_square(self.0, at, largest) };
-        (!square.is_null()).then_some(Nir(square))
+    pub fn point_square(&self, at: u32, largest: f32) -> Option<Nir<M>> {
+        let square = self.compiler.point_square(&self.shader, at, largest)?;
+        Some(self.owned(square))
     }
 
     /// This geometry program, whose output is points and whose uniform blocks are words
@@ -546,10 +402,11 @@ impl Nir {
     /// [`Self::point_square`]'s block 0's; `gl_PointCoord` at the generic location `at`. `None`
     /// for a program of another output, writing clip distances, outputs at offsets known only
     /// when run or at `at`, or to more than one stream.
-    pub fn geometry_squares(&self, at: u32, largest: f32, block: u32) -> Option<Nir> {
-        // SAFETY: self.0 is a live shader; the result is a new shader or null.
-        let squares = unsafe { wc_nir_geometry_squares(self.0, at, largest, block) };
-        (!squares.is_null()).then_some(Nir(squares))
+    pub fn geometry_squares(&self, at: u32, largest: f32, block: u32) -> Option<Nir<M>> {
+        let squares = self
+            .compiler
+            .geometry_squares(&self.shader, at, largest, block)?;
+        Some(self.owned(squares))
     }
 
     /// For a vertex or evaluation program using storage buffers or images, which runs as compute
@@ -560,12 +417,9 @@ impl Nir {
     /// one, for the primitive it makes. `None` for a program of another stage or using no
     /// storage; an entry is `None` for one writing outputs at offsets known only when run, or a
     /// point size the geometry program cannot read.
-    pub fn storage_pass_through(&mut self) -> Option<[Option<Nir>; Assembled::ALL.len()]> {
-        let mut made = [std::ptr::null_mut(); Assembled::ALL.len()];
-        // SAFETY: self.0 is a live shader; the bridge writes `made`'s entries, each a new shader
-        // or null.
-        let wanted = unsafe { wc_nir_storage_pass_through(self.0, made.as_mut_ptr()) };
-        wanted.then(|| made.map(|geometry| (!geometry.is_null()).then_some(Nir(geometry))))
+    pub fn storage_pass_through(&mut self) -> Option<[Option<Nir<M>>; Assembled::ALL.len()]> {
+        let made = self.compiler.storage_pass_through(&mut self.shader)?;
+        Some(made.map(|geometry| geometry.map(|shader| self.owned(shader))))
     }
 
     /// The outputs the program streams (its transform feedback, none without it) and each of the
@@ -573,37 +427,46 @@ impl Nir {
     /// location nor as the position.
     pub fn stream_outputs<const N: usize>(&self) -> Option<(Vec<StreamedOutput>, [u32; N])> {
         let mut strides = [0; N];
-        let buffers = N as u32;
-        // SAFETY: self.0 is a live shader; the bridge writes at most the capacities given.
-        let count = unsafe {
-            wc_nir_stream_outputs(
-                self.0,
-                std::ptr::null_mut(),
-                0,
-                strides.as_mut_ptr(),
-                buffers,
-            )
-        };
-        let mut outputs = vec![StreamedOutput::default(); count as usize];
-        // SAFETY: as above.
-        let written = unsafe {
-            wc_nir_stream_outputs(
-                self.0,
-                outputs.as_mut_ptr(),
-                count,
-                strides.as_mut_ptr(),
-                buffers,
-            )
-        };
-        (count != STREAMED_ELSEWHERE && written != STREAMED_ELSEWHERE).then_some((outputs, strides))
+        let count = self
+            .compiler
+            .stream_outputs(&self.shader, &mut [], &mut strides);
+        if count == STREAMED_ELSEWHERE {
+            return None;
+        }
+        let mut outputs: Vec<wcontainers_mesa_compiler::StreamOutput> = (0..count)
+            .map(|_| wcontainers_mesa_compiler::StreamOutput {
+                buffer: 0,
+                offset: 0,
+                location: 0,
+                position: false,
+                first_component: 0,
+                components: 0,
+            })
+            .collect();
+        let written = self
+            .compiler
+            .stream_outputs(&self.shader, &mut outputs, &mut strides);
+        (written != STREAMED_ELSEWHERE).then(|| {
+            let outputs = outputs
+                .into_iter()
+                .map(|o| StreamedOutput {
+                    buffer: o.buffer,
+                    offset: o.offset,
+                    location: o.location,
+                    position: o.position,
+                    first_component: o.first_component,
+                    components: o.components,
+                })
+                .collect();
+            (outputs, strides)
+        })
     }
 
     /// Whether a fragment program reads where its samples are (`gl_SamplePosition`,
     /// `interpolateAtSample`, `interpolateAtOffset` of a value read per sample), which depends on
     /// the targets' sample count.
     pub fn reads_sample_positions(&mut self) -> bool {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_reads_sample_positions(self.0) }
+        self.compiler.reads_sample_positions(&mut self.shader)
     }
 
     /// A fragment program's reads of inputs at an offset or at a sample, and of the sample
@@ -611,8 +474,8 @@ impl Nir {
     /// of `samples` samples. False where that count's positions are needed and not known (one,
     /// and the standard patterns of two, four, eight and sixteen, are).
     pub fn interpolate_elsewhere(&mut self, samples: u32) -> bool {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_interpolate_elsewhere(self.0, samples) }
+        self.compiler
+            .interpolate_elsewhere(&mut self.shader, samples)
     }
 
     /// A fragment program's sample masks as OpenGL defines them: `gl_SampleMaskIn` of a program
@@ -620,56 +483,61 @@ impl Nir {
     /// with `single_sampled` targets its writes of `gl_SampleMask` are dropped (OpenGL applies
     /// the mask only as a multisample operation; a host applies its first bit).
     pub fn fit_sample_masks(&mut self, single_sampled: bool) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_fit_sample_masks(self.0, single_sampled) }
+        self.compiler
+            .fit_sample_masks(&mut self.shader, single_sampled);
     }
 
     /// Whether a fragment program writes `gl_SampleMask`, which depends on the targets' sample
     /// count.
     pub fn writes_sample_mask(&mut self) -> bool {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_writes_sample_mask(self.0) }
+        self.compiler.writes_sample_mask(&mut self.shader)
     }
 
     /// Whether a fragment program reads its first target's texels (framebuffer fetch, which
     /// Mesa's lowering of `KHR_blend_equation_advanced` writes).
     pub fn fetches_target(&mut self) -> bool {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_fetches_target(self.0) }
+        self.compiler.fetches_target(&mut self.shader)
     }
 
     /// The image units the program declares images at without a format, a bit each: their stores
     /// take the bound image's format, which the variant converting it names.
     pub fn formatless_images(&mut self) -> u64 {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_formatless_images(self.0) }
+        self.compiler.formatless_images(&mut self.shader)
     }
 
     /// A fragment program's reads of its first target's texels made loads of the texture at
     /// `unit`, a copy of the target the driver binds there, multisampled where the target is.
     pub fn fetch_from_texture(&mut self, unit: u32, multisampled: bool) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_fetch_from_texture(self.0, unit, multisampled) }
+        self.compiler
+            .fetch_from_texture(&mut self.shader, unit, multisampled);
     }
 
     /// A vertex, geometry or tessellation evaluation program's position changed by `transform`.
     /// Nothing for another stage.
     pub fn transform_position(&mut self, transform: PositionTransform) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_transform_position(self.0, transform) }
+        let transform = wcontainers_mesa_compiler::PositionTransform {
+            flip_y: transform.flip_y,
+            half_z: transform.half_z,
+            reverse_z: transform.reverse_z,
+            fixed_point_size: transform.fixed_point_size,
+        };
+        self.compiler
+            .transform_position(&mut self.shader, transform);
     }
 
     #[cfg(feature = "standalone")]
     /// The NIR of one entry point of a Vulkan SPIR-V module.
-    pub fn from_spirv(words: &[u32], stage: Stage, entry_point: &str) -> Result<Nir, ConvertError> {
-        initialised();
+    pub fn from_spirv(
+        words: &[u32],
+        stage: Stage,
+        entry_point: &str,
+    ) -> Result<Nir<M>, ConvertError> {
+        let compiler = M::new();
         let entry = CString::new(entry_point).map_err(|_| ConvertError::Mesa(SPIRV_TO_NIR))?;
-        // SAFETY: the words and the name outlive the call; Mesa copies what it keeps.
-        let nir = unsafe { wc_spirv_to_nir(words.as_ptr(), words.len(), stage, entry.as_ptr()) };
-        if nir.is_null() {
-            return Err(ConvertError::Mesa(SPIRV_TO_NIR));
-        }
-        Ok(Nir(nir))
+        let shader = compiler
+            .spirv_to_nir(words, stage.bridge(), &entry)
+            .ok_or(ConvertError::Mesa(SPIRV_TO_NIR))?;
+        Ok(Nir { compiler, shader })
     }
 
     #[cfg(feature = "standalone")]
@@ -677,95 +545,63 @@ impl Nir {
     /// Mesa's GLSL compiler, then st/mesa's steps for the driver's capabilities (`bridge/glsl.cpp`),
     /// each buffer an array of words; with each stage's names. One entry a source, in
     /// `Stage::ALL`'s order.
-    pub fn from_glsl(sources: &[(Stage, &str)]) -> Result<Vec<GlslStage>, ConvertError> {
-        initialised();
+    pub fn from_glsl(sources: &[(Stage, &str)]) -> Result<Vec<GlslStage<M>>, ConvertError> {
+        let compiler = M::new();
         let owned = sources
             .iter()
             .map(|(stage, text)| Ok((*stage, CString::new(*text)?)))
             .collect::<Result<Vec<_>, std::ffi::NulError>>()
             .map_err(|e| ConvertError::Glsl(e.to_string()))?;
-        let pointers: Vec<*const c_char> = Stage::ALL
+        let texts: [Option<&CStr>; constants::STAGES as usize] = std::array::from_fn(|at| {
+            owned
+                .iter()
+                .find(|(s, _)| Stage::ALL.get(at) == Some(s))
+                .map(|(_, text)| text.as_c_str())
+        });
+        let program = compiler
+            .glsl_to_nir(texts)
+            .map_err(|log| ConvertError::Glsl(String::from_utf8_lossy(&log).into_owned()))?;
+        Stage::ALL
             .iter()
-            .map(|stage| {
-                owned
-                    .iter()
-                    .find(|(s, _)| s == stage)
-                    .map_or(std::ptr::null(), |(_, text)| text.as_ptr())
-            })
-            .collect();
-        let mut program = GlslProgram {
-            stages: [std::ptr::null_mut(); Stage::ALL.len()],
-            names: std::array::from_fn(|_| RawGlslNames {
-                data: std::ptr::null_mut(),
-                count: 0,
-            }),
-            log: std::ptr::null_mut(),
-        };
-        // SAFETY: one source pointer a stage (or null), each alive for the call; the bridge fills
-        // `program` and Mesa copies what it keeps.
-        let linked = unsafe { wc_glsl_to_nir(pointers.as_ptr(), &mut program) };
-        let log = owned_string(program.log);
-        let stages = Stage::ALL
-            .iter()
-            .zip(program.stages.iter_mut().zip(&program.names))
-            .filter(|(_, (nir, _))| !nir.is_null())
-            .map(|(stage, (nir, names))| {
-                let names = if names.data.is_null() {
-                    &[][..]
-                } else {
-                    // SAFETY: the bridge's array of `count` names, alive until the program is freed.
-                    unsafe { std::slice::from_raw_parts(names.data, names.count) }
-                };
-                GlslStage {
-                    stage: *stage,
-                    nir: Nir(std::mem::replace(nir, std::ptr::null_mut())),
-                    names: names
-                        .iter()
-                        .map(|n| GlslName {
-                            kind: n.kind,
-                            name: owned_string(n.name),
-                            ty: (!n.ty.is_null()).then(|| owned_string(n.ty)),
-                            interpolation: n.interpolation,
-                            at: n.at,
-                            count: n.count,
-                            element: n.element,
-                        })
-                        .collect(),
-                }
-            })
-            .collect();
-        // SAFETY: program came from the bridge; the shaders taken above are no longer in it.
-        unsafe { wc_glsl_program_free(&mut program) };
-        if linked {
-            Ok(stages)
-        } else {
-            Err(ConvertError::Glsl(log))
-        }
+            .zip(program.stages.into_iter().zip(program.names))
+            .filter_map(|(stage, (shader, names))| shader.map(|shader| (*stage, shader, names)))
+            .map(
+                |(stage, shader, names)| -> Result<GlslStage<M>, ConvertError> {
+                    Ok(GlslStage {
+                        stage,
+                        nir: Nir {
+                            compiler: compiler.clone(),
+                            shader,
+                        },
+                        names: names.into_iter().map(glsl_name).collect::<Result<_, _>>()?,
+                    })
+                },
+            )
+            .collect()
     }
 
     /// Gives the program of `stage` the common form's meaning (sampled array layers rounded to
     /// integers) and its binding rule ([`crate::bind`]), splitting combined image samplers, and gives
     /// each resource's reflection.
     pub fn to_common_form(&mut self, stage: Stage) -> Result<Vec<ReflectedBinding>, ConvertError> {
-        let ranges = KINDS.map(|k| SlotRange {
-            first: SLOT_KINDS[k as usize].first_binding,
-            slots: SLOT_KINDS[k as usize].slots,
-        });
         let set = bind::stage_set(stage.shader_stage());
-        let mut out = Bindings {
-            data: std::ptr::null_mut(),
-            count: 0,
-        };
-        // SAFETY: self.0 is a live shader, ranges holds one range a kind, and the bridge fills `out`.
-        let result = unsafe { wc_nir_to_common_form(self.0, set, ranges.as_ptr(), &mut out) };
-        let made: Vec<ReflectedBinding> = if out.data.is_null() {
-            Vec::new()
-        } else {
-            // SAFETY: data holds count entries until wc_bindings_free.
-            unsafe { std::slice::from_raw_parts(out.data, out.count) }
-                .iter()
-                .map(|b| ReflectedBinding {
-                    kind: KINDS[b.kind as usize],
+        let made = self
+            .compiler
+            .to_common_form(&mut self.shader, set, &slot_ranges())
+            .map_err(|code| match code {
+                constants::BIND_BEYOND_LIMIT => ConvertError::Bindings(bind::BEYOND_LIMIT),
+                constants::BIND_UNBOUNDED => ConvertError::Bindings(bind::UNBOUNDED),
+                constants::BIND_OUT_OF_MEMORY => ConvertError::Bindings(bind::OUT_OF_MEMORY),
+                other => ConvertError::Unknown(BIND_RESULT, other),
+            })?;
+        made.iter()
+            .map(|b| {
+                let kind = usize::try_from(b.kind)
+                    .ok()
+                    .and_then(|at| KINDS.get(at))
+                    .ok_or(ConvertError::Unknown(SLOT_KIND, b.kind))?;
+                Ok(ReflectedBinding {
+                    kind: *kind,
                     space: b.set,
                     register: b.binding,
                     count: b.count,
@@ -774,24 +610,15 @@ impl Nir {
                     added: None,
                     stride: b.stride,
                 })
-                .collect()
-        };
-        // SAFETY: out came from the bridge and is freed once.
-        unsafe { wc_bindings_free(&mut out) };
-        match result {
-            BindResult::Ok => Ok(made),
-            BindResult::BeyondLimit => Err(ConvertError::Bindings(bind::BEYOND_LIMIT)),
-            BindResult::Unbounded => Err(ConvertError::Bindings(bind::UNBOUNDED)),
-            BindResult::OutOfMemory => Err(ConvertError::Bindings(bind::OUT_OF_MEMORY)),
-        }
+            })
+            .collect()
     }
 
     /// Vulkan's `alphaToOne` and OpenGL's `GL_SAMPLE_ALPHA_TO_ONE` made in a fragment program (plan
     /// 15.4, `AlphaToOneInShader`): Mesa's alpha to coverage demotes the samples alpha does not
     /// cover, then every colour output's alpha is one. Nothing for another stage.
     pub fn alpha_to_one(&mut self) {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_alpha_to_one(self.0) };
+        self.compiler.alpha_to_one(&mut self.shader);
     }
 
     /// The cache's key of what a route converts from this NIR (plan 15.3): BLAKE3 of NIR's serialised
@@ -808,45 +635,18 @@ impl Nir {
 
     /// NIR's serialised bytes, the cache's key with the converter's version (plan 15.3).
     pub fn serialized(&self) -> Result<Vec<u8>, ConvertError> {
-        let mut bytes = Bytes {
-            data: std::ptr::null_mut(),
-            size: 0,
-        };
-        // SAFETY: self.0 is a live shader; the bridge fills `bytes` with memory it allocated.
-        if !unsafe { wc_nir_serialize(self.0, &mut bytes) } {
-            return Err(ConvertError::Mesa(NIR_SERIALIZE));
-        }
-        // SAFETY: data holds size bytes until wc_bytes_free.
-        let copy = unsafe { std::slice::from_raw_parts(bytes.data, bytes.size) }.to_vec();
-        // SAFETY: bytes came from the bridge and is freed once.
-        unsafe { wc_bytes_free(&mut bytes) };
-        Ok(copy)
+        self.compiler
+            .serialize(&self.shader)
+            .ok_or(ConvertError::Mesa(NIR_SERIALIZE))
     }
 
     #[cfg(feature = "standalone")]
     /// Candidate A's first step: SPIR-V written by Zink's compiler (the shader is prepared for it
     /// in place, so it is consumed).
-    pub fn into_spirv(self) -> Result<Vec<u32>, ConvertError> {
-        let mut words = Words {
-            data: std::ptr::null_mut(),
-            count: 0,
-        };
-        // SAFETY: self.0 is a live shader; the bridge fills `words` with memory it allocated.
-        if !unsafe { wc_nir_to_spirv(self.0, &mut words) } {
-            return Err(ConvertError::Mesa(NIR_TO_SPIRV));
-        }
-        // SAFETY: data holds count words until wc_words_free.
-        let copy = unsafe { std::slice::from_raw_parts(words.data, words.count) }.to_vec();
-        // SAFETY: words came from the bridge and is freed once.
-        unsafe { wc_words_free(&mut words) };
-        Ok(copy)
-    }
-}
-
-impl Drop for Nir {
-    fn drop(&mut self) {
-        // SAFETY: self.0 came from the bridge and is freed once.
-        unsafe { wc_nir_free(self.0) };
+    pub fn into_spirv(mut self) -> Result<Vec<u32>, ConvertError> {
+        self.compiler
+            .to_spirv(&mut self.shader)
+            .ok_or(ConvertError::Mesa(NIR_TO_SPIRV))
     }
 }
 
@@ -875,3 +675,9 @@ pub const EGL: &str = env!("WCONTAINERS_EGL");
 pub const SPIRV_TO_NIR: &str = "spirv_to_nir";
 pub const NIR_SERIALIZE: &str = "nir_serialize";
 pub const NIR_TO_SPIRV: &str = "nir_to_spirv";
+
+/// The enumerations named in `ConvertError::Unknown`.
+pub const BIND_RESULT: &str = "enum wc_bind_result";
+pub const SLOT_KIND: &str = "enum wc_slot_kind";
+pub const GLSL_NAME_KIND: &str = "enum wc_glsl_name_kind";
+pub const GLSL_INTERPOLATION: &str = "enum wc_glsl_interpolation";

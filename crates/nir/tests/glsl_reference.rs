@@ -61,7 +61,10 @@ mod table;
 use compare::{CompareOptions, DEFAULT_SEED, INPUT_SETS, SEED, Verdict};
 use wcontainers_gpu::{format::Format, reflect::VariantKey};
 use wcontainers_nir::direct::Rewrites;
-use wcontainers_nir::mesa::{Nir, Stage};
+use wcontainers_nir::mesa::Stage;
+
+/// One shader's NIR, owned by Mesa's compiler through our bridge.
+type Nir = wcontainers_nir::mesa::Nir<wcontainers_mesa_compiler_direct::Bridge>;
 
 const PROGRAM: &str = "#version 430
 layout(local_size_x = 8) in;

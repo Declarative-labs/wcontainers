@@ -25,9 +25,7 @@ use wcontainers_gpu::{
     state::VertexFormat, state::VertexLayoutDesc,
 };
 use wcontainers_nir::direct::Tessellator;
-use wcontainers_nir::mesa::{
-    Assembled, NearestSampler, Nir, PositionTransform, TextureSwizzle, Wrap,
-};
+use wcontainers_nir::mesa::{Assembled, NearestSampler, PositionTransform, TextureSwizzle, Wrap};
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::front::cut_scissors;
 use wcontainers_shaders::stage::{
@@ -40,7 +38,7 @@ use crate::gallium::*;
 use crate::packed::Packed;
 use crate::resource::Resource;
 use crate::screen::Screen;
-use crate::state::{self, Shader, Stage, refuse, refused};
+use crate::state::{self, Nir, Shader, Stage, refuse, refused};
 use crate::view::{FETCHED_UNIT, IDENTITY, Images, View};
 use crate::{indices, outputs, query, stream};
 
@@ -951,7 +949,7 @@ fn convert<B: Gpu>(
 /// runs, made here. Its outputs are written as the fragment program interpolates them.
 fn convert_geometry<B: Gpu>(
     backend: &mut B,
-    nir: &mut wcontainers_nir::mesa::Nir,
+    nir: &mut Nir,
     bindings: Vec<ReflectedBinding>,
     variant: &Variant,
     key: &[u8; wcontainers_shaders::cache::KEY_BYTES],
@@ -1019,7 +1017,7 @@ fn convert_geometry<B: Gpu>(
 /// A tessellation control program through route B in the stage helper's compute form, for input
 /// patches of `variant.points_in` control points and its evaluation program's tessellator.
 fn convert_control<B: Gpu>(
-    nir: &mut wcontainers_nir::mesa::Nir,
+    nir: &mut Nir,
     bindings: Vec<ReflectedBinding>,
     variant: &Variant,
     key: &[u8; wcontainers_shaders::cache::KEY_BYTES],
@@ -1068,7 +1066,7 @@ fn convert_control<B: Gpu>(
 /// the fragment program interpolates them; with the tessellator it declares.
 fn convert_evaluation<B: Gpu>(
     backend: &mut B,
-    nir: &mut wcontainers_nir::mesa::Nir,
+    nir: &mut Nir,
     bindings: Vec<ReflectedBinding>,
     variant: &Variant,
     key: &[u8; wcontainers_shaders::cache::KEY_BYTES],

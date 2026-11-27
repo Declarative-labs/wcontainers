@@ -34,9 +34,12 @@ use spirv::{
     AddressingModel, BuiltIn, Capability, Decoration, ExecutionMode, ExecutionModel, MemoryModel,
     Op, StorageClass,
 };
-use wcontainers_nir::mesa::{Nir, Stage};
+use wcontainers_nir::mesa::Stage;
 use wcontainers_nir::spirv::{WORD_COUNT_SHIFT, validate};
 use wcontainers_shaders::ENTRY_POINT;
+
+/// One shader's NIR, owned by Mesa's compiler through our bridge.
+type Nir = wcontainers_nir::mesa::Nir<wcontainers_mesa_compiler_direct::Bridge>;
 
 /// Every count a shift is run with: all below the width of its 32-bit count.
 const SHIFT_COUNTS: u32 = u32::BITS;

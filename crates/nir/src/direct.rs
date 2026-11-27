@@ -4,8 +4,8 @@
 //! keeps the scalar kind its instruction gives it and every use converts its bits to the kind it
 //! needs.
 
-use crate::ConvertError;
-use crate::mesa::{Nir, NirShader};
+use crate::mesa::Nir;
+use crate::{ConvertError, checked};
 use naga::{
     AddressSpace, BinaryOperator, Binding, Block, BuiltIn, Expression, Function, FunctionArgument,
     GlobalVariable, Handle, ImageClass, ImageDimension, Interpolation, Literal, LocalVariable,
@@ -13,7 +13,6 @@ use naga::{
     ShaderStage, Span, Statement, StorageAccess, StorageFormat, Type, TypeInner, UnaryOperator,
     VectorSize,
 };
-use std::ffi::{CStr, c_char};
 use wcontainers_gpu::format::Format as GpuFormat;
 use wcontainers_gpu::{
     reflect::HELPER_SET, reflect::HelperSlot, reflect::HelperValue, reflect::ReflectedBinding,
@@ -22,6 +21,7 @@ use wcontainers_gpu::{
     reflect::VariantFlags, reflect::VariantKey, resource::CUBE_FACES, shader::ShaderModule,
     shader::ShaderStage as GpuStage, slow::SlowPath,
 };
+use wcontainers_mesa_compiler::MesaCompiler;
 use wcontainers_shaders::cache;
 use wcontainers_shaders::staged::{
     BuiltIn as StagedBuiltIn, DomainProgram, GeometryInput, GeometryOutput, GeometryProgram,
@@ -33,7 +33,7 @@ use zerocopy::TryFromBytes;
 const NONE: u32 = u32::MAX;
 /// A workgroup's size along x, y and z, as naga's entry points hold it.
 type WorkgroupSize = [u32; VectorSize::Tri as usize];
-const SOURCES: usize = 5;
+const SOURCES: usize = wcontainers_mesa_compiler::constants::SOURCES as usize;
 /// The source of an image store holding the value (after the image, coordinate and sample).
 const IMAGE_STORE_VALUE: usize = 3;
 /// A helper block's row, as a uniform block aligns a vector of four words.
@@ -66,8 +66,8 @@ const BOOL_BITS: u32 = 1;
 /// What a 16-bit shift takes of its count, as NIR's 16-bit shifts do.
 const NARROW_SHIFT_MASK: u32 = u16::BITS - 1;
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum FlatScalar {
     Float,
@@ -77,8 +77,8 @@ enum FlatScalar {
     Other,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum TypeKind {
     Scalar,
@@ -92,8 +92,8 @@ enum TypeKind {
     Other,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Dim {
     D1,
@@ -105,7 +105,6 @@ enum Dim {
     Other,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct FlatType {
     kind: TypeKind,
@@ -124,15 +123,14 @@ struct FlatType {
     sampled: FlatScalar,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct FlatField {
     ty: u32,
     offset: i32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum VarMode {
     Input,
@@ -147,8 +145,8 @@ enum VarMode {
     Other,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum FlatBuiltIn {
     None,
@@ -166,8 +164,8 @@ enum FlatBuiltIn {
     Other,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum FlatInterpolation {
     Perspective,
@@ -175,8 +173,8 @@ enum FlatInterpolation {
     Flat,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Format {
     None,
@@ -222,7 +220,6 @@ enum Format {
     Other,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct FlatVar {
     mode: VarMode,
@@ -244,8 +241,8 @@ struct FlatVar {
     invariant: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Kind {
     Alu,
@@ -494,15 +491,13 @@ enum TexSrc {
 }
 const TEX_SRCS: usize = TexSrc::Sample as usize + 1;
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct FlatSrc {
     def: u32,
     swizzle: [u8; VectorSize::MAX],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct FlatInstr {
     kind: Kind,
     op: u32,
@@ -518,11 +513,12 @@ struct FlatInstr {
     arrayed: u32,
     shadow: u32,
     component: u32,
-    name: *const c_char,
+    /// Mesa's name of an operation the route does not take.
+    name: Option<String>,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum FlatStage {
     Vertex,
@@ -535,7 +531,7 @@ enum FlatStage {
 
 /// `enum wc_tess_domain`, in `staged::TessellationDomain`'s order.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum FlatTessDomain {
     Triangles,
@@ -546,7 +542,7 @@ enum FlatTessDomain {
 
 /// `enum wc_tess_spacing`, in `staged::Partitioning`'s order.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum FlatTessSpacing {
     Equal,
@@ -556,7 +552,6 @@ enum FlatTessSpacing {
 }
 
 /// `struct wc_flat_tessellation`.
-#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct FlatTessellation {
     points_in: u32,
@@ -569,7 +564,7 @@ struct FlatTessellation {
 
 /// `enum wc_geometry_input`, in `staged::GeometryInput`'s order.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum FlatGeometryInput {
     Points,
@@ -582,7 +577,7 @@ enum FlatGeometryInput {
 
 /// `enum wc_geometry_output`.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum FlatGeometryOutput {
     Points,
@@ -591,58 +586,157 @@ enum FlatGeometryOutput {
     Other,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct FlatGeometry {
     input: FlatGeometryInput,
     output: FlatGeometryOutput,
-    vertices_in: u32,
     max_vertices: u32,
     invocations: u32,
     streams: u32,
 }
 
-#[repr(C)]
+/// The flat form, read from what the compiler gave with every enumeration checked.
 struct Flat {
     stage: FlatStage,
     workgroup_size: WorkgroupSize,
     early_fragment_tests: u32,
     values: u32,
-    types: *const FlatType,
-    type_count: u32,
-    fields: *const FlatField,
-    field_count: u32,
-    vars: *const FlatVar,
-    var_count: u32,
-    initialisers: *const u32,
-    initialiser_count: u32,
-    instrs: *const FlatInstr,
-    instr_count: u32,
+    types: Vec<FlatType>,
+    fields: Vec<FlatField>,
+    vars: Vec<FlatVar>,
+    instrs: Vec<FlatInstr>,
     geometry: FlatGeometry,
     tessellation: FlatTessellation,
 }
 
-unsafe extern "C" {
-    fn wc_nir_flatten(nir: *mut NirShader, points_in: u32, out: *mut Flat) -> bool;
-    fn wc_flat_free(flat: *mut Flat);
-}
+/// The enumerations named when the compiler gives a number outside one (`ConvertError::Unknown`).
+const SCALAR: &str = "enum wc_scalar";
+const TYPE_KIND: &str = "enum wc_type_kind";
+const DIM: &str = "enum wc_dim";
+const VAR_MODE: &str = "enum wc_var_mode";
+const BUILTIN: &str = "enum wc_builtin";
+const INTERPOLATION: &str = "enum wc_interpolation";
+const STORAGE_FORMAT: &str = "enum wc_storage_format";
+const FLAT_KIND: &str = "enum wc_flat_kind";
+const STAGE_KIND: &str = "enum wc_stage_kind";
+const TESS_DOMAIN: &str = "enum wc_tess_domain";
+const TESS_SPACING: &str = "enum wc_tess_spacing";
+const GEOMETRY_INPUT: &str = "enum wc_geometry_input";
+const GEOMETRY_OUTPUT: &str = "enum wc_geometry_output";
 
-/// The flattened shader, given back to the bridge on drop.
-struct Flattened(Flat);
-
-impl Drop for Flattened {
-    fn drop(&mut self) {
-        // SAFETY: the arrays came from wc_nir_flatten and are freed once.
-        unsafe { wc_flat_free(&mut self.0) };
-    }
-}
-
-fn slice<'a, T>(data: *const T, count: u32) -> &'a [T] {
-    if data.is_null() {
-        &[]
-    } else {
-        // SAFETY: the bridge's arrays hold `count` entries until wc_flat_free.
-        unsafe { std::slice::from_raw_parts(data, count as usize) }
+impl Flat {
+    /// The flat form the compiler gave, every enumeration read by a checked conversion.
+    fn read(flat: wcontainers_mesa_compiler::Flat) -> Result<Flat, ConvertError> {
+        let types = flat
+            .types
+            .iter()
+            .map(|t| {
+                Ok(FlatType {
+                    kind: checked(t.kind, TYPE_KIND)?,
+                    scalar: checked(t.scalar, SCALAR)?,
+                    bits: t.bits,
+                    components: t.components,
+                    columns: t.columns,
+                    length: t.length,
+                    element: t.element,
+                    stride: t.stride,
+                    row_major: t.row_major,
+                    dim: checked(t.dim, DIM)?,
+                    arrayed: t.arrayed,
+                    shadow: t.shadow,
+                    multisampled: t.multisampled,
+                    sampled: checked(t.sampled, SCALAR)?,
+                })
+            })
+            .collect::<Result<_, ConvertError>>()?;
+        let fields = flat
+            .fields
+            .iter()
+            .map(|f| FlatField {
+                ty: f.type_,
+                offset: f.offset,
+            })
+            .collect();
+        let vars = flat
+            .vars
+            .iter()
+            .map(|v| {
+                Ok(FlatVar {
+                    mode: checked(v.mode, VAR_MODE)?,
+                    ty: v.type_,
+                    builtin: checked(v.builtin, BUILTIN)?,
+                    location: v.location,
+                    set: v.set,
+                    binding: v.binding,
+                    interpolation: checked(v.interpolation, INTERPOLATION)?,
+                    centroid: v.centroid,
+                    sample: v.sample,
+                    readable: v.readable,
+                    writable: v.writable,
+                    format: checked(v.format, STORAGE_FORMAT)?,
+                    initialised: v.initialised,
+                    stream: v.stream,
+                    blend_source: v.blend_source,
+                    patch: v.patch,
+                    invariant: v.invariant,
+                })
+            })
+            .collect::<Result<_, ConvertError>>()?;
+        let instrs = flat
+            .instrs
+            .into_iter()
+            .map(|i| {
+                Ok(FlatInstr {
+                    kind: checked(i.kind, FLAT_KIND)?,
+                    op: i.op,
+                    def: i.def,
+                    components: i.components,
+                    bits: i.bits,
+                    sources: i.sources,
+                    src: i.src.map(|s| FlatSrc {
+                        def: s.def,
+                        swizzle: s.swizzle,
+                    }),
+                    value: i.value,
+                    ty: i.type_,
+                    tex: i.tex,
+                    dim: checked(i.dim, DIM)?,
+                    arrayed: i.arrayed,
+                    shadow: i.shadow,
+                    component: i.component,
+                    name: i
+                        .name
+                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+                })
+            })
+            .collect::<Result<_, ConvertError>>()?;
+        let g = &flat.geometry;
+        let t = &flat.tessellation;
+        Ok(Flat {
+            stage: checked(flat.stage, STAGE_KIND)?,
+            workgroup_size: flat.workgroup_size,
+            early_fragment_tests: flat.early_fragment_tests,
+            values: flat.values,
+            types,
+            fields,
+            vars,
+            instrs,
+            geometry: FlatGeometry {
+                input: checked(g.input, GEOMETRY_INPUT)?,
+                output: checked(g.output, GEOMETRY_OUTPUT)?,
+                max_vertices: g.max_vertices,
+                invocations: g.invocations,
+                streams: g.streams,
+            },
+            tessellation: FlatTessellation {
+                points_in: t.points_in,
+                points_out: t.points_out,
+                domain: checked(t.domain, TESS_DOMAIN)?,
+                spacing: checked(t.spacing, TESS_SPACING)?,
+                counter_clockwise: t.counter_clockwise,
+                point_mode: t.point_mode,
+            },
+        })
     }
 }
 
@@ -652,14 +746,10 @@ fn unsupported(what: impl std::fmt::Display) -> ConvertError {
 }
 
 fn name(instr: &FlatInstr) -> String {
-    if instr.name.is_null() {
-        format!("{:?}", instr.kind)
-    } else {
-        // SAFETY: names are Mesa's static strings.
-        unsafe { CStr::from_ptr(instr.name) }
-            .to_string_lossy()
-            .into_owned()
-    }
+    instr
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("{:?}", instr.kind))
 }
 
 /// A NIR value as the module has it.
@@ -836,7 +926,7 @@ pub struct TypedBuffers {
 
 /// Candidate B: the program of `nir` as a naga module, for a program that needs none of the
 /// shaders crate's rewrites (refused by name otherwise). The shader is changed by the preparation.
-pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
+pub fn module<M: MesaCompiler + Clone>(nir: &mut Nir<M>) -> Result<Module, ConvertError> {
     plain(route(nir)?)
 }
 
@@ -882,50 +972,18 @@ pub fn plain(routed: Routed) -> Result<Module, ConvertError> {
 
 /// Candidate B: the program of `nir` as a naga module, with what it leaves for the shaders crate's
 /// rewrites ([`rewrite`]). The shader is changed by the preparation.
-pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
+pub fn route<M: MesaCompiler + Clone>(nir: &mut Nir<M>) -> Result<Routed, ConvertError> {
     route_patches(nir, 0)
 }
 
 /// [`route`], for a tessellation program whose input patches have `points_in` control points (a
 /// control program's draw's patch size, an evaluation program's control program's output).
-pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertError> {
-    let mut flat = Flattened(Flat {
-        stage: FlatStage::Vertex,
-        workgroup_size: WorkgroupSize::default(),
-        early_fragment_tests: 0,
-        values: 0,
-        types: std::ptr::null(),
-        type_count: 0,
-        fields: std::ptr::null(),
-        field_count: 0,
-        vars: std::ptr::null(),
-        var_count: 0,
-        initialisers: std::ptr::null(),
-        initialiser_count: 0,
-        instrs: std::ptr::null(),
-        instr_count: 0,
-        geometry: FlatGeometry {
-            input: FlatGeometryInput::Other,
-            output: FlatGeometryOutput::Other,
-            vertices_in: 0,
-            max_vertices: 0,
-            invocations: 0,
-            streams: 0,
-        },
-        tessellation: FlatTessellation {
-            points_in: 0,
-            points_out: 0,
-            domain: FlatTessDomain::Other,
-            spacing: FlatTessSpacing::Other,
-            counter_clockwise: 0,
-            point_mode: 0,
-        },
-    });
-    // SAFETY: the shader is live; the bridge fills `flat` with arrays it owns.
-    if !unsafe { wc_nir_flatten(nir.raw(), points_in, &mut flat.0) } {
-        return Err(ConvertError::Mesa(FLATTEN));
-    }
-    let f = &flat.0;
+pub fn route_patches<M: MesaCompiler + Clone>(
+    nir: &mut Nir<M>,
+    points_in: u32,
+) -> Result<Routed, ConvertError> {
+    let flat = nir.flatten(points_in).ok_or(ConvertError::Mesa(FLATTEN))?;
+    let f = &Flat::read(flat)?;
     let stage = match f.stage {
         FlatStage::Vertex => ShaderStage::Vertex,
         FlatStage::Fragment => ShaderStage::Fragment,
@@ -936,11 +994,11 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
     };
     let mut b = Builder {
         stage,
-        types: slice(f.types, f.type_count),
-        fields: slice(f.fields, f.field_count),
-        vars: slice(f.vars, f.var_count),
+        types: &f.types,
+        fields: &f.fields,
+        vars: &f.vars,
         module: Module::default(),
-        naga_types: vec![None; f.type_count as usize],
+        naga_types: vec![None; f.types.len()],
         layouter: naga::proc::Layouter::default(),
         function: Function::default(),
         emitter: naga::proc::Emitter::default(),
@@ -948,7 +1006,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
         open: Vec::new(),
         values: vec![None; f.values as usize],
         counts: vec![0; f.values as usize],
-        places: vec![None; f.var_count as usize],
+        places: vec![None; f.vars.len()],
         outputs: Vec::new(),
         builtins: Vec::new(),
         atomic_fields: Vec::new(),
@@ -986,7 +1044,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
         }
         _ => {}
     }
-    let instrs = slice(f.instrs, f.instr_count);
+    let instrs = &f.instrs;
     b.mark_atomics(instrs);
     if let Some(staged) = b.staged.as_mut().filter(|s| s.form == StagedForm::Control) {
         staged.barrier = instrs
@@ -3865,7 +3923,7 @@ impl Builder<'_> {
         let space = coordinate_size(dim);
         let position = self.src(i, 1, space, ScalarKind::Sint)?;
         let layer = if arrayed {
-            let mut instr = *i;
+            let mut instr = i.clone();
             instr.src[1].swizzle[0] = u8::try_from(space).expect("a component");
             Some(self.src(&instr, 1, 1, ScalarKind::Sint)?)
         } else {
@@ -4208,7 +4266,7 @@ impl Builder<'_> {
                 let def = b.tex_src(i, TexSrc::Coord).ok_or_else(|| {
                     unsupported(format_args!("a texture instruction without coordinates"))
                 })?;
-                let mut instr = *i;
+                let mut instr = i.clone();
                 instr.src[0] = FlatSrc {
                     def,
                     swizzle: std::array::from_fn(|c| u8::try_from(c).expect("a component")),

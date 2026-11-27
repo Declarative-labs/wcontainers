@@ -4837,6 +4837,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-mesa-compiler"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-mesa-compiler-direct"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-mesa-compiler",
+]
+
+[[package]]
 name = "wcontainers-metal"
 version = "0.1.0"
 dependencies = [
@@ -4902,6 +4913,8 @@ dependencies = [
  "serde_json",
  "spirv",
  "wcontainers-gpu",
+ "wcontainers-mesa-compiler",
+ "wcontainers-mesa-compiler-direct",
  "wcontainers-shaders",
  "zerocopy",
 ]
@@ -4936,6 +4949,7 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-recording",
  "wcontainers-gpu-webgpu",
+ "wcontainers-mesa-compiler-direct",
  "wcontainers-nir",
  "wcontainers-shaders",
  "wcontainers-win32",

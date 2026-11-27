@@ -6,8 +6,13 @@
 use wcontainers_gpu::{reflect::SLOT_KINDS, reflect::SlotKind, shader::ShaderStage};
 use wcontainers_nir::ConvertError;
 use wcontainers_nir::bind::stage_set;
-use wcontainers_nir::mesa::{Assembled, GlslNameKind, GlslStage, Nir, PositionTransform, Stage};
+use wcontainers_nir::mesa::{Assembled, GlslNameKind, PositionTransform, Stage};
 use wcontainers_shaders::ENTRY_POINT;
+
+/// One shader's NIR, owned by Mesa's compiler through our bridge.
+type Nir = wcontainers_nir::mesa::Nir<wcontainers_mesa_compiler_direct::Bridge>;
+/// One stage of a GLSL program, owned the same way.
+type GlslStage = wcontainers_nir::mesa::GlslStage<wcontainers_mesa_compiler_direct::Bridge>;
 
 const COMPUTE: &str = "
 @group(0) @binding(0) var<storage, read_write> data: array<u32>;

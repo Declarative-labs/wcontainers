@@ -29,6 +29,18 @@ pub enum ConvertError {
     Unsupported(String),
     /// The shaders crate's rewrites (plan 15.4) refused route B's module, with their reason.
     Rewrite(String),
+    /// Mesa's compiler gave a number outside the named enumeration of its bridge.
+    Unknown(&'static str, u32),
+}
+
+/// The variant of `T` (an enumeration of the bridge's, in its order) the compiler gave as `raw`,
+/// refused by the enumeration's name where it is none of them.
+#[cfg(mesa)]
+pub(crate) fn checked<T: zerocopy::TryFromBytes>(
+    raw: u32,
+    enumeration: &'static str,
+) -> Result<T, ConvertError> {
+    T::try_read_from_bytes(&raw.to_ne_bytes()).map_err(|_| ConvertError::Unknown(enumeration, raw))
 }
 
 impl core::fmt::Display for ConvertError {
@@ -41,6 +53,9 @@ impl core::fmt::Display for ConvertError {
             ConvertError::Bindings(why) => write!(f, "bindings: {why}"),
             ConvertError::Unsupported(what) => write!(f, "not taken: {what}"),
             ConvertError::Rewrite(why) => write!(f, "rewrite: {why}"),
+            ConvertError::Unknown(enumeration, raw) => {
+                write!(f, "mesa gave {raw}, no value of {enumeration}")
+            }
         }
     }
 }

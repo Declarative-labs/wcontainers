@@ -24,7 +24,10 @@ use wcontainers_gpu::{
     reflect::VariantKey,
 };
 use wcontainers_nir::direct::{Rewrites, Routed};
-use wcontainers_nir::mesa::{Nir, Stage};
+use wcontainers_nir::mesa::Stage;
+
+/// One shader's NIR, owned by Mesa's compiler through our bridge.
+type Nir = wcontainers_nir::mesa::Nir<wcontainers_mesa_compiler_direct::Bridge>;
 
 /// The corpus's shader files.
 const SPIRV_EXTENSION: &str = "spv";
