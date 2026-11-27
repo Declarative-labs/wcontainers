@@ -3,7 +3,7 @@
 //! process's.
 
 #[allow(dead_code)]
-#[path = "../../directx-graphics-infrastructure/tests/support/record.rs"]
+#[path = "../../directx-graphics-infrastructure/implementation/translated/tests/support/record.rs"]
 mod record;
 #[allow(dead_code)]
 #[path = "support/triangle.rs"]

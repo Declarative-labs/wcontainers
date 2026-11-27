@@ -2,7 +2,7 @@
 //! gt-d3d12 makes it, replayed and checked in the recorded stream.
 
 #[allow(dead_code)]
-#[path = "../../directx-graphics-infrastructure/tests/support/record.rs"]
+#[path = "../../directx-graphics-infrastructure/implementation/translated/tests/support/record.rs"]
 mod record;
 #[path = "support/triangle.rs"]
 mod triangle;
