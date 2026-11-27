@@ -14,6 +14,8 @@ use crate::{
     SmeTrapCode, to_documented_operation,
 };
 
+vstd::prelude::verus! {
+
 /// What a load or store does when its base is the stack pointer and that is not a multiple of 16.
 ///
 /// A chip raises the [alignment fault](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) Linux turns on for every level; QEMU leaves the check out.
@@ -133,6 +135,8 @@ pub enum FaultAddressTag {
     KeepsTopByte,
     ClearsTopNibble,
 }
+
+} // verus!
 
 /// What WFI does at EL0: EL1 traps it where [SCTLR_EL1.nTWI](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SCTLR-EL1--System-Control-Register--EL1-#:~:text=nTWI%2C%20bit%20%5B16%5D) is clear, and it waits for an interrupt or
 /// completes where it is set.

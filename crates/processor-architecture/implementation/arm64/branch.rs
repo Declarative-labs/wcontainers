@@ -3,16 +3,18 @@
 
 use core::convert::Infallible;
 
+use vstd::prelude::*;
+
 use crate::condition_flags::CONDITIONS;
 use crate::integer::{low_ones, read_operands};
 use crate::operand::{Operand, RegisterThirtyOne};
+#[cfg(verus_keep_ghost)]
+use crate::pseudocode::ones;
 use crate::registers::write_register;
 use crate::{Exception, INSTRUCTION_SIZE, Instruction, Processor, VIRTUAL_ADDRESS_BITS};
 
 /// The register a branch with link writes its return address to.
 const LINK_REGISTER: u32 = 30;
-/// The highest bit of an address the top byte of which [TBI0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCR-EL1--Translation-Control-Register--EL1-#:~:text=TBI0%2C%20bit%20%5B37%5D) leaves out; it also tells the lower half of the addresses from the upper.
-const TOP_BYTE_IGNORED_BIT: u32 = 55;
 /// The bits of an address below its 4 KiB page, which ADRP clears.
 const PAGE_OFFSET_BITS: u32 = 12;
 
@@ -215,14 +217,45 @@ pub fn simulate_branch<LevelSpecific>(
     }))
 }
 
+verus! {
+
+/// The highest bit of an address the top byte of which [TBI0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCR-EL1--Translation-Control-Register--EL1-#:~:text=TBI0%2C%20bit%20%5B37%5D) leaves out; it also tells the lower half of the addresses from the upper.
+const TOP_BYTE_IGNORED_BIT: u32 = 55;
+
+/// [BranchAddr](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#AArch64.BranchAddr.2)
+/// of an address at EL0 with TBI0 on and TBI1 off, as Linux configures them: AddrTop is bit 55 for a lower-half address
+/// (bit 55 clear), whose `SignExtend(vaddress<55:0>, 64)` clears the top byte, and bit 63 for an upper-half one, which
+/// it keeps whole.
+pub open spec fn branch_address(vaddress: u64) -> u64 {
+    if (vaddress >> 55u32) & 1 == 1 {
+        vaddress
+    } else {
+        vaddress & (ones(56) as u64)
+    }
+}
+
+/// Whether an address lies outside the lower half's 48 bits once its top byte is left out where TBI0 applies.
+pub open spec fn is_outside_lower(address: u64) -> bool {
+    branch_address(address) >> 48u32 != 0
+}
+
 /// Whether the address is in the upper half, which the top byte of a lower-half address does not count for.
-const fn is_upper_half(address: u64) -> bool {
+const fn is_upper_half(address: u64) -> (upper: bool)
+    ensures
+        upper == ((address >> 55u32) & 1 == 1),
+{
+    proof {
+        assert(((address >> 55u32) & 1 != 0) == ((address >> 55u32) & 1 == 1)) by (bit_vector);
+    }
     (address >> TOP_BYTE_IGNORED_BIT) & 1 != 0
 }
 
 /// Whether the address, its top byte left out where TBI0 applies, lies outside the lower half's 48 bits, which
 /// [faults at level 0](https://developer.arm.com/documentation/ddi0487/latest/#:~:text=Translation%20fault%20at%20level%200) as an address the translation tables do not cover.
-pub(crate) fn is_outside_lower_addresses(address: u64) -> bool {
+pub(crate) fn is_outside_lower_addresses(address: u64) -> (outside: bool)
+    ensures
+        outside == is_outside_lower(address),
+{
     if crate::planted::is(447) {
         return to_untagged_address(address) >> (TOP_BYTE_IGNORED_BIT + 1) != 0;
     }
@@ -231,10 +264,15 @@ pub(crate) fn is_outside_lower_addresses(address: u64) -> bool {
 
 /// The address with its top byte left out where TBI0 applies: where a branch goes, as [BranchAddr](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#AArch64.BranchAddr.2) gives it at EL0
 /// with TBI0 on and TBI1 off as Linux configures them, and what translation looks up for a data access.
-pub(crate) fn to_untagged_address(target: u64) -> u64 {
+pub(crate) fn to_untagged_address(target: u64) -> (untagged: u64)
+    ensures
+        untagged == branch_address(target),
+{
     if is_upper_half(target) && !crate::planted::is(446) {
         target
     } else {
         target & low_ones(TOP_BYTE_IGNORED_BIT + 1)
     }
 }
+
+} // verus!

@@ -12,6 +12,10 @@ use vstd::prelude::*;
 pub mod scalable_access;
 pub mod scalable_element_access;
 
+#[cfg(verus_keep_ghost)]
+use wcontainers_processor_architecture::{
+    Assignment, Memory, apply, apply_all, memory_of, receives,
+};
 use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
 
 use crate::behavior::{
@@ -19,6 +23,8 @@ use crate::behavior::{
     MisalignedExclusive, MisalignedStackPointer, StoreAcrossFault, StoreExclusiveOverlap,
     StoreOfBaseWithWriteback,
 };
+#[cfg(verus_keep_ghost)]
+use crate::branch::{branch_address, is_outside_lower};
 use crate::branch::{is_outside_lower_addresses, to_untagged_address};
 use crate::encoding::Field;
 use crate::integer::{low_ones, read_source};
@@ -40,8 +46,6 @@ const MAXIMUM_REGISTERS: usize = 4;
 const MAXIMUM_BYTES: usize = 2 * size_of::<u128>();
 /// The bytes [FEAT_LSE2](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_LSE2) lets an unaligned ordered or atomic access lie anywhere inside.
 const SINGLE_COPY_ATOMIC_BYTES: u64 = 16;
-/// Where the four tag bits start that a fault address need not keep.
-const UNKNOWN_TAG_BITS_SHIFT: u32 = u64::BITS - u8::BITS / 2;
 /// What a failed store exclusive writes to its status register.
 const STORE_EXCLUSIVE_FAILED: u64 = 1;
 
@@ -1772,6 +1776,58 @@ fn write_back<LevelSpecific>(
     }
 }
 
+verus! {
+
+/// Where the four tag bits start that a fault address need not keep.
+const UNKNOWN_TAG_BITS_SHIFT: u32 = u64::BITS - u8::BITS / 2;
+
+/// The fault an access of one byte at the address takes, none where its page lets it through: a translation fault at
+/// level 0 outside the lower half's addresses, at level 3 where no page is mapped, and a permission fault at level 3
+/// where the page forbids the access.
+pub open spec fn byte_fault(memory: Memory<PagePermission>, address: u64, access: AccessDirection) -> Option<FaultStatus> {
+    if is_outside_lower(address) {
+        Some(FaultStatus::TranslationFaultLevel0)
+    } else {
+        match memory(address).1 {
+            PagePermission::Unmapped => Some(FaultStatus::TranslationFaultLevel3),
+            PagePermission::Mapped { data_access, .. } => match (data_access, access) {
+                (DataAccess::ReadWrite, _) | (DataAccess::ReadOnly, AccessDirection::Read) => None,
+                _ => Some(FaultStatus::PermissionFaultLevel3),
+            },
+        }
+    }
+}
+
+/// The lowest address of the `length` bytes from `start` whose page refuses the access, with its fault.
+pub open spec fn first_fault(memory: Memory<PagePermission>, start: u64, length: nat, access: AccessDirection) -> Option<(u64, FaultStatus)>
+    decreases length,
+{
+    if length == 0 {
+        None
+    } else {
+        match first_fault(memory, start, (length - 1) as nat, access) {
+            Some(found) => Some(found),
+            None => {
+                let address = start.wrapping_add((length - 1) as u64);
+                match byte_fault(memory, address, access) {
+                    Some(status) => Some((address, status)),
+                    None => None,
+                }
+            },
+        }
+    }
+}
+
+/// The address FAR_EL1 gives for a fault at `fault_location` of an access to `address`: the location with its top
+/// byte left out, and the access's tag bits, all of them or all but the top four, as the behavior keeps them.
+pub open spec fn fault_address(address: u64, fault_location: u64, tag: FaultAddressTag) -> u64 {
+    let tag_bits = address ^ branch_address(address);
+    branch_address(fault_location) | match tag {
+        FaultAddressTag::KeepsTopByte => tag_bits,
+        FaultAddressTag::ClearsTopNibble => tag_bits & !(u64::MAX << 60u32),
+    }
+}
+
 /// Writes the bytes at the address, or, where a byte faults, what the behavior across a fault writes.
 pub(crate) fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     memory: &[MemoryDelta<'_, Architecture>],
@@ -1781,18 +1837,57 @@ pub(crate) fn store<Architecture: ProcessorArchitecture<PagePermission = PagePer
     bytes: &[u8],
     across_fault: StoreAcrossFault,
     mutation_hook: &mut impl MemorySink<Architecture>,
-) -> Result<(), Exception> {
+) -> (stored: Result<(), Exception>)
+    ensures
+        match first_fault(memory_of(memory@), location, bytes@.len(), AccessDirection::Write) {
+            None => stored is Ok && receives(
+                *old(mutation_hook),
+                *final(mutation_hook),
+                seq![Assignment::ValueAssignment { start: location, bytes: bytes@ }],
+            ),
+            Some((fault_location, status)) => {
+                let below_fault = bytes@.take(fault_location.wrapping_sub(location) as int);
+                &&& stored == Err::<(), Exception>(Exception::DataAbort {
+                    status,
+                    access: AccessDirection::Write,
+                    address: fault_address(address, fault_location, tag),
+                })
+                &&& receives(
+                    *old(mutation_hook),
+                    *final(mutation_hook),
+                    if across_fault == StoreAcrossFault::WritesBytesBelowFault && below_fault.len() > 0 {
+                        seq![Assignment::ValueAssignment { start: location, bytes: below_fault }]
+                    } else {
+                        Seq::empty()
+                    },
+                )
+            },
+        },
+{
     let access = AccessDirection::Write;
-    if let Some((fault_location, status)) = find_fault(memory, location, bytes.len() as u64, access)
-    {
-        let below_fault = &bytes[..fault_location.wrapping_sub(location) as usize];
-        if (across_fault == StoreAcrossFault::WritesBytesBelowFault || crate::planted::is(40))
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+    }
+    if let Some((fault_location, status)) = find_fault(memory, location, bytes.len() as u64, access) {
+        proof {
+            lemma_first_fault_offset(memory_of(memory@), location, bytes@.len(), access);
+        }
+        let below_fault = slice_prefix(bytes, fault_location.wrapping_sub(location) as usize);
+        // VERUS: no `==` on `StoreAcrossFault` in executable code, so the behavior is matched.
+        if (matches!(across_fault, StoreAcrossFault::WritesBytesBelowFault) || crate::planted::is(40))
             && !below_fault.is_empty()
         {
             mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
                 start: location,
                 bytes: Cow::Borrowed(below_fault),
             });
+            proof {
+                lemma_receives_one(*old(mutation_hook), *mutation_hook, Assignment::ValueAssignment { start: location, bytes: below_fault@ });
+            }
+        } else {
+            proof {
+                lemma_receives_none(*mutation_hook);
+            }
         }
         return Err(Exception::DataAbort {
             status,
@@ -1808,22 +1903,82 @@ pub(crate) fn store<Architecture: ProcessorArchitecture<PagePermission = PagePer
         start: location,
         bytes: Cow::Borrowed(bytes),
     });
+    proof {
+        lemma_receives_one(*old(mutation_hook), *mutation_hook, Assignment::ValueAssignment { start: location, bytes: bytes@ });
+    }
     Ok(())
 }
 
+/// The first `length` bytes of a slice, or all of them where it has fewer.
+fn slice_prefix(bytes: &[u8], length: usize) -> (prefix: &[u8])
+    ensures
+        prefix@ == bytes@.take(if length < bytes@.len() { length as int } else { bytes@.len() as int }),
+{
+    let length = if length < bytes.len() {
+        length
+    } else {
+        bytes.len()
+    };
+    // VERUS: slicing by a range is specified through `subrange`.
+    vstd::slice::slice_subrange(bytes, 0, length)
+}
+
+/// A sink that received one change went from its memory to that change applied to it.
+proof fn lemma_receives_one<Architecture: ProcessorArchitecture, Sink: MemorySink<Architecture>>(
+    before: Sink,
+    after: Sink,
+    change: Assignment<Architecture::PagePermission>,
+)
+    requires
+        forall|memory: Memory<Architecture::PagePermission>|
+            #[trigger] after.applied_to(memory) == apply(before.applied_to(memory), change),
+    ensures
+        receives(before, after, seq![change]),
+{
+    assert forall|memory: Memory<Architecture::PagePermission>|
+        #[trigger] after.applied_to(memory) == apply_all(before.applied_to(memory), seq![change]) by {
+        let changes = seq![change];
+        let none = changes.drop_last();
+        assert(none =~= Seq::<Assignment<Architecture::PagePermission>>::empty());
+        assert(apply_all(before.applied_to(memory), none) == before.applied_to(memory));
+        assert(changes.last() == change);
+        assert(apply_all(before.applied_to(memory), changes) == apply(apply_all(before.applied_to(memory), none), change));
+    }
+}
+
+/// A sink that received nothing holds what it held.
+proof fn lemma_receives_none<Architecture: ProcessorArchitecture, Sink: MemorySink<Architecture>>(sink: Sink)
+    ensures
+        receives(sink, sink, Seq::empty()),
+{
+}
+
+/// Reads the bytes at the address, or returns the fault of the first one whose page forbids reading it.
 pub(crate) fn load<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     memory: &[MemoryDelta<'_, Architecture>],
     address: u64,
     location: u64,
     tag: FaultAddressTag,
     bytes: &mut [u8],
-) -> Result<(), Exception> {
+) -> (loaded: Result<(), Exception>)
+    ensures
+        final(bytes)@.len() == old(bytes)@.len(),
+        match first_fault(memory_of(memory@), location, old(bytes)@.len(), AccessDirection::Read) {
+            None => loaded is Ok && forall|offset: int| 0 <= offset < final(bytes)@.len()
+                ==> #[trigger] final(bytes)@[offset] == memory_of(memory@)(location.wrapping_add(offset as u64)).0,
+            Some((fault_location, status)) => loaded == Err::<(), Exception>(Exception::DataAbort {
+                status,
+                access: AccessDirection::Read,
+                address: fault_address(address, fault_location, tag),
+            }),
+        },
+{
     let access = AccessDirection::Read;
     match find_fault(memory, location, bytes.len() as u64, access) {
         None => {
             read_bytes_into(memory, location, bytes);
             Ok(())
-        }
+        },
         Some((fault_location, status)) => Err(Exception::DataAbort {
             status,
             access,
@@ -1838,33 +1993,90 @@ pub(crate) fn find_fault<Architecture: ProcessorArchitecture<PagePermission = Pa
     start: u64,
     length: u64,
     access: AccessDirection,
-) -> Option<(u64, FaultStatus)> {
-    (0..length)
-        .map(|offset| start.wrapping_add(offset))
-        .find_map(|address| {
-            if is_outside_lower_addresses(address) {
-                return Some((address, FaultStatus::TranslationFaultLevel0));
+) -> (fault: Option<(u64, FaultStatus)>)
+    ensures
+        fault == first_fault(memory_of(memory@), start, length as nat, access),
+{
+    // VERUS: no specification of `Iterator::map` or `find_map`, so the offsets are walked by a loop.
+    let mut offset: u64 = 0;
+    while offset < length
+        invariant
+            offset <= length,
+            first_fault(memory_of(memory@), start, offset as nat, access) is None,
+        decreases length - offset,
+    {
+        let address = start.wrapping_add(offset);
+        proof {
+            assert(first_fault(memory_of(memory@), start, (offset + 1) as nat, access) == match byte_fault(
+                memory_of(memory@),
+                address,
+                access,
+            ) {
+                Some(status) => Some((address, status)),
+                None => None::<(u64, FaultStatus)>,
+            });
+        }
+        if is_outside_lower_addresses(address) {
+            proof {
+                lemma_first_fault_stays(memory_of(memory@), start, (offset + 1) as nat, length as nat, access);
             }
-            let status = match read_permission(memory, address) {
-                PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3,
-                PagePermission::Mapped { data_access, .. } => match (data_access, access) {
-                    (DataAccess::ReadWrite, _) | (DataAccess::ReadOnly, AccessDirection::Read) => {
-                        return None;
-                    }
-                    (DataAccess::ReadOnly, AccessDirection::Write) | (DataAccess::Forbidden, _) => {
-                        FaultStatus::PermissionFaultLevel3
-                    }
+            return Some((address, FaultStatus::TranslationFaultLevel0));
+        }
+        let status = match read_permission(memory, address) {
+            PagePermission::Unmapped => Some(FaultStatus::TranslationFaultLevel3),
+            PagePermission::Mapped { data_access, .. } => match (data_access, access) {
+                (DataAccess::ReadWrite, _) | (DataAccess::ReadOnly, AccessDirection::Read) => None,
+                (DataAccess::ReadOnly, AccessDirection::Write) | (DataAccess::Forbidden, _) => {
+                    Some(FaultStatus::PermissionFaultLevel3)
                 },
-            };
-            Some((address, status))
-        })
+            },
+        };
+        if let Some(status) = status {
+            proof {
+                lemma_first_fault_stays(memory_of(memory@), start, (offset + 1) as nat, length as nat, access);
+            }
+            return Some((address, status));
+        }
+        offset += 1;
+    }
+    None
+}
+
+/// The first fault lies `wrapping_sub(start)` bytes past the start, inside the access.
+proof fn lemma_first_fault_offset(memory: Memory<PagePermission>, start: u64, length: nat, access: AccessDirection)
+    ensures
+        first_fault(memory, start, length, access) matches Some((address, _)) ==> address.wrapping_sub(start) < length
+            && address == start.wrapping_add(address.wrapping_sub(start)),
+    decreases length,
+{
+    if length > 0 {
+        lemma_first_fault_offset(memory, start, (length - 1) as nat, access);
+    }
+}
+
+/// The first fault of a prefix of the bytes is the first fault of all of them.
+proof fn lemma_first_fault_stays(memory: Memory<PagePermission>, start: u64, prefix: nat, length: nat, access: AccessDirection)
+    requires
+        prefix <= length,
+        first_fault(memory, start, prefix, access) is Some,
+    ensures
+        first_fault(memory, start, length, access) == first_fault(memory, start, prefix, access),
+    decreases length - prefix,
+{
+    if prefix < length {
+        lemma_first_fault_stays(memory, start, prefix, (length - 1) as nat, access);
+    }
 }
 
 /// The fault address FAR_EL1 gives for a fault at `fault_location` of an access to `address`, with the tag the
 /// behavior keeps.
-pub(crate) fn to_fault_address(address: u64, fault_location: u64, tag: FaultAddressTag) -> u64 {
+pub(crate) fn to_fault_address(address: u64, fault_location: u64, tag: FaultAddressTag) -> (fault: u64)
+    ensures
+        fault == fault_address(address, fault_location, tag),
+{
     let location = to_untagged_address(fault_location);
-    let tag_bits = if crate::planted::any(&[264, 35]) {
+    // VERUS: `planted::any` has no specification, so it is two `is`.
+    let tag_bits = if crate::planted::is(264) || crate::planted::is(35) {
         0
     } else {
         address ^ to_untagged_address(address)
@@ -1875,6 +2087,8 @@ pub(crate) fn to_fault_address(address: u64, fault_location: u64, tag: FaultAddr
     };
     location | kept
 }
+
+} // verus!
 
 /// Ones in the bits of an access of this many bytes.
 const fn to_value_mask(bytes: u32) -> u64 {
