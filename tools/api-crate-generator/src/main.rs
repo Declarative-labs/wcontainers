@@ -7,6 +7,7 @@
 
 mod api;
 mod complete;
+mod cheader;
 mod emit;
 mod khronos;
 mod layout;
@@ -82,6 +83,20 @@ fn main() -> ExitCode {
         eprintln!("usage: api-crate-generator census|generate <Windows.Win32.winmd> ...");
         return ExitCode::FAILURE;
     };
+    // A C header's census and its default-deny classification (AC11's bridge, AC8's Gallium headers).
+    if command == "c-header" {
+        let texts: Result<Vec<String>, String> = rest.iter().map(|path| std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))).collect();
+        return match texts {
+            Ok(texts) => {
+                print!("{}", cheader::census(&cheader::read(&texts)));
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("api-crate-generator: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     // Khronos's registries, not Microsoft's metadata.
     if let ("khronos", [gl, egl, angle, out]) = (command.as_str(), rest) {
         return match khronos::generate(gl, egl, angle, std::path::Path::new(out)) {
