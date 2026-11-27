@@ -2,6 +2,10 @@
 //! two values whose results differ, so a step that drops or replaces an argument fails here.
 #![cfg(all(mesa, feature = "standalone"))]
 
+#[path = "support/programs.rs"]
+mod programs;
+use programs::{CONTROL, POINT_GEOMETRY, POINT_VERTEX, SHADED_FRAGMENT};
+
 use wcontainers_gpu::{reflect::SlotKind, shader::ShaderStage};
 use wcontainers_mesa_compiler::Flat;
 use wcontainers_nir::bind::stage_set;
@@ -184,39 +188,6 @@ fn each_stage_of_a_linked_program_has_its_own_names() {
     }
 }
 
-const POINT_VERTEX: &str = "#version 450
-layout(location = 0) in vec4 at;
-layout(location = 0) out vec4 passed;
-void main() {
-    gl_Position = at;
-    gl_PointSize = at.w;
-    passed = at;
-}
-";
-
-/// A geometry program taking a point and making two, each with its point size and a layer it names.
-const POINT_GEOMETRY: &str = "#version 450
-layout(points) in;
-layout(points, max_vertices = 2) out;
-layout(location = 0) in vec4 passed[];
-layout(location = 0) out vec4 shaded;
-void main() {
-    for (int copy = 0; copy < 2; copy++) {
-        gl_Position = gl_in[0].gl_Position + vec4(float(copy));
-        gl_PointSize = gl_in[0].gl_PointSize;
-        gl_Layer = copy;
-        shaded = passed[0];
-        EmitVertex();
-    }
-}
-";
-
-const SHADED_FRAGMENT: &str = "#version 450
-layout(location = 0) in vec4 shaded;
-layout(location = 0) out vec4 colour;
-void main() { colour = shaded; }
-";
-
 /// The geometry program of [`POINT_GEOMETRY`] linked with [`POINT_VERTEX`] and [`SHADED_FRAGMENT`].
 fn point_geometry() -> Prepared {
     prepared_of(
@@ -297,20 +268,6 @@ fn a_vertex_programs_squares_follow_their_location_and_largest_size() {
     assert_ne!(flat(at, LARGEST), flat(at + 2, LARGEST));
     assert_ne!(flat(at, LARGEST), flat(at, SMALLER));
 }
-
-const CONTROL: &str = "#version 450
-layout(vertices = 3) out;
-layout(location = 0) in vec4 passed[];
-layout(location = 0) out vec4 handed[];
-void main() {
-    handed[gl_InvocationID] = passed[gl_InvocationID];
-    gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
-    gl_TessLevelOuter[0] = 2.0;
-    gl_TessLevelOuter[1] = 2.0;
-    gl_TessLevelOuter[2] = 2.0;
-    gl_TessLevelInner[0] = 2.0;
-}
-";
 
 /// An evaluation program drawing points, each of the size its patch's first point names.
 const POINT_EVALUATION: &str = "#version 450
@@ -686,4 +643,45 @@ fn a_named_input_carries_its_type() {
     assert!(ty("at").is_some());
     assert!(ty("weight").is_some());
     assert_ne!(ty("at"), ty("weight"));
+}
+
+/// A fragment program reading its first target's texel (framebuffer fetch).
+const FETCHING: &str = "#version 320 es
+#extension GL_EXT_shader_framebuffer_fetch_non_coherent : require
+precision highp float;
+layout(noncoherent, location = 0) inout highp vec4 colour;
+void main() { colour = colour * 0.5; }
+";
+
+#[test]
+fn a_target_fetched_is_read_from_the_unit_and_kind_of_texture_named() {
+    let program = prepared(Stage::Fragment, FETCHING);
+    assert!(program.fetches_target);
+    let flat = |fetch_unit, fetch_multisampled| {
+        let settings = DrawSettings {
+            fetch_unit,
+            fetch_multisampled,
+            ..DrawSettings::default()
+        };
+        flat_with(&program, &settings, &[], &[])
+    };
+    // The common form numbers the texture by its kind, so its unit shows in its reflection.
+    let units = |fetch_unit| {
+        let settings = DrawSettings {
+            fetch_unit,
+            ..DrawSettings::default()
+        };
+        program
+            .variant(&settings, &[], &[])
+            .unwrap()
+            .bindings
+            .iter()
+            .filter(|b| b.kind == SlotKind::Texture)
+            .map(|b| b.register)
+            .collect::<Vec<u32>>()
+    };
+    let (unit, other) = (3, 5);
+    assert_eq!(units(unit), [unit]);
+    assert_eq!(units(other), [other]);
+    assert_ne!(flat(unit, false), flat(unit, true));
 }
