@@ -1514,3 +1514,23 @@ fn a_made_programs_key_layer_and_variant_are_asked_of_it() {
     );
     calls();
 }
+
+#[test]
+fn a_stage_received_through_the_gallium_trait_is_prepared_by_its_own_step() {
+    use wcontainers_nir::mesa::{Received, Staged};
+    let stages: [(Staged<Tag, Tag, Tag, Tag, Tag, Tag>, &str, Stage); 6] = [
+        (Staged::Vertex(VERTEX), "vertex", Stage::Vertex),
+        (Staged::Fragment(FRAGMENT), "fragment", Stage::Fragment),
+        (Staged::Compute(COMPUTE), "compute", Stage::Compute),
+        (Staged::Geometry(GEOMETRY), "geometry", Stage::Geometry),
+        (Staged::TessControl(TESS_CONTROL), "tess control", Stage::TessControl),
+        (Staged::TessEvaluation(TESS_EVALUATION), "tess evaluation", Stage::TessEvaluation),
+    ];
+    for ((shader, step, stage), (_, tag, _)) in stages.into_iter().zip(STAGES) {
+        let prepared = Received::new(Recorder, shader)
+            .prepare()
+            .unwrap_or_else(|_| panic!("prepared"));
+        assert_eq!(calls(), [Call::Prepare { step, shader: tag }], "{stage:?}");
+        assert_eq!(prepared.stage(), stage);
+    }
+}

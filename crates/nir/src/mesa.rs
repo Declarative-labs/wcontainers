@@ -84,7 +84,7 @@ impl<V, F, C, G, TC, TE> Staged<V, F, C, G, TC, TE> {
 }
 
 /// A stage as st/mesa hands it to the driver, of the compiler's type for its stage.
-type ReceivedShader<M> = Staged<
+pub type ReceivedShader<M> = Staged<
     <M as MesaCompiler>::ReceivedVertex,
     <M as MesaCompiler>::ReceivedFragment,
     <M as MesaCompiler>::ReceivedCompute,
@@ -619,6 +619,12 @@ impl<M: MesaCompiler + Clone> GlslStage<M> {
 }
 
 impl<M: MesaCompiler + Clone> Received<M> {
+    /// The stage `shader` as the driver receives it from st/mesa through the Gallium trait,
+    /// owned by `compiler`.
+    pub fn new(compiler: M, shader: ReceivedShader<M>) -> Received<M> {
+        Received { compiler, shader }
+    }
+
     /// The driver's steps at the stage's creation, in its order: the name dropped (so programs of
     /// equal content have one key), uniform blocks as words, resource arrays read at constant
     /// indices split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a
