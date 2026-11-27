@@ -5002,6 +5002,7 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "wcontainers-opengl-es",
+ "wcontainers-opengl-es-conformance",
  "web-sys",
 ]
 

@@ -1296,6 +1296,12 @@ fn query_slot<O: OpenGlEs>(gpu: &mut Gl<O>, set: &QuerySetRef, index: u32) -> Op
     slot.as_deref().copied()
 }
 
+/// Why the device was lost where a query's result waits for a turn of the browser that the host does not
+/// give (no JSPI).
+#[cfg(target_arch = "wasm32")]
+const NO_TURN: &str =
+    "webgl: a query's result waits for a turn of the browser, which this host does not give";
+
 /// Whether every query's result is available.
 fn queries_available<O: OpenGlEs>(gpu: &Gl<O>, queries: &[Option<Rc<u32>>]) -> bool {
     queries
@@ -4767,15 +4773,21 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         };
         if readback.borrow().pbo.is_none() {
             // Natively the results arrive while the device thread spins. WebGL makes them available only
-            // between tasks, so in the browser the thread must give way until they are, through a wait
-            // the OpenGL ES crate's implementation on WebGL is to give (NEEDED-FROM-API-CRATES.md); until
-            // then it loses the device rather than spin for ever.
+            // between the browser's tasks: reading a result waits for it, the OpenGL ES crate's WebGL
+            // implementation giving the browser turns until it is there (the page entered the module
+            // through `WebAssembly.promising`). A host that gives no turn (no JSPI) leaves a result
+            // unavailable, and the device is lost rather than spin for ever.
             #[cfg(target_arch = "wasm32")]
-            if !queries_available(self, &readback.borrow().queries) {
-                unbuilt(
-                    self,
-                    "waiting for query results between the browser's tasks",
-                );
+            {
+                for query in readback.borrow().queries.iter().flatten() {
+                    platform::query_value(&self.gl, **query, gles::QUERY_RESULT);
+                }
+                if !queries_available(self, &readback.borrow().queries) {
+                    if self.lost.is_none() {
+                        self.last_log = NO_TURN.into();
+                    }
+                    fail(self, LossReason::Error);
+                }
             }
             while self.status() == DeviceStatus::Ok
                 && !queries_available(self, &readback.borrow().queries)

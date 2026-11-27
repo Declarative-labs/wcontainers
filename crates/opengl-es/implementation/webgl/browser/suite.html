@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OpenGL ES suite on WebGL 2</title>
+<script type="module">
+// Runs one test of the OpenGL ES conformance suite that needs no EGL, on WebGL 2 contexts, through the crate's
+// examples/browser.rs built for WebAssembly (pkg/browser.js): ?test=<name>; ?list=1 gives the names; ?measure=<queries>
+// measures a query read as soon as it ended. Sets window.done to { ok, message } when it ends; a failing test panics
+// and the module traps, so a page runs one test.
+// A host without JSPI cannot make the module's suspending import; ?nojspi=1 stands in for it, as such a host must.
+const params = new URLSearchParams(location.search);
+if (params.get('nojspi')) {
+  WebAssembly.Suspending = function (inner) { return inner; };
+  WebAssembly.promising = (exported) => async (...args) => exported(...args);
+}
+const { default: init, suite_names, suite_test, suite_measure_queries, suite_report } = await import('./pkg/browser.js');
+let panic = '';
+window.makeContext = () => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 4;
+  canvas.height = 4;
+  const gl = canvas.getContext('webgl2', { antialias: false, depth: false, stencil: false, alpha: true, preserveDrawingBuffer: true });
+  if (!gl) throw new Error('no WebGL 2 context');
+  return gl;
+};
+window.panicked = (message) => { panic = message; };
+try {
+  const wasm = await init();
+  if (params.get('list')) {
+    window.done = { ok: true, message: suite_names() };
+  } else if (params.get('measure')) {
+    suite_measure_queries(Number(params.get('measure')));
+    await WebAssembly.promising(wasm.suite_measure)();
+    window.done = { ok: true, message: suite_report() };
+  } else {
+    suite_test(params.get('test'));
+    // Through JSPI, so that a wait for a query's result suspends the test until the browser's next turn.
+    await WebAssembly.promising(wasm.suite_run)();
+    window.done = { ok: true, message: '' };
+  }
+} catch (e) {
+  window.done = { ok: false, message: panic || String(e) };
+}
+</script>
