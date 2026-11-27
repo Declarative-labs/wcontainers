@@ -551,3 +551,62 @@ backend/src/main.rs 2, generate.rs 8, all the kernel track's; the stand-in's fil
 agent's), simulation 0 to 0, conformance 0 to 0. No marked exception added, no UNSOUND mark, no lint lowered, every crate
 keeps `[lints] workspace = true`. No dependency added. The hostile-guest suite was not run (none exists; the thread-test
 design review is owed to the owner first).
+
+## X3 check repair: the counter read, the whole behavior source suite, LTP on kernel-port's harness (2026-11-27)
+
+### What the check found and the repair (READ: arm64 list `system_register.rs:148-149` on `origin/arm64-instructions`)
+
+- The list names `("DAIF", at(3, 3, 4, 2, 1), A::Trapped)` (SCTLR_EL1.UMA clear): at EL0, MRS X0, DAIF traps to EL1. Since
+  `c4113f822` the stand-in executes it as that trap (`SystemAccessTrapped`), so it is no state the stand-in cannot execute.
+  Repair `5923767b8`: the unexecutable list names WFET X1 (`0xD5031001`) instead, which unicorn stops on as undefined with
+  no syndrome to tell a trap from an undefined instruction.
+- Why the behavior source module did not finish in 1,500 s: each of its tests runs every generated state (33 million at
+  0.68 ms each, about six hours a pass, MEASURED) on one thread. The cut generator is the cause; `5923767b8` gives the
+  module a `Sampled` generator (at most 256 states of each instruction, 596,536 states, MEASURED 34 s for a measuring
+  pass) and does not run `measured_behavior_agrees_with_the_source` on an executor with instructions set aside (its
+  agreement already checks every other instruction).
+- Found on the way, mine: the merge of the arm64 list broke the simulation (`RegisterValueExpectation` became
+  `UncomparedBits`; HINT, MSR immediate gained feature-set behaviors, so the first behavior of HINT is a chip's without
+  FEAT_PAuth and disagreed with XPACLRI's on hint 7). `310aa6eb3`: the simulation draws uncompared bits from its random
+  source; its tests take for each instruction the first behavior that agrees with the more specific encodings' first
+  behaviors. The stand-in reported SSBS, DIT and TCO clear whatever the state held (96 MSR immediate states disagreed):
+  `b828bde70` carries them through (TODO kept: an MSR immediate write of them is not seen), and HINT, which now agrees,
+  leaves the set-aside list (353 to 352).
+
+### MEASURED (Graviton4, release, `-j 12`; job x3b/20261127-075340, synced at the tree of `b828bde70`, pushed)
+
+| Run | Result |
+|---|---|
+| fmt; clippy `-D warnings` (stand-in `--lib --test conformance`, simulation, conformance) | 0; 0; 0 |
+| behavior source, each test alone | next_state 95 s ok; execute_agrees 358 s ok; deterministic 360 s ok; measured 51 s FAILED as expected (`--include-ignored`: set-aside instructions show no one known behavior) |
+| stand-in unit + whole executor suite | 8 of 8; 28 passed, 1 ignored (the measured test), 0 failed, 4,478 s |
+| simulation unit + suite | 9 of 9; 29 of 29 |
+
+Logs: scratch `executor-restart/x3-bsrc/run-b82/`.
+
+### LTP on kernel-port's harness (MEASURED, job x3ltp/20261127-061003 at `ef8ca97de` = kernel-port `353987bad` merged; LTP_JOBS 8, LTP_LIMIT 900 as for the 4,169 runs; load 45 to 156)
+
+- The kernel track took the AddressMap fix (`517923bf4`, `unmap_shared` in `insert`) and the counter emulation (READ).
+  The 30: 30 of 30 verdicts match (was 6 match, 24 hang). The 24 hangs' cause was the kernel's `insert` (found here
+  yesterday, applied by the kernel track); none hangs now.
+- All 4,226: 4,168 match, 58 differ. THE BAR (4,169) IS MISSED BY ONE.
+- Against the 4,169 run `ours-20260930-a9f8631e.tsv`: 4 now pass that timed out (ADSP037, 038, 073, 074); 5 now differ that
+  matched: clock_gettime04 (`CLOCK_REALTIME(gettimeofday)` readings 15 to 17 ms apart), futex_wait05 ("slept for too
+  long"), mtest05, shm_test01, hackbench01 (900 s limit).
+- Rerun of those 5 alone (load 42 to 58): futex_wait05 passes; the other 4 fail the same. A probe with the stand-in's
+  translation drop on writes removed (`af5897634`) gives the same 4: not that. INFERRED: the kernel's new time model or the
+  trapped counter read (each vDSO clock read is now a trap); for the kernel track.
+
+### Milestones
+
+- X3's executor part HOLDS (above): suite 28 + 1 ignored, behavior source three of three that run, 0 `unsafe` in the
+  stand-in's files.
+- X3 IS NOT REACHED: LTP 4,168 of 4,226 (bar 4,169). Next: the kernel track finds why clock_gettime04, mtest05,
+  shm_test01 and hackbench01 slowed since `a9f8631e`; then a full LTP run on a pushed tip.
+
+SECURITY: lines with `unsafe` (`git grep -w unsafe`) before (`922f20713`) and after (`b828bde70`): unicorn 6 to 6 (all in
+the kernel track's harness files), the stand-in's files 0 to 0, simulation 0 to 0, conformance 0 to 0. No marked exception,
+no lint lowered, every crate keeps `[lints] workspace = true`. No dependency added by this track (the lock's changes come
+from the kernel-port merge). All owner interface files byte-identical to his main `ac696ea19` (3 interface files added by
+other tracks exist only here). The hostile-guest suite was not run (none exists; the thread-test design review is owed
+to the owner first).
