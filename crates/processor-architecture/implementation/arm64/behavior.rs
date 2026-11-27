@@ -8,7 +8,9 @@ use crate::load_store::scalable_access::{
 };
 use crate::load_store::{LoadStoreChoices, LoadStoreInstruction};
 use crate::sve::{ScalableOperation, to_scalable_instruction};
-use crate::system_register::{NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS};
+use crate::system_register::{
+    NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS, PRESENTED_SYSTEM_REGISTERS,
+};
 use crate::{
     AccessDirection, DocumentedInstruction, DocumentedOperation, Instruction, PreciseInstruction,
     SmeTrapCode, to_documented_operation,
@@ -438,9 +440,13 @@ fn list_modeled_behaviors(
             } else {
                 AccessDirection::Write
             };
-            [NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS]
-                .map(|choices| PreciseInstruction::SystemRegisterMove { direction, choices })
-                .to_vec()
+            [
+                NEOVERSE_V2_SYSTEM_REGISTERS,
+                OTHER_SYSTEM_REGISTERS,
+                PRESENTED_SYSTEM_REGISTERS,
+            ]
+            .map(|choices| PreciseInstruction::SystemRegisterMove { direction, choices })
+            .to_vec()
         }
         Instruction::Hint | Instruction::MsrImmediate | Instruction::Sys | Instruction::Sysl => {
             crate::system_instruction::list_system_instruction_behaviors(instruction)
