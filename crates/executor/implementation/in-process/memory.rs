@@ -30,8 +30,13 @@ use wcontainers_volatile_bytes::VolatileBytes;
 pub const WINDOW: Range<u64> = 0..OUTSIDE;
 /// The guest's pages: 4 KiB, as [Linux on ARM64](https://docs.kernel.org/arch/arm64/memory.html) gives them by default.
 pub const GUEST_PAGE: u64 = 1 << 12;
-/// The bytes a slot reserves: its window, then as many never mapped.
+/// The bytes a slot reserves: those below its window that translated instructions may reach, its window, then never
+/// mapped bytes up to the next slot's.
 const SLOT_BYTES: u64 = 1 << SLOT_BITS;
+/// The bytes below a window its slot holds never mapped: more than the 61.4 KiB a stack step, a pair or a probe of the
+/// in-process way reaches below the window's base (measured over every piece, crates/translator-confinement), so that
+/// no access lands below a window whether the slot below is held or not.
+const BELOW: u64 = 1 << 16;
 /// The bytes of a slot's slot table: one slot for each of its host addresses.
 const SLOT_TABLE_BYTES: u64 = SLOT_BYTES << SLOT_SHIFT;
 /// The first slot a memory takes: slot 0's window, at host address 0, is no guest's.
@@ -98,7 +103,7 @@ impl InProcessPool {
         self.linux
             .map_file_within(
                 &mut reserved,
-                0,
+                BELOW as usize,
                 OUTSIDE as usize,
                 own.as_fd(),
                 0,
@@ -144,7 +149,7 @@ impl InProcessPool {
             .slot_table();
             let reserved = self
                 .linux
-                .mmap_fixed_noreplace(base as usize, SLOT_BYTES as usize)
+                .mmap_fixed_noreplace((base - BELOW) as usize, SLOT_BYTES as usize)
                 .and_then(|reserved| {
                     let slots = self
                         .linux
@@ -205,7 +210,8 @@ struct Shown {
 /// One memory's slot and what its window shows.
 #[derive(Debug)]
 struct Window {
-    /// The slot's addresses, whose window shows the memory. Dropped before `slot`, so the slot is given back unmapped.
+    /// The slot's addresses from [`BELOW`] under the window, whose window shows the memory. Dropped before `slot`, so
+    /// the slot is given back unmapped.
     reserved: DirectFixedMapping,
     /// The slot table of those addresses, likewise.
     _slots: DirectFixedMapping,
@@ -310,7 +316,7 @@ impl Window {
         for (part, allowed) in permission_parts(&self.permissions, addresses) {
             let protected = DirectLinuxProcess.protect_within(
                 &mut self.reserved,
-                part.start as usize,
+                (BELOW + part.start) as usize,
                 length(&part),
                 host_protection(allowed),
             );
@@ -621,7 +627,7 @@ fn show(
     for (part, allowed) in permission_parts(permissions, addresses) {
         let shown = DirectLinuxProcess.map_file_within(
             reserved,
-            part.start as usize,
+            (BELOW + part.start) as usize,
             length(&part),
             file,
             offset + (part.start - addresses.start),

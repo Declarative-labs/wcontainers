@@ -15,6 +15,10 @@ path = "implementation.rs"
 name = "conformance"
 path = "conformance_run.rs"
 
+[[test]]
+name = "earlier_handlers"
+path = "earlier_handlers.rs"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 wcontainers-linux-process = { path = "../.." }
 # The calls rustix offers: fixed mappings, memory files and their seals, unmapping, the page size.
@@ -28,6 +32,11 @@ memmap2 = "0.9.12"
 
 [dev-dependencies]
 wcontainers-linux-process-conformance = { path = "../../conformance" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Handlers set before a run's, which the earlier-handler test sees called; this thread's id.
+signal-hook = "0.3.18"
+rustix = { version = "1.1.6", default-features = false, features = ["std", "param", "process", "thread"] }
 
 # The bindings of an outside API: it denies unsafe code, so that each of its uses is marked.
 [lints.rust]

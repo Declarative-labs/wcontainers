@@ -31,13 +31,29 @@ const WORD: u64 = 0x0123_4567_89ab_cdef;
 const CTR_EL0_RES1: u64 = 1 << 31;
 /// Where the test of bad addresses searches: apart from the test that checks its page is unmapped after a drop.
 const BAD_ADDRESS_SEARCH_START: usize = SEARCH_START * 7;
-/// Where the code tests search: apart from the others.
+/// Where the instruction tests search: apart from the others.
 const CODE_SEARCH_START: usize = SEARCH_START * 3;
 #[cfg(target_arch = "aarch64")]
 const RUN_SEARCH_START: usize = SEARCH_START * 5;
-/// The pages of code mapped.
+#[cfg(target_arch = "aarch64")]
+const EVERY_REGISTER_SEARCH_START: usize = SEARCH_START * 15;
+#[cfg(target_arch = "aarch64")]
+const REFUSED_RUN_SEARCH_START: usize = SEARCH_START * 17;
+/// The pages of instructions mapped.
 const CODE_PAGES: usize = 2;
-/// Code that changes the thread pointer, the rounding mode, the stack pointer, d8 and x19, then exits (Arm ARM, C6.2):
+/// No window: instructions mapped displaced, whose stack pointer is their own wherever it points.
+#[cfg(target_arch = "aarch64")]
+const NO_WINDOW: core::ops::Range<u64> = 0..0;
+/// The window of the run test's instructions, which holds both their stack pointers, and the register a run sets to
+/// its first address.
+#[cfg(target_arch = "aarch64")]
+const RUN_WINDOW: core::ops::Range<u64> = 0x8_0000..0x40_0000;
+#[cfg(target_arch = "aarch64")]
+const WINDOW_BASE: usize = wcontainers_linux_process::WINDOW_BASE_REGISTER as usize;
+/// A tag in an address's top byte, which the chip ignores in a data address at EL0.
+#[cfg(target_arch = "aarch64")]
+const TAG: u64 = 0x5a << 56;
+/// Instructions that change the thread pointer, the rounding mode, the stack pointer, d8 and x19, then exits (Arm ARM, C6.2):
 /// `add x23, x23, #0x100` (the exit, from its own first address), `movz x5, #0x1234`, `msr tpidr_el0, x5`,
 /// `msr fpcr, x6`, `mov sp, x7`, `fmov d8, xzr`, `movz x19, #0`, `blr x23`.
 #[cfg(target_arch = "aarch64")]
@@ -445,9 +461,9 @@ pub fn shares_words_through_a_file_that_cannot_shrink(linux: impl LinuxProcess) 
     );
 }
 
-/// Maps code where asked, readable and executable, which no one can write, even through `/proc/self/mem`; refuses
-/// what is not whole pages and a place already mapped; unmaps it on drop.
-pub fn maps_code_no_one_can_write(linux: impl LinuxProcess) {
+/// Maps instructions where asked, readable and executable, which no one can write, even through `/proc/self/mem`;
+/// refuses what is not whole pages and a place already mapped; unmaps them on drop.
+pub fn maps_instructions_no_one_can_write(linux: impl LinuxProcess) {
     let page = rustix::param::page_size();
     let (address, held) = fixed_pages(&linux, CODE_SEARCH_START, CODE_PAGES);
     drop(held);
@@ -458,15 +474,19 @@ pub fn maps_code_no_one_can_write(linux: impl LinuxProcess) {
         (address, &code[..0]),
     ] {
         assert_eq!(
-            linux.map_code(at, bytes).err(),
+            linux.map_instructions(at, bytes, 0..0, true).err(),
             Some(Errno::INVAL),
-            "code of {} bytes at {at:#x}",
+            "instructions of {} bytes at {at:#x}",
             bytes.len()
         );
     }
-    let mapping = linux.map_code(address, &code).expect("the code is mapped");
+    let mapping = linux
+        .map_instructions(address, &code, 0..0, true)
+        .expect("the instructions are mapped");
     assert_eq!(
-        linux.map_code(address, &code[..page]).err(),
+        linux
+            .map_instructions(address, &code[..page], 0..0, true)
+            .err(),
         Some(Errno::EXIST)
     );
     for index in 0..CODE_PAGES {
@@ -487,7 +507,7 @@ pub fn maps_code_no_one_can_write(linux: impl LinuxProcess) {
     );
     assert_eq!(bytes_at(address, code.len()), code);
     // The file it is mapped from is sealed: neither a write nor a second, writable mapping of it is allowed.
-    let file = linux.code_file(&mapping);
+    let file = linux.instructions_file(&mapping);
     let seals = rustix::fs::fcntl_get_seals(file).expect("the file's seals");
     assert!(seals.contains(rustix::fs::SealFlags::WRITE), "{seals:?}");
     assert_eq!(rustix::io::pwrite(file, &[0; 8], 0), Err(Errno::PERM));
@@ -495,18 +515,21 @@ pub fn maps_code_no_one_can_write(linux: impl LinuxProcess) {
     assert_eq!(
         writable.map_err(|error| error.raw_os_error()).err(),
         Some(Some(Errno::PERM.raw_os_error())),
-        "a second, writable mapping of the code's file"
+        "a second, writable mapping of the instructions' file"
     );
     assert_eq!(bytes_at(address, code.len()), code);
     drop(mapping);
     assert!(!is_mapped(address));
 }
 
-/// Runs code until it branches to an exit: the code starts with every register the frame gives it, x23 its first
-/// address and x28 the frame's; the frame then holds every register the code left; the thread's own registers, its
-/// thread pointer, rounding mode and the registers a call keeps, which the code changed, are as before.
+/// Runs instructions until they branch to an exit: they start with every register the frame gives them, x23 the first
+/// one's address, x24 the window's and x28 the frame's; the frame then holds every register they left; the thread's
+/// own registers, its thread pointer, rounding mode and the registers a call keeps, which they changed, are as before.
 #[cfg(target_arch = "aarch64")]
-pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProcess + Sync) {
+pub fn runs_instructions_until_an_exit_and_keeps_the_thread_s_own<L: LinuxProcess + Sync>(linux: L)
+where
+    L::InstructionMapping: Sync,
+{
     use wcontainers_linux_process::{Arm64Registers, RunEnd, RunFrame};
     let page = rustix::param::page_size();
     let (address, held) = fixed_pages(&linux, RUN_SEARCH_START, 1);
@@ -515,8 +538,10 @@ pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProce
     for (at, word) in (0..).step_by(size_of::<u32>()).zip(CODE_TO_EXIT) {
         code[at..at + size_of::<u32>()].copy_from_slice(&word.to_le_bytes());
     }
-    code[EXIT_AT..EXIT_AT + EXIT_BYTES].copy_from_slice(&linux.exit_code());
-    let _mapping = linux.map_code(address, &code).expect("the code is mapped");
+    code[EXIT_AT..EXIT_AT + EXIT_BYTES].copy_from_slice(&linux.exit_instructions());
+    let mapping = linux
+        .map_instructions(address, &code, RUN_WINDOW, false)
+        .expect("the instructions are mapped");
     let mut frame = RunFrame::default();
     let mut registers = Arm64Registers::default();
     for (r, value) in registers.x.iter_mut().enumerate() {
@@ -539,7 +564,7 @@ pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProce
     let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
     let control = linux.read_fpcr();
     assert_eq!(tenth().to_bits(), TENTH_ROUNDED_TO_NEAREST);
-    let exit = linux.run_code(&mut thread, &mut frame);
+    let exit = linux.run_instructions(&mut thread, &mapping, &mut frame);
     assert_eq!(THREAD_OWN.get(), WORD, "the thread's own thread-local");
     assert_eq!(
         linux.read_fpcr(),
@@ -557,6 +582,7 @@ pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProce
     let mut wanted = registers;
     wanted.x[EXIT_SCRATCH] = exit_at;
     wanted.x[FRAME] = core::ptr::from_ref(&frame) as u64;
+    wanted.x[WINDOW_BASE] = RUN_WINDOW.start;
     wanted.x[MOVED_TO] = MOVED;
     wanted.x[KEPT_BY_A_CALL] = 0;
     wanted.x[LINK] = address as u64 + (CODE_TO_EXIT.len() * size_of::<u32>()) as u64;
@@ -573,6 +599,7 @@ pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProce
     // Again, on another thread, while this one runs it too.
     std::thread::scope(|scope| {
         let linux = &linux;
+        let mapping = &mapping;
         let runs: Vec<_> = (0..2)
             .map(|_| {
                 scope.spawn(move || {
@@ -581,7 +608,10 @@ pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProce
                         ..RunFrame::default()
                     };
                     let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
-                    (linux.run_code(&mut thread, &mut frame), frame.registers.sp)
+                    (
+                        linux.run_instructions(&mut thread, mapping, &mut frame),
+                        frame.registers.sp,
+                    )
                 })
             })
             .collect();
@@ -600,9 +630,189 @@ fn tenth() -> f64 {
     std::hint::black_box(1.0_f64) / std::hint::black_box(TEN)
 }
 
-/// Code of `instructions` at the first of `CODE_PAGES` free pages at or above `from`, its exit at [`EXIT_AT`].
+/// The encodings of `add xd, xn, #1`, `add xd, xn, xm` and `not vd.16b, vn.16b`, their registers clear
+/// ([Arm ARM, C6.2 and C7.2](https://developer.arm.com/documentation/ddi0602/latest)), and where those lie.
 #[cfg(target_arch = "aarch64")]
-fn code_of<L: LinuxProcess>(linux: &L, from: usize, instructions: &[u32]) -> (u64, L::CodeMapping) {
+const ADD_ONE: u32 = 0x9100_0400;
+#[cfg(target_arch = "aarch64")]
+const ADD_REGISTER: u32 = 0x8b00_0000;
+#[cfg(target_arch = "aarch64")]
+const NOT_VECTOR: u32 = 0x6e20_5800;
+#[cfg(target_arch = "aarch64")]
+const SOURCE_SHIFT: u32 = 5;
+#[cfg(target_arch = "aarch64")]
+const SECOND_SOURCE_SHIFT: u32 = 16;
+/// The general register `add x29, x29, x30` sums into, after its own add.
+#[cfg(target_arch = "aarch64")]
+const SUMMED: usize = 29;
+
+/// Instructions that change every general register they may (all but x23, which they exit through, x28, the frame,
+/// and x30, which their branch to the exit sets) by adding one, add x30 into x29, and invert every vector register;
+/// then exit. Each register's value goes in from the frame and comes back to it: every one is checked.
+#[cfg(target_arch = "aarch64")]
+pub fn takes_every_register_in_and_gives_every_register_back(linux: impl LinuxProcess) {
+    use wcontainers_linux_process::{GENERAL_REGISTERS, RunEnd, RunFrame, VECTOR_REGISTERS};
+    let changed: Vec<usize> = (0..GENERAL_REGISTERS - 1)
+        .filter(|&r| r != EXIT_SCRATCH && r != FRAME)
+        .collect();
+    let mut instructions: Vec<u32> = changed
+        .iter()
+        .map(|&r| ADD_ONE | (r as u32) << SOURCE_SHIFT | r as u32)
+        .collect();
+    instructions.push(
+        ADD_REGISTER
+            | (LINK as u32) << SECOND_SOURCE_SHIFT
+            | (SUMMED as u32) << SOURCE_SHIFT
+            | SUMMED as u32,
+    );
+    instructions.extend((0..VECTOR_REGISTERS as u32).map(|v| NOT_VECTOR | v << SOURCE_SHIFT | v));
+    instructions.extend(TO_EXIT);
+    assert!(instructions.len() * size_of::<u32>() <= EXIT_AT);
+    let (pc, mapping) = mapped_in(
+        &linux,
+        EVERY_REGISTER_SEARCH_START,
+        &instructions,
+        RUN_WINDOW,
+        false,
+    );
+    let mut frame = RunFrame::default();
+    for (r, value) in frame.registers.x.iter_mut().enumerate() {
+        *value = WORD.rotate_left(r as u32 * 3) ^ r as u64;
+    }
+    for (v, value) in frame.registers.v.iter_mut().enumerate() {
+        *value = u128::from(WORD.rotate_right(v as u32)) << 64 | u128::from(!WORD) ^ v as u128;
+    }
+    frame.registers.sp = CODE_STACK;
+    frame.registers.pc = pc;
+    frame.registers.nzcv = FLAGS;
+    frame.registers.fpsr = STATUS;
+    frame.registers.fpcr = ROUND_TOWARD_ZERO;
+    frame.registers.tpidr_el0 = WORD;
+    let before = frame.registers;
+    let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
+    let exit_at = pc + EXIT_AT as u64;
+    assert_eq!(
+        linux.run_instructions(&mut thread, &mapping, &mut frame),
+        RunEnd::Exit(exit_at)
+    );
+    let mut wanted = before;
+    wanted.x[WINDOW_BASE] = RUN_WINDOW.start;
+    for &r in &changed {
+        wanted.x[r] = wanted.x[r].wrapping_add(1);
+    }
+    wanted.x[SUMMED] = wanted.x[SUMMED].wrapping_add(before.x[LINK]);
+    wanted.x[EXIT_SCRATCH] = exit_at;
+    wanted.x[FRAME] = core::ptr::from_ref(&frame) as u64;
+    wanted.x[LINK] = pc + (instructions.len() * size_of::<u32>()) as u64;
+    wanted.pc = wanted.x[LINK];
+    for value in &mut wanted.v {
+        *value = !*value;
+    }
+    let left = frame.registers;
+    let general: Vec<usize> = (0..GENERAL_REGISTERS)
+        .filter(|&r| left.x[r] != wanted.x[r])
+        .collect();
+    let vector: Vec<usize> = (0..VECTOR_REGISTERS)
+        .filter(|&v| left.v[v] != wanted.v[v])
+        .collect();
+    assert_eq!(
+        (general, vector),
+        (vec![], vec![]),
+        "registers not as the instructions left them"
+    );
+    assert_eq!(left, wanted);
+}
+
+/// Refuses, running nothing and changing no register, a `pc` before, after or not at an instruction of the mapping,
+/// and a stack pointer outside the window of instructions that are not displaced; takes a stack pointer inside it
+/// whatever its top byte, and any stack pointer for displaced instructions.
+#[cfg(target_arch = "aarch64")]
+pub fn refuses_a_pc_outside_the_mapping_and_a_stack_outside_the_window(linux: impl LinuxProcess) {
+    use wcontainers_linux_process::RunEnd;
+    let page = rustix::param::page_size() as u64;
+    let (pc, inside) = mapped_in(
+        &linux,
+        REFUSED_RUN_SEARCH_START,
+        &TO_EXIT,
+        RUN_WINDOW,
+        false,
+    );
+    let (displaced_pc, displaced) = mapped_in(
+        &linux,
+        REFUSED_RUN_SEARCH_START + CODE_PAGES * page as usize,
+        &TO_EXIT,
+        RUN_WINDOW,
+        true,
+    );
+    let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
+    let in_window = RUN_WINDOW.start + page;
+    let refused = [
+        (pc - size_of::<u32>() as u64, in_window),
+        (pc + page, in_window),
+        (pc + 1, in_window),
+        (displaced_pc, in_window),
+        (0, in_window),
+        (pc, RUN_WINDOW.start - 1),
+        (pc, RUN_WINDOW.end),
+        (pc, RUN_WINDOW.end | TAG),
+        (pc, 0),
+    ];
+    for (start, stack) in refused {
+        let mut frame = frame_at(start, 0, stack);
+        let before = frame.clone();
+        assert_eq!(
+            linux.run_instructions(&mut thread, &inside, &mut frame),
+            RunEnd::Refused,
+            "pc {start:#x}, stack pointer {stack:#x}"
+        );
+        assert_eq!(frame, before, "pc {start:#x}, stack pointer {stack:#x}");
+    }
+    let last = pc + page - size_of::<u32>() as u64;
+    for (start, stack, exit) in [
+        (pc, RUN_WINDOW.start, Some(pc + EXIT_AT as u64)),
+        (pc, RUN_WINDOW.end - 1, Some(pc + EXIT_AT as u64)),
+        (pc, in_window | TAG, Some(pc + EXIT_AT as u64)),
+        // The page's last word is zero, an undefined instruction: entered, and raised there.
+        (last, in_window, None),
+    ] {
+        let mut frame = frame_at(start, 0, stack);
+        let end = linux.run_instructions(&mut thread, &inside, &mut frame);
+        let wanted = exit.map_or(RunEnd::Raised(Signal::ILL), RunEnd::Exit);
+        assert_eq!(end, wanted, "pc {start:#x}, stack pointer {stack:#x}");
+        assert_eq!(frame.registers.x[WINDOW_BASE], RUN_WINDOW.start);
+    }
+    for stack in [0, RUN_WINDOW.end, u64::MAX] {
+        let mut frame = frame_at(displaced_pc, 0, stack);
+        assert_eq!(
+            linux.run_instructions(&mut thread, &displaced, &mut frame),
+            RunEnd::Exit(displaced_pc + EXIT_AT as u64),
+            "displaced, stack pointer {stack:#x}"
+        );
+        assert_eq!(frame.registers.sp, stack);
+    }
+}
+
+/// `instructions` mapped displaced at the first of `CODE_PAGES` free pages at or above `from`, their exit at
+/// [`EXIT_AT`].
+#[cfg(target_arch = "aarch64")]
+fn code_of<L: LinuxProcess>(
+    linux: &L,
+    from: usize,
+    instructions: &[u32],
+) -> (u64, L::InstructionMapping) {
+    mapped_in(linux, from, instructions, NO_WINDOW, true)
+}
+
+/// `instructions` at the first of `CODE_PAGES` free pages at or above `from`, made for `window`, their exit at
+/// [`EXIT_AT`].
+#[cfg(target_arch = "aarch64")]
+fn mapped_in<L: LinuxProcess>(
+    linux: &L,
+    from: usize,
+    instructions: &[u32],
+    window: core::ops::Range<u64>,
+    displaced: bool,
+) -> (u64, L::InstructionMapping) {
     let page = rustix::param::page_size();
     let (address, held) = fixed_pages(linux, from, CODE_PAGES);
     drop(held);
@@ -610,8 +820,10 @@ fn code_of<L: LinuxProcess>(linux: &L, from: usize, instructions: &[u32]) -> (u6
     for (at, word) in (0..).step_by(size_of::<u32>()).zip(instructions) {
         code[at..at + size_of::<u32>()].copy_from_slice(&word.to_le_bytes());
     }
-    code[EXIT_AT..EXIT_AT + EXIT_BYTES].copy_from_slice(&linux.exit_code());
-    let mapping = linux.map_code(address, &code).expect("the code is mapped");
+    code[EXIT_AT..EXIT_AT + EXIT_BYTES].copy_from_slice(&linux.exit_instructions());
+    let mapping = linux
+        .map_instructions(address, &code, window, displaced)
+        .expect("the instructions are mapped");
     (address as u64, mapping)
 }
 
@@ -631,7 +843,7 @@ fn frame_at(pc: u64, address: u64, sp: u64) -> wcontainers_linux_process::RunFra
 /// Ends a run at an access that faults, whether for its page or its alignment, and at an instruction that raises a
 /// signal: the frame holds the registers at the instruction, and the thread goes on as before.
 #[cfg(target_arch = "aarch64")]
-pub fn ends_a_run_at_a_fault_of_its_code(linux: impl LinuxProcess) {
+pub fn ends_a_run_at_a_fault_of_its_instructions(linux: impl LinuxProcess) {
     use wcontainers_linux_process::RunEnd;
     let page = rustix::param::page_size();
     let (unmapped, held) = fixed_pages(&linux, FAULT_SEARCH_START, 1);
@@ -692,7 +904,7 @@ pub fn ends_a_run_at_a_fault_of_its_code(linux: impl LinuxProcess) {
     let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
     for (k, (instruction, address, stack, wanted, branches)) in cases.into_iter().enumerate() {
         let from = FAULT_SEARCH_START + (k + 1) * CODE_PAGES * page;
-        let (pc, _code) = code_of(&linux, from, &[instruction, TO_EXIT[0], TO_EXIT[1]]);
+        let (pc, code) = code_of(&linux, from, &[instruction, TO_EXIT[0], TO_EXIT[1]]);
         // A branch to a misaligned address in the code faults at that address.
         let (address, wanted, ends_at) = if branches {
             let target = pc + 1;
@@ -703,11 +915,12 @@ pub fn ends_a_run_at_a_fault_of_its_code(linux: impl LinuxProcess) {
         let mut frame = frame_at(pc, address, stack);
         let before = frame.registers;
         THREAD_OWN.set(WORD);
-        let end = linux.run_code(&mut thread, &mut frame);
+        let end = linux.run_instructions(&mut thread, &code, &mut frame);
         assert_eq!(end, wanted, "the instruction {instruction:#010x}");
         let mut at_fault = before;
         at_fault.x[EXIT_SCRATCH] = pc;
         at_fault.x[FRAME] = core::ptr::from_ref(&frame) as u64;
+        at_fault.x[WINDOW_BASE] = NO_WINDOW.start;
         assert_eq!(frame.registers.x, at_fault.x);
         assert_eq!(frame.registers.pc, ends_at);
         assert_eq!(frame.registers.sp, stack);
@@ -715,32 +928,34 @@ pub fn ends_a_run_at_a_fault_of_its_code(linux: impl LinuxProcess) {
     }
 }
 
-/// Stops running code with the stop signal from another thread, and takes the signal on the thread's own signal stack,
-/// never at the code's stack pointer, whether that points into this process's memory or at nothing.
+/// Stops running instructions with the stop signal from another thread, and takes the signal on the thread's own signal stack,
+/// never at their stack pointer, whether that points into this process's memory or at nothing.
 #[cfg(target_arch = "aarch64")]
-pub fn stops_a_run_on_its_signal_stack_whatever_the_code_s_stack_pointer(
-    linux: impl LinuxProcess + Sync,
-) {
+pub fn stops_a_run_on_its_signal_stack_whatever_its_stack_pointer<L: LinuxProcess + Sync>(linux: L)
+where
+    L::InstructionMapping: Sync,
+{
     use wcontainers_linux_process::{RUN_STOP_SIGNAL, RunEnd};
     let page = rustix::param::page_size();
     let hostile = vec![WORD; HOSTILE_STACK_WORDS];
     let into_this_process = hostile.as_ptr() as u64 + (hostile.len() * size_of::<u64>()) as u64;
     let (nothing, held) = fixed_pages(&linux, STOP_SEARCH_START, 1);
     drop(held);
-    let (pc, _code) = code_of(&linux, STOP_SEARCH_START + page, &[BRANCH_TO_ITSELF]);
+    let (pc, code) = code_of(&linux, STOP_SEARCH_START + page, &[BRANCH_TO_ITSELF]);
     for stack in [into_this_process, nothing as u64 + page as u64, 0] {
         let ran = AtomicBool::new(false);
         let (tid_sender, tid) = std::sync::mpsc::channel();
         let end = std::thread::scope(|scope| {
             let linux = &linux;
             let ran = &ran;
+            let code = &code;
             let runner = scope.spawn(move || {
                 let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
                 tid_sender.send(own_thread()).expect("the test waits");
                 THREAD_OWN.set(WORD);
                 let mut frame = frame_at(pc, 0, stack);
                 let end = loop {
-                    match linux.run_code(&mut thread, &mut frame) {
+                    match linux.run_instructions(&mut thread, code, &mut frame) {
                         RunEnd::NotEntered => {}
                         end => break end,
                     }
@@ -769,29 +984,104 @@ pub fn stops_a_run_on_its_signal_stack_whatever_the_code_s_stack_pointer(
         );
         assert!(
             hostile.iter().all(|word| *word == WORD),
-            "no signal frame written at the code's stack pointer"
+            "no signal frame written at the instructions' stack pointer"
         );
     }
 }
 
-/// A stop that reaches a prepared thread before its run ends the run before its code starts, the frame unchanged; the
-/// next run goes on as usual.
+/// A stop that reaches a prepared thread before its run ends the run before its instructions start, the frame as they
+/// would start; the next run goes on as usual.
 #[cfg(target_arch = "aarch64")]
-pub fn ends_a_run_before_its_code_at_a_stop_that_came_before(linux: impl LinuxProcess) {
+pub fn ends_a_run_before_its_instructions_at_a_stop_that_came_before(linux: impl LinuxProcess) {
     use wcontainers_linux_process::{RUN_STOP_SIGNAL, RunEnd};
-    let (pc, _code) = code_of(&linux, EARLY_STOP_SEARCH_START, &TO_EXIT);
+    let (pc, code) = code_of(&linux, EARLY_STOP_SEARCH_START, &TO_EXIT);
     let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
     linux
         .tgkill(own_process(), own_thread(), RUN_STOP_SIGNAL)
         .expect("this thread is signalled");
     let mut frame = frame_at(pc, 0, CODE_STACK);
-    let before = frame.clone();
-    assert_eq!(linux.run_code(&mut thread, &mut frame), RunEnd::NotEntered);
-    assert_eq!(frame.registers, before.registers);
+    let mut before = frame.registers;
+    before.x[WINDOW_BASE] = NO_WINDOW.start;
     assert_eq!(
-        linux.run_code(&mut thread, &mut frame),
+        linux.run_instructions(&mut thread, &code, &mut frame),
+        RunEnd::NotEntered
+    );
+    assert_eq!(frame.registers, before);
+    assert_eq!(
+        linux.run_instructions(&mut thread, &code, &mut frame),
         RunEnd::Exit(pc + EXIT_AT as u64)
     );
+}
+
+/// Runs of a short piece one after another while another thread sends the stop signal as fast as it can.
+#[cfg(target_arch = "aarch64")]
+const STOPPED_RUNS: usize = 20_000;
+/// The stops the runs go on until, unless that takes longer than the longest storm.
+#[cfg(target_arch = "aarch64")]
+const STOPS_WANTED: usize = 2_000;
+#[cfg(target_arch = "aarch64")]
+const STORM_LONGEST: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(target_arch = "aarch64")]
+const STOP_STORM_SEARCH_START: usize = SEARCH_START * 19;
+
+/// Stops that land anywhere, in the run's own entry and exit instructions too, end a run only where its instructions
+/// may go on: a run stopped is run again from its frame until it exits, and then every register is what the
+/// instructions alone leave, however many stops came.
+#[cfg(target_arch = "aarch64")]
+pub fn keeps_every_register_through_stops_that_land_anywhere<L: LinuxProcess + Sync>(linux: L)
+where
+    L::InstructionMapping: Sync,
+{
+    use wcontainers_linux_process::{RUN_STOP_SIGNAL, RunEnd};
+    let (pc, code) = code_of(&linux, STOP_STORM_SEARCH_START, &TO_EXIT);
+    let exit_at = pc + EXIT_AT as u64;
+    let done = AtomicBool::new(false);
+    let (tid_sender, tid) = std::sync::mpsc::channel();
+    let (stops, refused) = std::thread::scope(|scope| {
+        let linux = &linux;
+        let code = &code;
+        let done = &done;
+        let runner = scope.spawn(move || {
+            let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
+            tid_sender.send(own_thread()).expect("the test waits");
+            let mut stops = 0_usize;
+            let mut wrong = Vec::new();
+            let started = std::time::Instant::now();
+            let mut run = 0;
+            while run < STOPPED_RUNS || (stops < STOPS_WANTED && started.elapsed() < STORM_LONGEST)
+            {
+                run += 1;
+                let mut frame = frame_at(pc, 0, CODE_STACK);
+                let start = frame.registers;
+                let end = loop {
+                    match linux.run_instructions(&mut thread, code, &mut frame) {
+                        RunEnd::NotEntered | RunEnd::Stopped => stops += 1,
+                        end => break end,
+                    }
+                };
+                let mut wanted = start;
+                wanted.x[EXIT_SCRATCH] = exit_at;
+                wanted.x[WINDOW_BASE] = NO_WINDOW.start;
+                wanted.x[FRAME] = core::ptr::from_ref(&frame) as u64;
+                wanted.x[LINK] = pc + (TO_EXIT.len() * size_of::<u32>()) as u64;
+                wanted.pc = wanted.x[LINK];
+                if end != RunEnd::Exit(exit_at) || frame.registers != wanted {
+                    wrong.push((run, end, frame.registers.pc));
+                }
+            }
+            done.store(true, Ordering::Release);
+            (stops, wrong)
+        });
+        let thread = tid.recv().expect("the runner's thread");
+        // The runner's thread may end between the last look and a stop, which is then refused.
+        while !done.load(Ordering::Acquire) {
+            let _ = linux.tgkill(own_process(), thread, RUN_STOP_SIGNAL);
+        }
+        runner.join().expect("the runner ends")
+    });
+    eprintln!("stops taken: {stops}");
+    assert_eq!(refused, [], "runs that ended wrong: (run, end, pc)");
+    assert!(stops > 0, "no stop came");
 }
 
 /// The signals this thread blocks, read from `/proc/thread-self/status`.
@@ -928,32 +1218,50 @@ macro_rules! tests {
         }
 
         #[test]
-        fn maps_code_no_one_can_write() {
-            $crate::maps_code_no_one_can_write($value);
+        fn maps_instructions_no_one_can_write() {
+            $crate::maps_instructions_no_one_can_write($value);
         }
 
         #[cfg(target_arch = "aarch64")]
         #[test]
-        fn runs_code_until_an_exit_and_keeps_the_thread_s_own() {
-            $crate::runs_code_until_an_exit_and_keeps_the_thread_s_own($value);
+        fn runs_instructions_until_an_exit_and_keeps_the_thread_s_own() {
+            $crate::runs_instructions_until_an_exit_and_keeps_the_thread_s_own($value);
         }
 
         #[cfg(target_arch = "aarch64")]
         #[test]
-        fn ends_a_run_at_a_fault_of_its_code() {
-            $crate::ends_a_run_at_a_fault_of_its_code($value);
+        fn takes_every_register_in_and_gives_every_register_back() {
+            $crate::takes_every_register_in_and_gives_every_register_back($value);
         }
 
         #[cfg(target_arch = "aarch64")]
         #[test]
-        fn stops_a_run_on_its_signal_stack_whatever_the_code_s_stack_pointer() {
-            $crate::stops_a_run_on_its_signal_stack_whatever_the_code_s_stack_pointer($value);
+        fn refuses_a_pc_outside_the_mapping_and_a_stack_outside_the_window() {
+            $crate::refuses_a_pc_outside_the_mapping_and_a_stack_outside_the_window($value);
         }
 
         #[cfg(target_arch = "aarch64")]
         #[test]
-        fn ends_a_run_before_its_code_at_a_stop_that_came_before() {
-            $crate::ends_a_run_before_its_code_at_a_stop_that_came_before($value);
+        fn ends_a_run_at_a_fault_of_its_instructions() {
+            $crate::ends_a_run_at_a_fault_of_its_instructions($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn stops_a_run_on_its_signal_stack_whatever_its_stack_pointer() {
+            $crate::stops_a_run_on_its_signal_stack_whatever_its_stack_pointer($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn ends_a_run_before_its_instructions_at_a_stop_that_came_before() {
+            $crate::ends_a_run_before_its_instructions_at_a_stop_that_came_before($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn keeps_every_register_through_stops_that_land_anywhere() {
+            $crate::keeps_every_register_through_stops_that_land_anywhere($value);
         }
 
         #[cfg(target_arch = "aarch64")]
