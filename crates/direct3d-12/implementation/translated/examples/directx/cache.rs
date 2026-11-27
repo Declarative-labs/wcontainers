@@ -58,6 +58,6 @@ fn open_in(dir: PathBuf) -> std::io::Result<()> {
         file.write_all(cache.bytes())?;
     }
     file.seek(SeekFrom::End(0))?;
-    wcontainers_direct3d_12::cache::open(cache, Box::new(file));
+    wcontainers_direct3d_12_translated::cache::open(cache, Box::new(file));
     Ok(())
 }

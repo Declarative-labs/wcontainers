@@ -3,20 +3,20 @@
 
 use std::sync::Arc;
 
-use wcontainers_direct3d_12::list::*;
-use wcontainers_direct3d_12::resource::*;
-use wcontainers_direct3d_12::root::{
+use wcontainers_direct3d_12_translated::list::*;
+use wcontainers_direct3d_12_translated::resource::*;
+use wcontainers_direct3d_12_translated::root::{
     FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, RootSignatureDesc, VERSION_1_0, serialize,
 };
-use wcontainers_direct3d_12::state::*;
-use wcontainers_direct3d_12::{Device, Error, GraphicsPipelineDesc, PipelineId, ResourceId};
+use wcontainers_direct3d_12_translated::state::*;
+use wcontainers_direct3d_12_translated::{Device, Error, GraphicsPipelineDesc, PipelineId, ResourceId};
 use wcontainers_directx_graphics_infrastructure::dxgi;
 use wcontainers_gpu::{Backend, ColorWrites};
 
 pub const VS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/triangle.vs.dxil");
+    include_bytes!("../../../../../graphics-test/shaders/dxil/triangle.vs.dxil");
 pub const PS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/triangle.ps.dxil");
+    include_bytes!("../../../../../graphics-test/shaders/dxil/triangle.ps.dxil");
 pub const RGBA8: u32 = dxgi::R8G8B8A8_UNORM;
 pub const SIZE: u32 = 256;
 /// The scene's clear colour and vertices (crates/graphics-test/src/scene.rs).

@@ -3,11 +3,11 @@
 
 // Only the recorder's capabilities are used here.
 #[allow(dead_code)]
-#[path = "../../directx-graphics-infrastructure/implementation/translated/tests/support/record.rs"]
+#[path = "../../../../directx-graphics-infrastructure/implementation/translated/tests/support/record.rs"]
 mod record;
 
-use wcontainers_direct3d_12::features::*;
-use wcontainers_direct3d_12::root::*;
+use wcontainers_direct3d_12_translated::features::*;
+use wcontainers_direct3d_12_translated::root::*;
 use wcontainers_gpu::{Features, Format, FormatUse};
 
 fn signature(version: u32) -> RootSignatureDesc {
@@ -78,7 +78,7 @@ fn signature(version: u32) -> RootSignatureDesc {
 fn dxbc_checksums_are_the_ones_fxc_writes() {
     let dir = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../shaders/tests/own"
+        "/../../../shaders/tests/own"
     );
     let mut checked = 0;
     for entry in std::fs::read_dir(dir).unwrap() {

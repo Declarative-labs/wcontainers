@@ -2,17 +2,17 @@
 //! gt-d3d12 makes it, replayed and checked in the recorded stream.
 
 #[allow(dead_code)]
-#[path = "../../directx-graphics-infrastructure/implementation/translated/tests/support/record.rs"]
+#[path = "../../../../directx-graphics-infrastructure/implementation/translated/tests/support/record.rs"]
 mod record;
 #[path = "support/triangle.rs"]
 mod triangle;
 
 use record::Recorder;
 use triangle::{PS, RGBA8, VS};
-use wcontainers_direct3d_12::list::*;
-use wcontainers_direct3d_12::resource::*;
-use wcontainers_direct3d_12::state::*;
-use wcontainers_direct3d_12::{Device, Error};
+use wcontainers_direct3d_12_translated::list::*;
+use wcontainers_direct3d_12_translated::resource::*;
+use wcontainers_direct3d_12_translated::state::*;
+use wcontainers_direct3d_12_translated::{Device, Error};
 use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
 use wcontainers_gpu::{Backend, Features};
 
@@ -48,7 +48,7 @@ fn footprints_follow_the_pitch_and_placement_rules() {
 
 #[test]
 fn every_texture_shape_check_feature_support_answers_is_made() {
-    use wcontainers_direct3d_12::features::format_support;
+    use wcontainers_direct3d_12_translated::features::format_support;
     use wcontainers_directx_graphics_infrastructure::support1;
     let mut device = Device::new(Recorder::new());
     let caps = device.backend().caps().clone();

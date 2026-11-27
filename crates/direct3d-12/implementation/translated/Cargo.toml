@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-direct3d-12"
+name = "wcontainers-direct3d-12-translated"
 description = "The wcontainers Direct3D 12 front, written from Microsoft's documentation, on the wcontainers graphics interface."
 version.workspace = true
 edition.workspace = true
@@ -8,16 +8,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-wcontainers-gpu = { path = "../gpu" }
-wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infrastructure/implementation/translated", package = "wcontainers-directx-graphics-infrastructure-translated" }
-wcontainers-shaders = { path = "../shaders" }
+wcontainers-gpu = { path = "../../../gpu" }
+wcontainers-directx-graphics-infrastructure = { path = "../../../directx-graphics-infrastructure/implementation/translated", package = "wcontainers-directx-graphics-infrastructure-translated" }
+wcontainers-shaders = { path = "../../../shaders" }
 slab = "0.4"
 half = { version = "2.7.1", default-features = false }
 bytemuck = { version = "1.25.2", features = ["derive"] }
 naga = { workspace = true }
 
 [dev-dependencies]
-wcontainers-gpu-webgpu = { path = "../gpu-webgpu" }
+wcontainers-gpu-webgpu = { path = "../../../gpu-webgpu" }
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir"] }
 pollster = "1.0.1"
 blake3 = { version = "1", default-features = false }

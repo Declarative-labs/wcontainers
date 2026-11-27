@@ -176,7 +176,7 @@ mod tests {
         // dxc's cs_6_0 of the shaders crate's texels.hlsl: Buffer<float4> t0, Buffer<uint4> t1,
         // Buffer<int4> t2, Buffer<float2> t3, RWBuffer<float4> u0, RWBuffer<uint> u1 and a
         // structured buffer at u2 (left out).
-        let code = include_bytes!("../../shaders/tests/own/cs_texels.dxil");
+        let code = include_bytes!("../../../../shaders/tests/own/cs_texels.dxil");
         let mut views = declared(code).0.unwrap();
         views.sort_by_key(|v| (v.storage, v.slots.start));
         assert_eq!(
@@ -196,7 +196,7 @@ mod tests {
     fn storage_textures_are_read_from_the_resource_list() {
         // compute.hlsl's cs_images: RWTexture2D<float4> u0, RWTexture2D<float> u1,
         // RWTexture2DArray<uint4> u2, RWTexture2D<int2> u3.
-        let code = include_bytes!("../../shaders/tests/own/cs_images.dxil");
+        let code = include_bytes!("../../../../shaders/tests/own/cs_images.dxil");
         let mut views = declared(code).0.unwrap();
         views.sort_by_key(|v| v.slots.start);
         assert_eq!(
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn arrays_of_storage_textures_are_a_slot_per_element() {
         // arrays.hlsl's cs_image_array: RWTexture2D<uint> images[4] at u0.
-        let code = include_bytes!("../../shaders/tests/own/cs_image_array.dxil");
+        let code = include_bytes!("../../../../shaders/tests/own/cs_image_array.dxil");
         let views = declared(code).0.unwrap();
         let elements = TypedView {
             slots: 0..4,
@@ -225,9 +225,9 @@ mod tests {
     #[test]
     fn multisampled_arrays_are_read_from_the_resource_list() {
         // msarray.hlsl's ps_msarray: Texture2DMSArray<float4> t0.
-        let code = include_bytes!("../../shaders/tests/own/ps_msarray.dxil");
+        let code = include_bytes!("../../../../shaders/tests/own/ps_msarray.dxil");
         assert_eq!(declared(code).1, Some(vec![one(0)]));
-        let code = include_bytes!("../../shaders/tests/own/cs_texels.dxil");
+        let code = include_bytes!("../../../../shaders/tests/own/cs_texels.dxil");
         assert_eq!(declared(code).1, Some(vec![]));
     }
 
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn a_container_read_again_declares_what_its_module_does() {
-        let code = include_bytes!("../../shaders/tests/own/cs_texels.dxil");
+        let code = include_bytes!("../../../../shaders/tests/own/cs_texels.dxil");
         let first = declared(code);
         assert_eq!(declared(code), first);
         assert_eq!(first, of(wcontainers_shaders::container::dxil_views(code)));
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn dxbc_has_no_resource_list() {
-        let code = include_bytes!("../../shaders/tests/own/cs_images.dxbc");
+        let code = include_bytes!("../../../../shaders/tests/own/cs_images.dxbc");
         assert_eq!(declared(code), (None, None));
     }
 }

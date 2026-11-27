@@ -22,22 +22,22 @@ use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObj
 use windows::core::{Interface, Result, s};
 
 const VS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/triangle.vs.dxil");
+    include_bytes!("../../../../../graphics-test/shaders/dxil/triangle.vs.dxil");
 const PS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/triangle.ps.dxil");
+    include_bytes!("../../../../../graphics-test/shaders/dxil/triangle.ps.dxil");
 /// Shades each corner by `SV_VertexID` and moves by a per-instance offset.
 const DRAWS_VS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/draws.vs.dxil");
+    include_bytes!("../../../../../graphics-test/shaders/dxil/draws.vs.dxil");
 const DRAWS_PS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/draws.ps.dxil");
+    include_bytes!("../../../../../graphics-test/shaders/dxil/draws.ps.dxil");
 /// Reads items of `float2 a; uint b` at t0 and writes changed ones at u0.
 const CS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxbc/compute.cs_structured.dxbc");
+    include_bytes!("../../../../../graphics-test/shaders/dxbc/compute.cs_structured.dxbc");
 /// The shaders crate's geometry test shaders (`tests/own/geometry.hlsl`, shader model 5.0).
 macro_rules! own {
     ($name:literal) => {
         include_bytes!(concat!(
-            "../../../shaders/tests/own/",
+            "../../../../../shaders/tests/own/",
             $name,
             ".dxbc"
         ))
@@ -46,9 +46,9 @@ macro_rules! own {
 /// A full-screen triangle, and a sampling through `s0` of `t0` at a uv running past 0 and 1
 /// with a growing scale, in the cell `b0` names (the test rig's `samplers.hlsl`).
 const FULL_VS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxbc/common.vs_full.dxbc");
+    include_bytes!("../../../../../graphics-test/shaders/dxbc/common.vs_full.dxbc");
 const SAMPLE_PS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxbc/samplers.ps_sample.dxbc");
+    include_bytes!("../../../../../graphics-test/shaders/dxbc/samplers.ps_sample.dxbc");
 const GEOMETRY_VS: &[u8] = own!("vs_geometry");
 const GEOMETRY_PS: &[u8] = own!("ps_geometry");
 const PAGE: u64 = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT as u64;

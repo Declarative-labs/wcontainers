@@ -5,8 +5,8 @@
 #[path = "support/triangle.rs"]
 mod triangle;
 
-use wcontainers_direct3d_12::Device;
-use wcontainers_direct3d_12::state::{
+use wcontainers_direct3d_12_translated::Device;
+use wcontainers_direct3d_12_translated::state::{
     CULL_MODE_NONE, FILL_MODE_SOLID, Raster, TOPOLOGY_TYPE_TRIANGLE,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi;
@@ -15,9 +15,9 @@ use wcontainers_gpu_webgpu::WebGpu;
 
 /// The rig's shaders passing a three-component position and a colour.
 const COLOR_VS: &[u8] =
-    include_bytes!("../../graphics-test/shaders/dxil/common.vs_color.dxil");
+    include_bytes!("../../../../graphics-test/shaders/dxil/common.vs_color.dxil");
 const COLOR_PS: &[u8] =
-    include_bytes!("../../graphics-test/shaders/dxil/common.ps_color.dxil");
+    include_bytes!("../../../../graphics-test/shaders/dxil/common.ps_color.dxil");
 
 fn webgpu() -> WebGpu {
     webgpu_without(wgpu::Features::empty())
@@ -57,7 +57,7 @@ fn webgpu_without(hidden: wgpu::Features) -> WebGpu {
 /// The rig's allowance for `name` among the Direct3D 12 references: the largest channel difference
 /// and how many pixels may exceed it.
 fn tolerance(name: &str) -> (u8, usize) {
-    let text = include_str!("../../graphics-test/references/d3d12/tolerances.txt");
+    let text = include_str!("../../../../graphics-test/references/d3d12/tolerances.txt");
     let line = text
         .lines()
         .find(|l| l.split_whitespace().next() == Some(name))
@@ -69,7 +69,7 @@ fn tolerance(name: &str) -> (u8, usize) {
 
 fn reference(name: &str) -> Vec<u8> {
     let path = format!(
-        "{}/../graphics-test/references/d3d12/{name}",
+        "{}/../../../graphics-test/references/d3d12/{name}",
         env!("CARGO_MANIFEST_DIR")
     );
     let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()));
@@ -401,13 +401,13 @@ fn clamp_scene(
     range: [f32; 2],
     hidden: wgpu::Features,
 ) -> Vec<u8> {
-    use wcontainers_direct3d_12::GraphicsPipelineDesc;
-    use wcontainers_direct3d_12::list::*;
-    use wcontainers_direct3d_12::resource::*;
-    use wcontainers_direct3d_12::root::{
+    use wcontainers_direct3d_12_translated::GraphicsPipelineDesc;
+    use wcontainers_direct3d_12_translated::list::*;
+    use wcontainers_direct3d_12_translated::resource::*;
+    use wcontainers_direct3d_12_translated::root::{
         FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, RootSignatureDesc, VERSION_1_0, serialize,
     };
-    use wcontainers_direct3d_12::state::*;
+    use wcontainers_direct3d_12_translated::state::*;
     use wcontainers_gpu::ColorWrites;
     use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
 

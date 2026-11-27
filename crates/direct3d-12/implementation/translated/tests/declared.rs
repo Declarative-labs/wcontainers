@@ -6,14 +6,14 @@
 use std::fmt::Write;
 use std::ops::Range;
 use std::path::PathBuf;
-use wcontainers_direct3d_12::dxbc::{self, TypedView};
+use wcontainers_direct3d_12_translated::dxbc::{self, TypedView};
 use wcontainers_gpu::SlotKind;
 
 /// The folders of containers, relative to the crate.
 const CORPORA: [&str; 3] = [
-    "../shaders/tests/own",
-    "../graphics-test/shaders/dxbc",
-    "../graphics-test/shaders/dxil",
+    "../../../shaders/tests/own",
+    "../../../graphics-test/shaders/dxbc",
+    "../../../graphics-test/shaders/dxil",
 ];
 
 /// Root signature ranges for the arrays declared without a length, in spaces 0 to 3.
@@ -63,7 +63,7 @@ fn answers() -> String {
             writeln!(out, "{name} {label}dxbc {views:?} {arrays:?}").unwrap();
         }
         let unbounded = dxbc::declares_unbounded_array(&code);
-        let (views, arrays) = wcontainers_direct3d_12::dxil::declared(&code);
+        let (views, arrays) = wcontainers_direct3d_12_translated::dxil::declared(&code);
         let views = views.map(|v| elements(&v));
         let arrays = arrays.map(|a| slots(&a));
         writeln!(out, "{name} dxil {unbounded} {views:?} {arrays:?}").unwrap();

@@ -363,7 +363,7 @@ mod tests {
             Some(vec![one(2)])
         );
         assert_eq!(typed_views(&container(&tokens), &[]), Some(vec![]));
-        let code = include_bytes!("../../shaders/tests/own/ps_msarray.dxbc");
+        let code = include_bytes!("../../../../shaders/tests/own/ps_msarray.dxbc");
         assert_eq!(multisampled_arrays(code, &[]), Some(vec![one(0)]));
     }
 

@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use std::sync::mpsc::{Sender, TryRecvError, sync_channel};
 use std::time::Duration;
 
-use wcontainers_direct3d_12::Device;
+use wcontainers_direct3d_12_translated::Device;
 use wcontainers_gpu_webgpu::WebGpu;
 use windows::Win32::Foundation::{HANDLE, HWND};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;

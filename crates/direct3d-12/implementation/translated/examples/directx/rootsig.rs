@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
-use wcontainers_direct3d_12::root::{RootParameterKind, RootSignatureDesc, StaticSampler};
+use wcontainers_direct3d_12_translated::root::{RootParameterKind, RootSignatureDesc, StaticSampler};
 
 use windows::Win32::Foundation::{E_INVALIDARG, E_NOINTERFACE};
 use windows::Win32::Graphics::Direct3D12::*;

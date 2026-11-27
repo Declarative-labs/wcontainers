@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex, Weak};
 
-use wcontainers_direct3d_12::device::ChainId;
+use wcontainers_direct3d_12_translated::device::ChainId;
 use wcontainers_directx_graphics_infrastructure::{
     COLOR_SPACE_SRGB, DisplayMode, Model, OutputDesc, SwapChainDesc, SwapChainError, presents_in,
     sdr,
@@ -25,7 +25,7 @@ use windows::core::{
 
 use crate::gpu;
 use crate::objects::{Resource, give, hr};
-use wcontainers_direct3d_12::Error;
+use wcontainers_direct3d_12_translated::Error;
 
 /// `MONITORINFOF_PRIMARY`.
 const PRIMARY: u32 = 1;

@@ -3,7 +3,7 @@
 //! process's.
 
 #[allow(dead_code)]
-#[path = "../../directx-graphics-infrastructure/implementation/translated/tests/support/record.rs"]
+#[path = "../../../../directx-graphics-infrastructure/implementation/translated/tests/support/record.rs"]
 mod record;
 #[allow(dead_code)]
 #[path = "support/triangle.rs"]
@@ -13,7 +13,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use record::Recorder;
-use wcontainers_direct3d_12::{Device, cache};
+use wcontainers_direct3d_12_translated::{Device, cache};
 use wcontainers_shaders::cache::{Cache, Kind, views_key};
 
 /// A file the test reads back: the bytes appended.

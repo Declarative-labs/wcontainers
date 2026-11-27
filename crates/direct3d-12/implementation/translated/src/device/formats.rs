@@ -568,7 +568,7 @@ mod tests {
     fn a_dxil_stage_s_typed_views_give_its_key_and_its_storage_texture_slots() {
         // compute.hlsl's cs_images: RWTexture2D<float4> u0, RWTexture2D<float> u1,
         // RWTexture2DArray<uint4> u2, RWTexture2D<int2> u3.
-        let code = include_bytes!("../../../shaders/tests/own/cs_images.dxil");
+        let code = include_bytes!("../../../../../shaders/tests/own/cs_images.dxil");
         let route = TexelBufferRoute::Storage;
         let (key, through) = typed_key(code, route, &empty_root(), bind::ALL);
         let storage = [
@@ -585,7 +585,7 @@ mod tests {
         );
         // texels.hlsl's cs_texels: Buffer<float4> t0, Buffer<uint4> t1, Buffer<int4> t2,
         // Buffer<float2> t3, RWBuffer<float4> u0, RWBuffer<uint> u1 and a structured buffer at u2.
-        let code = include_bytes!("../../../shaders/tests/own/cs_texels.dxil");
+        let code = include_bytes!("../../../../../shaders/tests/own/cs_texels.dxil");
         let (key, through) = typed_key(code, route, &empty_root(), bind::ALL);
         let texel = [
             Format::R32Float,
@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(key.storage_formats, storage);
         assert_eq!((key.texel_buffers, through), (route, 0));
         // msarray.hlsl's ps_msarray: Texture2DMSArray<float4> t0, converted reading one layer.
-        let code = include_bytes!("../../../shaders/tests/own/ps_msarray.dxil");
+        let code = include_bytes!("../../../../../shaders/tests/own/ps_msarray.dxil");
         let (key, _) = typed_key(code, route, &empty_root(), bind::PIXEL);
         assert_eq!(key.texture_layers, [(0, 1)]);
     }

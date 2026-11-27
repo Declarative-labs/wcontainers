@@ -28,8 +28,8 @@ linker_directives!(
 
 use std::ffi::c_void;
 
-use wcontainers_direct3d_12::features;
-use wcontainers_direct3d_12::root::{
+use wcontainers_direct3d_12_translated::features;
+use wcontainers_direct3d_12_translated::root::{
     DescriptorRange, RootParameter, RootParameterKind, RootSignatureDesc, StaticSampler, serialize,
 };
 use wcontainers_gpu::Backend;
@@ -469,7 +469,7 @@ unsafe fn read_root(data: *const c_void, length: usize) -> Result<RootSignatureD
     }
     // SAFETY: as the caller promises.
     let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
-    wcontainers_direct3d_12::root::deserialize(bytes).map_err(|_| E_INVALIDARG)
+    wcontainers_direct3d_12_translated::root::deserialize(bytes).map_err(|_| E_INVALIDARG)
 }
 
 /// # Safety

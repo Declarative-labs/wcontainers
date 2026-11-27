@@ -5,19 +5,19 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use wcontainers_direct3d_12::address::DESCRIPTOR_SIZE;
-use wcontainers_direct3d_12::list::{
+use wcontainers_direct3d_12_translated::address::DESCRIPTOR_SIZE;
+use wcontainers_direct3d_12_translated::list::{
     Command, CommandList, CopyLocation, Descriptor, IndexBufferView, IndirectArgument,
     ResourceView, RootArgument, SamplerView, StreamView, TargetView, VertexBufferView, ViewportF,
 };
-use wcontainers_direct3d_12::resource::{
+use wcontainers_direct3d_12_translated::resource::{
     DIMENSION_BUFFER, Footprint, HeapType, ResourceDesc, check_creation, check_state,
     has_chroma_plane,
 };
-use wcontainers_direct3d_12::state::{
+use wcontainers_direct3d_12_translated::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
 };
-use wcontainers_direct3d_12::{
+use wcontainers_direct3d_12_translated::{
     Error, FenceId, GraphicsPipelineDesc, HeapId, MemoryId, PipelineId, QueryHeapId, QueueId,
     ResourceId, features,
 };
@@ -968,7 +968,7 @@ impl Device {
             };
             arguments.push(argument);
         }
-        let signature = wcontainers_direct3d_12::list::CommandSignature::new(
+        let signature = wcontainers_direct3d_12_translated::list::CommandSignature::new(
             d.ByteStride,
             arguments,
             root.is_some(),
@@ -1690,7 +1690,7 @@ impl Device {
         };
         let kind = heap_kind(&heap)?;
         let front = resource_desc(&desc);
-        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, kind, Some(&front))
+        wcontainers_direct3d_12_translated::resource::check_heap_flags(flags.0 as u32, kind, Some(&front))
             .map_err(hr)?;
         check_creation(kind, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;
         let (id, address, host) = gpu::call(move |d| {
@@ -2349,7 +2349,7 @@ fn clear_out(out: *mut *mut c_void) {
 /// The front's heap type for heap properties.
 fn heap_kind(p: &D3D12_HEAP_PROPERTIES) -> Result<HeapType> {
     if p.Type == D3D12_HEAP_TYPE_CUSTOM {
-        return wcontainers_direct3d_12::resource::custom_heap(
+        return wcontainers_direct3d_12_translated::resource::custom_heap(
             p.CPUPageProperty.0 as u32,
             p.MemoryPoolPreference.0 as u32,
         )
@@ -2621,7 +2621,7 @@ impl Drop for Resource {
 }
 
 #[implement(ID3D12RootSignature)]
-pub struct RootSignature(pub wcontainers_direct3d_12::root::RootSignature, Base);
+pub struct RootSignature(pub wcontainers_direct3d_12_translated::root::RootSignature, Base);
 
 /// A heap of `CreateHeap`: its description, the front's heap, and the program's references, which
 /// `abi.rs` counts apart from its placed resources' (`HeapHold`).
@@ -2681,7 +2681,7 @@ impl Drop for Heap {
 
 #[implement(ID3D12CommandSignature)]
 pub struct CommandSignature(
-    pub Arc<wcontainers_direct3d_12::list::CommandSignature>,
+    pub Arc<wcontainers_direct3d_12_translated::list::CommandSignature>,
     Base,
 );
 

@@ -1184,9 +1184,9 @@ fn draw() -> windows::core::Result<Vec<u8>> {
     use windows::core::{Interface, s};
 
     const VS: &[u8] =
-        include_bytes!("../../graphics-test/shaders/dxil/triangle.vs.dxil");
+        include_bytes!("../../../../graphics-test/shaders/dxil/triangle.vs.dxil");
     const PS: &[u8] =
-        include_bytes!("../../graphics-test/shaders/dxil/triangle.ps.dxil");
+        include_bytes!("../../../../graphics-test/shaders/dxil/triangle.ps.dxil");
     const SIZE: u32 = 64;
     let buffer = |size: u64| D3D12_RESOURCE_DESC {
         Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
