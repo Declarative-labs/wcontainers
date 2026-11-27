@@ -7,7 +7,7 @@
 # made_variant's fragment settings (fetch_unit, fetch_multisampled, single_sampled, samples) have none: a Made is never
 # a fragment program, and the passes they steer return at once on any other stage.
 # Not covered by a plant here (said, not silent): the bridge's other passes (the creation steps, SPIR-V reading,
-# the flattening, interpolation elsewhere, sample masks, framebuffer fetch, cube maps, gathers, storage pass-through),
+# the flattening but its geometry and tessellation declarations (at the end), interpolation elsewhere, sample masks, framebuffer fetch, cube maps, gathers, storage pass-through),
 # whose branches the suite's right-value tests do not yet state.
 test: cargo test -q --release -p wcontainers-mesa-compiler-direct --test conformance -- --test-threads=4
 
@@ -979,3 +979,192 @@ new:
 nir_variable *words = word_block(nir, nir_var_mem_ubo, block + 1, block_bytes, false, false);
 end
 
+
+# bridge/flat.c's geometry and tessellation declarations (geometry_of, tessellation_of): one plant per field and per
+# branch, each stated by the suite's declarations_right.
+
+plant: flat geometry_of vertices_in
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      .vertices_in = nir->info.gs.vertices_in,
+new:
+      .vertices_in = 0,
+end
+
+plant: flat geometry_of max_vertices
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      .max_vertices = nir->info.gs.vertices_out,
+new:
+      .max_vertices = 0,
+end
+
+plant: flat geometry_of invocations forced to 1
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      .invocations = MAX2(nir->info.gs.invocations, 1),
+new:
+      .invocations = 1,
+end
+
+plant: flat geometry_of streams forced to 1
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      .streams = util_last_bit(nir->info.gs.active_stream_mask),
+new:
+      .streams = 1,
+end
+
+plant: flat geometry_of input points
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      g.input = WC_GEOMETRY_IN_POINTS;
+new:
+      g.input = WC_GEOMETRY_IN_OTHER;
+end
+
+plant: flat geometry_of input lines
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      g.input = WC_GEOMETRY_IN_LINES;
+new:
+      g.input = WC_GEOMETRY_IN_OTHER;
+end
+
+plant: flat geometry_of input lines adjacency
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      g.input = WC_GEOMETRY_IN_LINES_ADJACENCY;
+new:
+      g.input = WC_GEOMETRY_IN_OTHER;
+end
+
+plant: flat geometry_of input triangles
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      g.input = WC_GEOMETRY_IN_TRIANGLES;
+new:
+      g.input = WC_GEOMETRY_IN_OTHER;
+end
+
+plant: flat geometry_of input triangles adjacency
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      g.input = WC_GEOMETRY_IN_TRIANGLES_ADJACENCY;
+new:
+      g.input = WC_GEOMETRY_IN_OTHER;
+end
+
+plant: flat geometry_of output points
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      g.output = WC_GEOMETRY_OUT_POINTS;
+new:
+      g.output = WC_GEOMETRY_OUT_OTHER;
+end
+
+plant: flat geometry_of output line strip
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      g.output = WC_GEOMETRY_OUT_LINE_STRIP;
+new:
+      g.output = WC_GEOMETRY_OUT_OTHER;
+end
+
+plant: flat geometry_of output triangle strip
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      g.output = WC_GEOMETRY_OUT_TRIANGLE_STRIP;
+new:
+      g.output = WC_GEOMETRY_OUT_OTHER;
+end
+
+plant: flat tessellation_of points_in
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      .points_in = points_in,
+new:
+      .points_in = 0,
+end
+
+plant: flat tessellation_of points_out
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      .points_out = nir->info.tess.tcs_vertices_out,
+new:
+      .points_out = 0,
+end
+
+plant: flat tessellation_of winding flipped
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      .counter_clockwise = nir->info.tess.ccw,
+new:
+      .counter_clockwise = !nir->info.tess.ccw,
+end
+
+plant: flat tessellation_of point mode flipped
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      .point_mode = nir->info.tess.point_mode,
+new:
+      .point_mode = !nir->info.tess.point_mode,
+end
+
+plant: flat tessellation_of domain triangles
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      t.domain = WC_TESS_TRIANGLES;
+new:
+      t.domain = WC_TESS_DOMAIN_OTHER;
+end
+
+plant: flat tessellation_of domain quads
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      t.domain = WC_TESS_QUADS;
+new:
+      t.domain = WC_TESS_DOMAIN_OTHER;
+end
+
+plant: flat tessellation_of domain isolines
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      t.domain = WC_TESS_ISOLINES;
+new:
+      t.domain = WC_TESS_DOMAIN_OTHER;
+end
+
+plant: flat tessellation_of spacing equal
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      t.spacing = WC_TESS_EQUAL;
+new:
+      t.spacing = WC_TESS_SPACING_OTHER;
+end
+
+plant: flat tessellation_of fractional odd reported as even
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      t.spacing = WC_TESS_FRACTIONAL_ODD;
+new:
+      t.spacing = WC_TESS_FRACTIONAL_EVEN;
+end
+
+plant: flat tessellation_of spacing fractional even
+file: crates/mesa-compiler/implementation/direct/bridge/flat.c
+old:
+      t.spacing = WC_TESS_FRACTIONAL_EVEN;
+new:
+      t.spacing = WC_TESS_SPACING_OTHER;
+end
+
+plant: bridge spirv geometry streams not gathered
+file: crates/mesa-compiler/implementation/direct/bridge/bridge.c
+old:
+   if (nir->info.stage == MESA_SHADER_GEOMETRY)
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   /* A program read from SPIR-V takes no input patch
+new:
+   /* A program read from SPIR-V takes no input patch
+end

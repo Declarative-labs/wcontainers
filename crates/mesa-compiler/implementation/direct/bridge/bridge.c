@@ -2761,7 +2761,11 @@ bool
 wc_spirv_common_flatten(struct wc_spirv_common *taken, struct wc_flat *out)
 {
    nir_shader *nir = (nir_shader *)taken;
-   /* A program read from SPIR-V is a vertex, fragment or compute program: no input patch. */
+   /* SPIR-V's reader leaves a geometry program's streams ungathered (info.gs.active_stream_mask 0), which the flat
+    * form reads: gathered here. */
+   if (nir->info.stage == MESA_SHADER_GEOMETRY)
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   /* A program read from SPIR-V takes no input patch (the route reads no tessellation program from it). */
    const bool flattened = wc_nir_flatten(nir, 0, out);
    ralloc_free(nir);
    return flattened;

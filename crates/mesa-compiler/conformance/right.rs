@@ -525,3 +525,118 @@ pub fn squares_right<M: MesaCompiler>(compiler: M) {
     }
     println!("SQUARES {checked} checked");
 }
+
+/// A tessellation control program of three control points, before each evaluation program of `declarations_right`.
+const TRIANGLE_CONTROL_SOURCE: &str = "#version 450
+layout(vertices = 3) out;
+layout(location = 0) in vec4 passed[];
+layout(location = 0) out vec4 handed[];
+void main() {
+    handed[gl_InvocationID] = passed[gl_InvocationID];
+    gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
+    gl_TessLevelOuter[0] = 2.0;
+    gl_TessLevelOuter[1] = 2.0;
+    gl_TessLevelOuter[2] = 2.0;
+    gl_TessLevelOuter[3] = 2.0;
+    gl_TessLevelInner[0] = 2.0;
+    gl_TessLevelInner[1] = 2.0;
+}
+";
+
+/// The control points of `TRIANGLE_CONTROL_SOURCE`'s patch.
+const TRIANGLE_CONTROL_POINTS: u32 = 3;
+/// The draw's patch size the control program is flattened for (not its output's, so the two are told apart).
+const DRAWN_PATCH: u32 = 4;
+
+/// A geometry program declaring its input and output primitives, its invocations and its largest output.
+const DECLARING_GEOMETRY_SOURCE: &str = "#version 450
+layout(INPUT, invocations = INVOCATIONS) in;
+layout(OUTPUT, max_vertices = MOST) out;
+layout(location = 0) in vec4 passed[];
+layout(location = 0) out vec4 shaded;
+void main() {
+    gl_Position = gl_in[0].gl_Position;
+    shaded = passed[0];
+    EmitVertex();
+}
+";
+
+/// spirv/streams.geom as SPIR-V for Vulkan (glslang 16.4.0, `glslangValidator -V --target-env vulkan1.1`): points in,
+/// three invocations, points out (at most 2), streams 0 and 1 written. The bridge's GLSL compiler allows one vertex
+/// stream (WC_GL_VERTEX_STREAMS), so a second comes only through SPIR-V.
+const STREAMS_SPIRV: &[u8] = include_bytes!("spirv/streams.spv");
+
+/// An evaluation program declaring its domain, spacing, winding and point mode (`LAYOUT`).
+const DECLARING_EVALUATION_SOURCE: &str = "#version 450
+layout(LAYOUT) in;
+layout(location = 0) in vec4 handed[];
+layout(location = 0) out vec4 shaded;
+void main() {
+    gl_Position = gl_TessCoord.x * gl_in[0].gl_Position + gl_TessCoord.y * gl_in[1].gl_Position + gl_TessCoord.z * gl_in[2].gl_Position;
+    shaded = handed[0];
+}
+";
+
+/// Every declaration of a geometry and of an evaluation program the flat form carries (bridge/flat.c's geometry_of and
+/// tessellation_of), each from a program declaring it: each input and output primitive, the input's vertices, the
+/// largest output, the invocations (3 where declared, else 1), the streams (2 where stream 1 is written, through
+/// SPIR-V, else 1); each domain, each spacing, both windings and the point mode, with the patch's control points in and
+/// out.
+pub fn declarations_right<M: MesaCompiler>(compiler: M) {
+    let compiler = &compiler;
+    let geometries = [
+        // (input, its vertices, output, largest, invocations, the flat form's input and output)
+        ("points", 1, "points", 1, 1, constants::GEOMETRY_IN_POINTS, constants::GEOMETRY_OUT_POINTS),
+        ("lines", 2, "line_strip", 2, 3, constants::GEOMETRY_IN_LINES, constants::GEOMETRY_OUT_LINE_STRIP),
+        ("lines_adjacency", 4, "triangle_strip", 3, 1, constants::GEOMETRY_IN_LINES_ADJACENCY, constants::GEOMETRY_OUT_TRIANGLE_STRIP),
+        ("triangles", 3, "points", 4, 1, constants::GEOMETRY_IN_TRIANGLES, constants::GEOMETRY_OUT_POINTS),
+        ("triangles_adjacency", 6, "line_strip", 5, 2, constants::GEOMETRY_IN_TRIANGLES_ADJACENCY, constants::GEOMETRY_OUT_LINE_STRIP),
+    ];
+    let mut checked = 0;
+    for (input, vertices_in, output, most, invocations, flat_input, flat_output) in geometries {
+        let source = DECLARING_GEOMETRY_SOURCE.replace("INPUT", input).replace("INVOCATIONS", &invocations.to_string()).replace("OUTPUT", output).replace("MOST", &most.to_string());
+        let program = compiled(compiler, [Some(POINTS_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, Some(&source), None, None]);
+        let prepared = compiler.received_geometry_prepare(program.geometry.expect("a geometry stage")).shader.expect("prepared");
+        let variant = made(compiler, compiler.prepared_geometry_variant(&prepared, settings(), &[], &[]));
+        let flat = variant.flat.unwrap_or_else(|| panic!("{input} to {output}: a flat form (result {})", variant.result));
+        let g = &flat.geometry;
+        assert_eq!((g.input, g.vertices_in, g.output, g.max_vertices, g.invocations, g.streams), (flat_input, vertices_in, flat_output, most, invocations, 1), "{input} to {output}");
+        checked += 1;
+    }
+    let words: Vec<u32> = STREAMS_SPIRV.as_chunks::<4>().0.iter().map(|word| u32::from_le_bytes(*word)).collect();
+    let read = compiler.spirv_read(&words, constants::STAGE_GEOMETRY, c"main", false).expect("spirv/streams.spv read");
+    let common = compiler.spirv_to_common_form(read, 0, &settings().ranges);
+    let result = common.result;
+    let flat = common.shader.and_then(|shader| compiler.spirv_common_flatten(shader)).unwrap_or_else(|| panic!("spirv/streams.spv: a flat form (result {result})"));
+    let g = &flat.geometry;
+    assert_eq!((g.input, g.vertices_in, g.output, g.max_vertices, g.invocations, g.streams), (constants::GEOMETRY_IN_POINTS, 1, constants::GEOMETRY_OUT_POINTS, 2, 3, 2), "spirv/streams.spv");
+    checked += 1;
+    let evaluations = [
+        // (layout, domain, spacing, counter-clockwise, point mode)
+        ("triangles, equal_spacing, ccw", constants::TESS_TRIANGLES, constants::TESS_EQUAL, 1, 0),
+        ("quads, fractional_odd_spacing, cw", constants::TESS_QUADS, constants::TESS_FRACTIONAL_ODD, 0, 0),
+        ("isolines, fractional_even_spacing, ccw, point_mode", constants::TESS_ISOLINES, constants::TESS_FRACTIONAL_EVEN, 1, 1),
+    ];
+    for (layout, domain, spacing, counter_clockwise, point_mode) in evaluations {
+        let source = DECLARING_EVALUATION_SOURCE.replace("LAYOUT", layout);
+        let program = compiled(compiler, [Some(POINTS_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, None, Some(TRIANGLE_CONTROL_SOURCE), Some(&source)]);
+        let prepared = compiler.received_tess_evaluation_prepare(program.tess_evaluation.expect("an evaluation stage")).shader.expect("prepared");
+        let form = compiler.prepared_tess_evaluation_variant(&prepared, settings(), &[], &[]);
+        let result = form.result;
+        let flat = form.shader.and_then(|variant| compiler.variant_flatten(variant, TRIANGLE_CONTROL_POINTS)).unwrap_or_else(|| panic!("{layout}: a flat form (result {result})"));
+        let t = &flat.tessellation;
+        // An evaluation program's output control points are its control program's (0 here).
+        assert_eq!((t.points_in, t.points_out, t.domain, t.spacing, t.counter_clockwise, t.point_mode), (TRIANGLE_CONTROL_POINTS, 0, domain, spacing, counter_clockwise, point_mode), "{layout}");
+        checked += 1;
+    }
+    // The control program: the draw's patch size in, its declared output control points out.
+    let source = DECLARING_EVALUATION_SOURCE.replace("LAYOUT", "triangles");
+    let program = compiled(compiler, [Some(POINTS_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, None, Some(TRIANGLE_CONTROL_SOURCE), Some(&source)]);
+    let prepared = compiler.received_tess_control_prepare(program.tess_control.expect("a control stage")).shader.expect("prepared");
+    let form = compiler.prepared_tess_control_variant(&prepared, settings(), &[], &[]);
+    let result = form.result;
+    let flat = form.shader.and_then(|variant| compiler.variant_flatten(variant, DRAWN_PATCH)).unwrap_or_else(|| panic!("the control program: a flat form (result {result})"));
+    assert_eq!((flat.tessellation.points_in, flat.tessellation.points_out), (DRAWN_PATCH, TRIANGLE_CONTROL_POINTS), "the control program");
+    checked += 1;
+    println!("DECLARATIONS {checked} checked");
+}
