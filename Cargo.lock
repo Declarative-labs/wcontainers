@@ -5209,6 +5209,7 @@ dependencies = [
  "linux-raw-sys",
  "memmap2",
  "rustix",
+ "signal-hook",
  "wcontainers-linux-process",
  "wcontainers-linux-process-conformance",
 ]
