@@ -176,12 +176,16 @@ impl Native for Arm64 {
                 }
                 SystemRegister::Fpsr => Route::FloatStatus,
                 SystemRegister::Counter => Route::Kernel,
-                SystemRegister::Fixed(_) => Route::Constant,
+                SystemRegister::CounterFrequency | SystemRegister::Fixed(_) => Route::Constant,
+                SystemRegister::PhysicalCounter => Route::Trap,
             },
             I::WriteSystem { register, .. } => match register {
                 SystemRegister::Nzcv | SystemRegister::TpidrEl0 => Route::Copy,
                 SystemRegister::Fpcr | SystemRegister::Fpsr => Route::FloatStatus,
-                SystemRegister::Counter | SystemRegister::Fixed(_) => {
+                SystemRegister::Counter
+                | SystemRegister::CounterFrequency
+                | SystemRegister::PhysicalCounter
+                | SystemRegister::Fixed(_) => {
                     unreachable!("a register that cannot be written is never decoded as a write")
                 }
             },

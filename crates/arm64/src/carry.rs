@@ -13,8 +13,8 @@ use wcontainers_guest_cpu::{
 
 use crate::encode::{self, Register, ZERO, field, form};
 use crate::instruction::{
-    Address, BranchRegister, Instruction as I, MemoryAccess, Operand, Reg, Shift, SystemRegister,
-    Width,
+    Address, BranchRegister, COUNTER_FREQUENCY, Instruction as I, MemoryAccess, Offer, Operand,
+    Reg, Shift, SystemRegister, Width,
 };
 use crate::meaning::Host;
 use crate::mirror::{
@@ -311,7 +311,7 @@ fn only(n: Register) -> Registers {
 
 /// What an instruction's meaning reads and writes.
 fn touched(i: &I) -> (Registers, Registers) {
-    let e = effects::<Arm64>(i, HARDWARE, ());
+    let e = effects::<Arm64>(i, HARDWARE, Offer::default());
     (e.uses, e.defs)
 }
 
@@ -793,6 +793,10 @@ fn carry_route(out: &mut Out, route: Route, i: &I, word: u32) {
                 rt,
                 register: SystemRegister::Fixed(value),
             } => out.build(rt, value, next),
+            I::ReadSystem {
+                rt,
+                register: SystemRegister::CounterFrequency,
+            } => out.build(rt, COUNTER_FREQUENCY, next),
             _ => unreachable!("only fixed registers are answered with a constant"),
         },
         Route::FloatStatus => float_status(out, i, word),

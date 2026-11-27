@@ -108,7 +108,9 @@ impl Emitter<Arm64> for Recorder {
     fn host(&self) -> Host {
         HARDWARE
     }
-    fn offer(&self) {}
+    fn offer(&self) -> wcontainers_arm64::Offer {
+        wcontainers_arm64::Offer::default()
+    }
     fn check(&mut self, _address: u32, _bytes: u32, access: Access, _which: u8) {
         self.seen.memory.push(access);
     }

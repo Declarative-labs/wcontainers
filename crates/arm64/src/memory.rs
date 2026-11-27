@@ -18,8 +18,9 @@ fn aligned(bytes: u8) -> MemArg {
     }
 }
 
-/// The address in `rn`, with the stack pointer's alignment checked when it is the base, untagged, checked to
-/// be a multiple of `align` (an alignment fault if not) and then checked for the access.
+/// The address in `rn`, with the stack pointer's alignment checked when it is the base, checked to be a multiple
+/// of `align` once untagged (an alignment fault at the address as computed if not), and then checked for the
+/// access.
 fn exact_address<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     rn: Reg,
@@ -44,7 +45,7 @@ fn exact_address<E: Emitter<Arm64> + ?Sized>(
             .i64_const(0)
             .i64_ne()
             .if_(BlockType::Empty);
-        e.trap(Trap::Alignment(untagged));
+        e.trap(Trap::Alignment(at));
         e.sink().end();
     }
     e.check(at, bytes, access, 0);
@@ -116,7 +117,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             rt,
             rn,
         } => {
-            let at = exact_address(e, rn, bytes.into(), bytes.into(), Access::Write);
+            let at = exact_address(e, rn, bytes.into(), bytes.into(), Access::Modify);
             low(e, rs, bytes);
             let value = save(e, Width::X64);
             let old = e.local(ValType::I64);
@@ -207,7 +208,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             rt,
             rn,
         } => {
-            let at = exact_address(e, rn, bytes.into(), bytes.into(), Access::Write);
+            let at = exact_address(e, rn, bytes.into(), bytes.into(), Access::Modify);
             e.sink().local_get(at);
             low(e, rs, bytes);
             low(e, rt, bytes);
@@ -222,7 +223,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             rn,
         } => {
             let total = 2 * u32::from(bytes);
-            let at = exact_address(e, rn, total, total, Access::Write);
+            let at = exact_address(e, rn, total, total, Access::Modify);
             let (rs2, rt2) = (next(rs), next(rt));
             if bytes == 4 {
                 // Both halves are one 64 bit compare and exchange.
@@ -362,25 +363,34 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             let at = e.local(ValType::I64);
             e.get(rn);
             e.sink().local_set(at);
-            let mut s = e.sink();
-            untag(&mut s, at);
-            s.i64_const(!63).i64_and().local_set(at);
-            e.check(at, 64, Access::Write, 0);
+            // The aligned block lies in the page of the address, so one byte at the address checks it, and a fault
+            // reports the address as the program gave it, as FAR_EL1 does.
+            e.check(at, 1, Access::Write, 0);
+            e.sink()
+                .local_get(at)
+                .i64_const(!63)
+                .i64_and()
+                .local_set(at);
             e.sink()
                 .local_get(at)
                 .i32_const(0)
                 .i64_const(64)
                 .memory_fill(0);
         }
-        I::CleanCache { rn } | I::CodeChanged { rn } => {
+        I::CleanCache { rn } => {
             let at = e.local(ValType::I64);
             e.get(rn);
             e.sink().local_set(at);
             e.check(at, 1, Access::Read, 0);
-            if let I::CodeChanged { .. } = instruction {
-                e.sink().local_get(at);
-                e.hook(Hook::CodeChanged);
-            }
+        }
+        I::CodeChanged { rn } => {
+            // IC IVAU never faults at EL0: the hook is given the untagged address, whatever its page allows.
+            let at = e.local(ValType::I64);
+            e.get(rn);
+            let mut s = e.sink();
+            s.local_set(at);
+            untag(&mut s, at);
+            e.hook(Hook::CodeChanged);
         }
         I::SimdMemory { .. } => structures(e, instruction),
         _ => unreachable!("not a memory instruction: {instruction:?}"),

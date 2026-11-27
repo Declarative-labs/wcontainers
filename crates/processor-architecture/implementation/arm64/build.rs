@@ -581,7 +581,7 @@ fn render_operand(members: &[&ListField]) -> String {
             1,
             "movimm32_imm" | "imm0_15" | "imm0_31" | "imm0_63" | "imm32_0_15" | "imm32_0_31"
             | "uimm6" | "uimm6s16" | "uimm8_32b" | "uimm8_64b" | "timm32_0_65535" | "uimm16"
-            | "barrier_op" | SELECTOR | "tbz_imm0_31_diag" | "tbz_imm32_63",
+            | "barrier_op" | SELECTOR | "tbz_imm0_31_diag" | "tbz_imm32_63" | "imm0_127",
         ) => match single_run(first) {
             Some(field) => format!("Operand::UnsignedImmediate({field})"),
             // An arrangement split over Q and size.

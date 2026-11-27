@@ -1,117 +1,45 @@
-//! Conversions between ARM64 processor states and register blocks, and single-step runs on a CPU side.
-//!
-//! An execution state's memory and processor become a memory and thread there, run for exactly one instruction.
-//!
-//! What an exit leaves out, such as whether a faulting page was mapped, is read from the state before.
+//! The executor as a behavior source: one instruction of a state, run on a scratch space that holds the state's memory.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
-use aarch64_cpu::registers::ESR_EL1;
-use wcontainers_abi::{Access, Cpu, Exit, PAGE_SIZE, Permissions, RegisterBlock, ThreadId};
-use wcontainers_processor_architecture::MemoryDelta;
-use wcontainers_processor_architecture_arm64::encoding::IMM16;
+use wcontainers_abi::{Access, PAGE_SIZE, Permissions, SystemCallRequest};
+use wcontainers_behavior_source::BehaviorSource;
+use wcontainers_executor::memory_space::MemorySpace;
+use wcontainers_executor::{
+    InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
+};
+use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
-use wcontainers_processor_architecture_arm64::syndrome::{
-    FaultStatus, WRITE_NOT_READ, encode_syndrome,
-};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch,
-    PagePermission, Processor,
+    Arm64, DataAccess, InstructionFetch, PagePermission, Processor, User,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
+use wcontainers_wasmtime::Wasmtime;
 
-/// Runs the state's instruction on a CPU side, where `run_one` must stop a thread after exactly one instruction.
-pub fn execute_on_cpu<Side: Cpu>(
-    cpu: &mut Side,
-    processor: &mut Processor,
-    memory: &[MemoryDelta<'_, Arm64>],
-    mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
-    run_one: impl FnOnce(&mut Side, ThreadId) -> Exit,
-) {
-    let space = cpu
-        .memory_new()
-        .expect("the CPU side has room for one more memory");
-    let mut pages: BTreeMap<u64, PagePermission> = BTreeMap::new();
-    for delta in memory {
-        match delta {
-            MemoryDelta::PermissionAssignment {
-                addresses,
-                permission,
-            } => {
-                assert!(
-                    addresses.start.is_multiple_of(PAGE_SIZE)
-                        && addresses.end.is_multiple_of(PAGE_SIZE),
-                    "a permission is given to whole pages"
-                );
-                cpu.set_permissions(
-                    space,
-                    addresses.start,
-                    addresses.end - addresses.start,
-                    to_permissions(*permission),
-                )
-                .expect("the pages are inside the CPU side's address space");
-                for page in addresses.clone().step_by(PAGE_SIZE as usize) {
-                    pages.insert(page, *permission);
-                }
-            }
-            MemoryDelta::ValueAssignment { start, bytes } => cpu
-                .write(space, *start, bytes)
-                .expect("the bytes are inside the CPU side's address space"),
-        }
+use crate::thread::{Ending, Mode};
+use crate::{WasmtimeError, WasmtimeExecutor, WasmtimeMemory, WasmtimePageTable};
+
+/// The handler of a step, which no trap reaches: a step ends at every trap itself.
+struct Unasked;
+
+impl TrapHandler for Unasked {
+    fn handle_system_call(&mut self, _: SystemCallRequest) -> SystemCallResponse {
+        SystemCallResponse::Terminate
     }
-    let pc = processor.program_counter;
-    let mut word = [u8::MIN; INSTRUCTION_BYTES as usize];
-    cpu.read(space, pc, &mut word)
-        .expect("the program counter is inside the CPU side's address space");
-    let word = u32::from_le_bytes(word);
-    let writable: Vec<u64> = pages
-        .iter()
-        .filter(|(_, permission)| {
-            matches!(
-                permission,
-                PagePermission::Mapped {
-                    data_access: DataAccess::ReadWrite,
-                    ..
-                }
-            )
-        })
-        .map(|(page, _)| *page)
-        .collect();
-    let read_page = |cpu: &mut Side, page: u64| {
-        let mut bytes = vec![u8::MIN; PAGE_SIZE as usize];
-        cpu.read(space, page, &mut bytes)
-            .expect("a page the state gave a permission");
-        bytes
-    };
-    let before: Vec<Vec<u8>> = writable.iter().map(|page| read_page(cpu, *page)).collect();
-    let thread = cpu
-        .thread_new(space)
-        .expect("the CPU side has room for one more thread");
-    let mut registers = to_register_block(processor);
-    cpu.set_registers(thread, &registers);
-    let exit = run_one(cpu, thread);
-    cpu.registers(thread, &mut registers);
-    // The abi leaves the program counter after a system call; an exception leaves it on the instruction.
-    if let Exit::Syscall(_) = exit {
-        registers.pc = pc;
+
+    fn handle_memory_fault(&mut self, _: u64, _: Access) -> MemoryFaultResponse {
+        MemoryFaultResponse::Terminate
     }
-    let exception = to_exception(exit, word, pc, |address| {
-        pages
-            .get(&(address - address % PAGE_SIZE))
-            .copied()
-            .unwrap_or(PagePermission::Unmapped)
-    });
-    *processor = to_processor(&registers, exception);
-    for (page, before) in writable.iter().zip(before) {
-        let after = read_page(cpu, *page);
-        report_changed_bytes(*page, &before, &after, &mut on_memory_mutated);
+
+    fn handle_interrupt(&mut self) -> InterruptResponse {
+        InterruptResponse::Terminate
     }
-    cpu.thread_drop(thread);
-    cpu.memory_drop(space);
 }
 
-fn to_permissions(permission: PagePermission) -> Permissions {
+/// Returns the permissions a page of a state has, none for an unmapped one.
+fn to_permissions(permission: PagePermission) -> Option<Permissions> {
     match permission {
-        PagePermission::Unmapped => Permissions::empty(),
+        PagePermission::Unmapped => None,
         PagePermission::Mapped {
             data_access,
             instruction_fetch,
@@ -125,94 +53,153 @@ fn to_permissions(permission: PagePermission) -> Permissions {
                 InstructionFetch::Forbidden => Permissions::empty(),
                 InstructionFetch::Allowed => Permissions::EXECUTE,
             };
-            data | fetch
+            Some(data | fetch)
         }
     }
 }
 
-pub(crate) fn to_register_block(processor: &Processor) -> RegisterBlock {
-    RegisterBlock {
-        x: processor.general_purpose_registers,
-        sp: processor.stack_pointer,
-        pc: processor.program_counter,
-        pstate: u64::from(processor.condition_flags.bits()),
-        v: processor
-            .vector_registers
-            .map(|value| [value as u64, (value >> u64::BITS) as u64]),
-        fpsr: u32::try_from(processor.floating_point_status)
-            .expect("FPSR's upper half is reserved as zero"),
-        fpcr: u32::try_from(processor.floating_point_control)
-            .expect("FPCR's upper half is reserved as zero"),
-        tpidr_el0: processor.software_thread_id,
+/// A space one executor runs single instructions on, cleared after each, and made anew after [`SCRATCH_STEPS`] of them.
+pub(crate) struct Scratch {
+    memory: WasmtimeMemory,
+    table: WasmtimePageTable,
+    steps: u32,
+}
+
+/// The single instructions run on one scratch space before it is made anew, which bounds what its store accumulates:
+/// an instance and lookup table slots for each instruction.
+const SCRATCH_STEPS: u32 = 1 << 10;
+
+impl BehaviorSource for WasmtimeExecutor {
+    type Architecture = Arm64<User>;
+    type Error = WasmtimeError;
+
+    /// Runs the instruction at the program counter on a scratch space holding the memory, and reports the bytes it
+    /// changed on the pages the memory lets it write.
+    fn execute_single_instruction_in_place(
+        &mut self,
+        processor: &mut Processor<()>,
+        memory: MemorySnapshot<'_, '_, Arm64<User>>,
+        mutation_hook: &mut impl MemorySink<Arm64<User>>,
+    ) -> Result<(), WasmtimeError> {
+        let mut scratch = match self.scratch.take() {
+            Some(scratch) if scratch.steps < SCRATCH_STEPS => scratch,
+            old => {
+                if let Some(old) = old {
+                    self.forget(&old.memory.space);
+                }
+                let (memory, table) = WasmtimeMemory::create(self.shared.clone())?;
+                Scratch {
+                    memory,
+                    table,
+                    steps: 0,
+                }
+            }
+        };
+        let stepped = self.step(&mut scratch, processor, memory, mutation_hook);
+        match stepped {
+            Ok(()) => {
+                scratch.steps += 1;
+                self.scratch = Some(scratch);
+            }
+            // A state refused part way leaves the scratch space holding part of it.
+            Err(_) => self.forget(&scratch.memory.space),
+        }
+        stepped
     }
 }
 
-pub(crate) fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Processor {
-    Processor {
-        general_purpose_registers: registers.x,
-        stack_pointer: registers.sp,
-        program_counter: registers.pc,
-        condition_flags: ConditionFlags::from_bits_truncate(registers.pstate as u32),
-        vector_registers: registers
-            .v
-            .map(|[low, high]| u128::from(low) | u128::from(high) << u64::BITS),
-        floating_point_control: u64::from(registers.fpcr),
-        floating_point_status: u64::from(registers.fpsr),
-        software_thread_id: registers.tpidr_el0,
-        exception,
+impl WasmtimeExecutor {
+    /// Runs one instruction on the scratch space, then clears what the state and the instruction left in it.
+    fn step(
+        &mut self,
+        scratch: &mut Scratch,
+        processor: &mut Processor<()>,
+        memory: MemorySnapshot<'_, '_, Arm64<User>>,
+        mutation_hook: &mut impl MemorySink<Arm64<User>>,
+    ) -> Result<(), WasmtimeError> {
+        let space = &scratch.memory;
+        let mut assigned = Vec::new();
+        let mut written = BTreeSet::new();
+        let mut writable = BTreeSet::new();
+        for delta in memory.mutations {
+            match delta {
+                MemoryDelta::PermissionAssignment {
+                    addresses,
+                    permission,
+                } => {
+                    let allowed = to_permissions(*permission);
+                    scratch
+                        .table
+                        .assign(addresses.clone(), allowed)
+                        .map_err(|_| WasmtimeError::AddressOutsideSpace)?;
+                    assigned.push(addresses.clone());
+                    let writes =
+                        allowed.is_some_and(|allowed| allowed.contains(Permissions::WRITE));
+                    for page in addresses.start / PAGE_SIZE..addresses.end.div_ceil(PAGE_SIZE) {
+                        if writes {
+                            writable.insert(page);
+                        } else {
+                            writable.remove(&page);
+                        }
+                    }
+                }
+                MemoryDelta::ValueAssignment { start, bytes } => {
+                    let end = start
+                        .checked_add(bytes.len() as u64)
+                        .ok_or(WasmtimeError::AddressOutsideSpace)?;
+                    let view = space
+                        .borrow(*start..end)
+                        .map_err(|_| WasmtimeError::AddressOutsideSpace)?;
+                    view.write(bytes);
+                    written.extend(start / PAGE_SIZE..end.div_ceil(PAGE_SIZE));
+                }
+            }
+        }
+        let read_page = |page: u64| {
+            let mut bytes = vec![0; PAGE_SIZE as usize];
+            if let Ok(view) = space.borrow(page * PAGE_SIZE..(page + 1) * PAGE_SIZE) {
+                view.read(&mut bytes);
+            }
+            bytes
+        };
+        let before: Vec<(u64, Vec<u8>)> = writable
+            .iter()
+            .map(|&page| (page, read_page(page)))
+            .collect();
+        let start = processor.program_counter;
+        let mode = Mode::Step {
+            start,
+            stops: 0,
+            loaded: false,
+        };
+        let shared = self.shared.clone();
+        let (thread, _) = self.prepare(&space.space, processor, mode);
+        let block = thread.store.data().block;
+        space.space.raise_stop_flag(block);
+        let ending = shared
+            .wasmtime
+            .call_with_trap_handler(&mut Unasked, || thread.run_to_end());
+        let exception = match ending {
+            Ending::Raised(exception) => Some(exception),
+            Ending::Interrupted | Ending::Stepped => None,
+        };
+        *processor = thread.processor(processor, exception);
+        thread.finish();
+        for (page, before) in before {
+            report_changed_bytes(page * PAGE_SIZE, &before, &read_page(page), mutation_hook);
+        }
+        for addresses in assigned {
+            scratch
+                .table
+                .assign(addresses, None)
+                .map_err(|_| WasmtimeError::AddressOutsideSpace)?;
+        }
+        for page in written.into_iter().chain(writable) {
+            space
+                .zero(page * PAGE_SIZE..(page + 1) * PAGE_SIZE)
+                .map_err(|_| WasmtimeError::AddressOutsideSpace)?;
+        }
+        space.space.drop_every_load();
+        Ok(())
     }
-}
-
-/// Returns the exception an exit is, or none when the instruction completed.
-pub(crate) fn to_exception(
-    exit: Exit,
-    word: u32,
-    pc: u64,
-    permission_at: impl Fn(u64) -> PagePermission,
-) -> Option<Exception> {
-    let fault_status = |address| match permission_at(address) {
-        PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3 as u64,
-        PagePermission::Mapped { .. } => FaultStatus::PermissionFaultLevel3 as u64,
-    };
-    let (class, specific, fault_address) = match exit {
-        Exit::Stop => return None,
-        Exit::Syscall(_) => (ESR_EL1::EC::Value::SVC64, u64::from(IMM16.read(word)), None),
-        Exit::MemoryFault {
-            address,
-            access: Access::Execute,
-        } => (
-            ESR_EL1::EC::Value::InstrAbortLowerEL,
-            fault_status(address),
-            Some(address),
-        ),
-        Exit::MemoryFault {
-            address,
-            access: Access::Read,
-        } => (
-            ESR_EL1::EC::Value::DataAbortLowerEL,
-            fault_status(address),
-            Some(address),
-        ),
-        Exit::MemoryFault {
-            address,
-            access: Access::Write,
-        } => (
-            ESR_EL1::EC::Value::DataAbortLowerEL,
-            WRITE_NOT_READ | fault_status(address),
-            Some(address),
-        ),
-        Exit::AlignmentFault { address } if address == pc => {
-            (ESR_EL1::EC::Value::PCAlignmentFault, u64::MIN, Some(pc))
-        }
-        Exit::AlignmentFault { .. } => (ESR_EL1::EC::Value::SPAlignmentFault, u64::MIN, None),
-        Exit::IllegalInstruction => (ESR_EL1::EC::Value::Unknown, u64::MIN, None),
-        Exit::Breakpoint { comment } => (ESR_EL1::EC::Value::Brk64, u64::from(comment), None),
-        Exit::MemoryFaultWithoutRegisters => {
-            panic!("the instruction at {pc:#x} reached beyond the CPU side's address space")
-        }
-    };
-    Some(Exception {
-        syndrome: encode_syndrome(class, specific),
-        fault_address,
-    })
 }

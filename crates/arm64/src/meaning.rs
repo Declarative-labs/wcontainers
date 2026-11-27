@@ -18,6 +18,24 @@ pub enum Trap {
     Breakpoint(u16),
     /// An alignment fault at the address in this i64 local.
     Alignment(u32),
+    /// A read of a register the offer keeps from EL0, which the kernel answers.
+    SystemAccess,
+}
+
+/// The trap a read of the register raises under the offer, if it raises one: every counter register when the offer
+/// keeps the counter from EL0, and the physical counter, which Linux keeps from EL0, always.
+fn counter_trap(offer: Offer, register: SystemRegister) -> Option<Trap> {
+    let counter = matches!(
+        register,
+        SystemRegister::Counter
+            | SystemRegister::CounterFrequency
+            | SystemRegister::PhysicalCounter
+    );
+    match offer.counter {
+        CounterAccess::Trapped if counter => Some(Trap::SystemAccess),
+        _ if register == SystemRegister::PhysicalCounter => Some(Trap::Undefined),
+        _ => None,
+    }
 }
 
 /// A register of the thread that is never kept in a local: it lives in the thread's state, where the hooks
@@ -1425,6 +1443,10 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
         I::Breakpoint { comment } => e.trap(Trap::Breakpoint(comment)),
         I::Nothing => e.next(),
         I::ReadSystem { register, rt } => {
+            if let Some(trap) = counter_trap(e.offer(), register) {
+                e.trap(trap);
+                return;
+            }
             match register {
                 SystemRegister::Nzcv => {
                     e.sink().i64_const(0);
@@ -1457,6 +1479,12 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
                     e.sink().i64_extend_i32_u();
                 }
                 SystemRegister::Counter => e.hook(Hook::Clock),
+                SystemRegister::CounterFrequency => {
+                    e.sink().i64_const(COUNTER_FREQUENCY as i64);
+                }
+                SystemRegister::PhysicalCounter => {
+                    unreachable!("a read of the physical counter traps")
+                }
                 SystemRegister::Fixed(value) => {
                     e.sink().i64_const(value as i64);
                 }
@@ -1488,7 +1516,10 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
                     e.sink().i32_const(1);
                     e.set_control(Control::FloatTracking);
                 }
-                SystemRegister::Counter | SystemRegister::Fixed(_) => {
+                SystemRegister::Counter
+                | SystemRegister::CounterFrequency
+                | SystemRegister::PhysicalCounter
+                | SystemRegister::Fixed(_) => {
                     unreachable!("a register that cannot be written")
                 }
             }

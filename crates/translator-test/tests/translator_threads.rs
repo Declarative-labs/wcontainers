@@ -30,7 +30,7 @@ fn the_first_translations_from_another_pool_end() {
                 Optimise::Speed,
                 ProgressCount::Absent,
                 host,
-                (),
+                wcontainers_arm64::Offer::default(),
             )
             .expect("a translation");
         });
