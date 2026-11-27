@@ -5,7 +5,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use wcontainers_gallium::{Mapped, PipeBox, ResourceTemplate};
+use wcontainers_gallium::{Mapped, PipeBox, ResourceTemplate, values::TextureTarget};
 use wcontainers_gpu::{
     Gpu, Object, STORAGE_WORD, caps::Caps, caps::FormatUse, format::FORMAT_FACTS, format::Format,
     format::FormatKind, resource::BufferDesc, resource::BufferUsage, resource::CopyBufferTexture,
@@ -86,7 +86,7 @@ impl<B: Gpu> Resource<B> {
 
     /// The interface's format of the resource's Gallium format.
     pub fn format(&self) -> Option<Format> {
-        crate::format::format(self.template.format)
+        crate::format::format(self.template.format.0)
     }
 }
 
@@ -103,7 +103,7 @@ const BUFFER_USAGE: BufferUsage = BufferUsage::VERTEX
 
 /// The interface's texture of a Gallium template, if the interface holds its format and shape.
 fn texture_desc(caps: &Caps, template: &ResourceTemplate) -> Option<TextureDesc> {
-    let format = crate::format::format(template.format)?;
+    let format = crate::format::format(template.format.0)?;
     let uses = caps.formats.uses[format as usize];
     let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     if uses.contains(FormatUse::SAMPLE) {
@@ -120,7 +120,7 @@ fn texture_desc(caps: &Caps, template: &ResourceTemplate) -> Option<TextureDesc>
     {
         usage |= TextureUsage::STORAGE;
     }
-    let target = template.target;
+    let target = template.target.0;
     let (dimension, depth_or_layers) = if target == PIPE_TEXTURE_3D {
         (TextureDimension::D3, u32::from(template.depth0))
     } else {
@@ -147,8 +147,8 @@ pub fn create<B: Gpu>(
     retired: &Retired<B>,
     template: &ResourceTemplate,
 ) -> Option<Resource<B>> {
-    let storage = if template.target == PIPE_BUFFER {
-        let usage = template.usage;
+    let storage = if template.target.0 == PIPE_BUFFER {
+        let usage = template.usage.0;
         let intent = if usage == PIPE_USAGE_STREAM || usage == PIPE_USAGE_DYNAMIC {
             MapIntent::Often
         } else {
@@ -166,9 +166,9 @@ pub fn create<B: Gpu>(
                 return None;
             }
         }
-    } else if template.target == PIPE_TEXTURE_2D_ARRAY && template.nr_samples > 1 {
+    } else if template.target.0 == PIPE_TEXTURE_2D_ARRAY && template.nr_samples > 1 {
         let layer = ResourceTemplate {
-            target: PIPE_TEXTURE_2D,
+            target: TextureTarget(PIPE_TEXTURE_2D),
             array_size: 1,
             ..*template
         };
@@ -418,7 +418,7 @@ pub fn map<B: Gpu>(
         (usize::try_from(unsigned(area.width)).ok()?, 0, 0)
     } else {
         resource.texture()?;
-        let (rows, stride) = box_layout(resource.template.format, area);
+        let (rows, stride) = box_layout(resource.template.format.0, area);
         let layer_stride = u64::from(rows) * u64::from(stride);
         let size = layer_stride * u64::from(unsigned(area.depth));
         (usize::try_from(size).ok()?, stride, layer_stride)
@@ -468,7 +468,7 @@ pub fn write_mapped<B: Gpu>(
     }
     // The part of the map flushed, written now (the transfer helper copies a multisampled
     // texture's single-sampled map into it before unmapping that).
-    let format = resource.template.format;
+    let format = resource.template.format.0;
     let mapped = mapping.area;
     let (width, height, bytes) = block(format);
     let (rows, stride) = box_layout(format, &mapped);
@@ -631,7 +631,7 @@ pub fn subdata<B: Gpu>(
             "texture_subdata of a multisampled texture: Mesa's u_default_texture_subdata (G4)"
         ));
     }
-    let (rows, row) = box_layout(resource.template.format, area);
+    let (rows, row) = box_layout(resource.template.format.0, area);
     let stride = if stride == 0 { row } else { stride };
     let rows_per_layer = if layer_stride == 0 {
         rows

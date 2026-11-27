@@ -3430,7 +3430,7 @@ fn squares_for<B: Gpu>(
                 slot.insert(None);
                 return Ok(None);
             }
-            let largest = crate::screen::largest_point_size(backend.caps());
+            let largest = crate::caps::largest_point_size(backend.caps());
             let square = if sized { &copy } else { &vs.nir }.point_square(at, largest);
             let Some(mut nir) = square else {
                 return refused(format_args!(
@@ -3476,7 +3476,7 @@ fn squares_for<B: Gpu>(
     if !made.sized && raster.point_size <= ONE_PIXEL {
         return Ok(None);
     }
-    if !crate::screen::point_coordinate_passes(&backend.caps().limits, at) {
+    if !crate::caps::point_coordinate_passes(&backend.caps().limits, at) {
         return refused(format_args!(
             "points drawn as squares passing gl_PointCoord at location {at}, past the host's"
         ));
@@ -3507,7 +3507,7 @@ fn geometry_squares_for<B: Gpu>(
         return Ok(None);
     }
     let at = gs.nir.generic_end().max(fs.nir.generic_end());
-    let block = crate::screen::uniform_blocks(backend.caps());
+    let block = crate::caps::uniform_blocks(backend.caps());
     let made = match programs.squares.entry((gs.id, at)) {
         Entry::Occupied(made) => made.into_mut(),
         Entry::Vacant(slot) => {
@@ -3518,7 +3518,7 @@ fn geometry_squares_for<B: Gpu>(
                 slot.insert(None);
                 return Ok(None);
             }
-            let largest = crate::screen::largest_point_size(backend.caps());
+            let largest = crate::caps::largest_point_size(backend.caps());
             let geometry = match gs.nir.geometry_squares(at, largest, block) {
                 Some(nir) => Some(Shader {
                     stage: Stage::Geometry,
@@ -3548,7 +3548,7 @@ fn geometry_squares_for<B: Gpu>(
     if !made.sized && raster.point_size <= ONE_PIXEL {
         return Ok(None);
     }
-    if !crate::screen::point_coordinate_passes(&backend.caps().limits, at) {
+    if !crate::caps::point_coordinate_passes(&backend.caps().limits, at) {
         return refused(format_args!(
             "points drawn as squares passing gl_PointCoord at location {at}, past the host's"
         ));

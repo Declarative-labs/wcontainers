@@ -9,23 +9,28 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use wcontainers_gallium::{
-    BlendColor, BlendState, BlitInfo, ClipState, ComputeState, ConstantBuffer,
-    DepthStencilAlphaState, DrawIndirectInfo, DrawInfo, DrawStartCountBias, FramebufferState,
-    Gallium, GalliumContext, GridInfo, ImageView, Mapped, PipeBox, PolyStipple, RasterizerState,
-    ResourceTemplate, SamplerState, SamplerViewTemplate, ScissorState, ShaderBuffer, ShaderState,
-    StencilRef, Surface, VertexBuffer, VertexElement, ViewportState,
+    BlendColor, BlendState, BlitInfo, Caps as GalliumCaps, ClipState, ComputeCaps, ComputeState,
+    ConstantBuffer, DepthStencilAlphaState, DrawIndirectInfo, DrawInfo, DrawStartCountBias,
+    FramebufferState, Gallium, GalliumContext, GridInfo, ImageView, Mapped, PipeBox, PolyStipple,
+    RasterizerState, ResourceTemplate, SamplerState, SamplerViewTemplate, ScissorState,
+    ShaderBuffer, ShaderCaps, ShaderState, StencilRef, Surface, VertexBuffer, VertexElement,
+    ViewportState, values,
 };
-use wcontainers_gpu::{Gpu, caps::Caps, error::DeviceStatus, passes::PassTracker};
+use wcontainers_gpu::{
+    ClearValue, Gpu, Object, caps::Caps, caps::Features, draw::ScissorRect, error::DeviceStatus,
+    passes::PassTracker,
+};
 use wcontainers_mesa_compiler::MesaCompiler;
 use wcontainers_mesa_compiler_direct::Bridge;
 
 use crate::device::HostWindows;
+use crate::framebuffer::{self, Framebuffer};
 use crate::guest::{self, guest_call, refuse};
 use crate::pipe::*;
 use crate::resources::{self, Mapping, Resource};
 use crate::screen::{DRIVER_NAME, whole};
 use crate::state::Stage;
-use crate::states::{self, Blend, DepthStencil, Elements, Raster, Retired, Sampler};
+use crate::states::{self, Blend, DepthStencil, Elements, Raster, Retired, Sampler, retire};
 
 /// A kind of the Gallium trait whose calls are not yet moved onto it: no value of it is ever made,
 /// so every call taking one cannot be made, and every call making one is refused.
@@ -113,6 +118,7 @@ struct Set<B: Gpu> {
     patch_vertices: u8,
     /// The passes recorded, closed where later work must see what they wrote.
     tracker: PassTracker<B>,
+    framebuffer: Framebuffer<B>,
 }
 
 impl<B: Gpu> Default for Set<B> {
@@ -130,6 +136,7 @@ impl<B: Gpu> Default for Set<B> {
             scissor: None,
             patch_vertices: 0,
             tracker: PassTracker::default(),
+            framebuffer: Framebuffer::default(),
         }
     }
 }
@@ -175,6 +182,32 @@ impl<B: HostWindows> DriverContext<B> {
         mapped
     }
 
+    /// Clears a rectangle of one surface, outside any pass.
+    fn clear_surface(
+        &self,
+        surface: &Surface<'_, Resource<B>>,
+        value: ClearValue,
+        rect: ScissorRect,
+    ) {
+        let Some(surface) = framebuffer::Attached::of(surface) else {
+            return;
+        };
+        let mut backend = self.shared.backend();
+        self.close_pass(&mut backend);
+        let Some((view, format)) =
+            framebuffer::surface_view(&mut *backend, &surface, surface.first_layer)
+        else {
+            refuse(format_args!(
+                "a clear of a surface of no texture or of a format the device lacks"
+            ));
+        };
+        let cleared = backend.clear_rects(&view, format, value, &[rect]);
+        backend.destroy(Object::TextureView(view));
+        if let Err(error) = cleared {
+            refuse(format_args!("a clear: {error:?}"));
+        }
+    }
+
     /// Writes what `mapping` mapped for writing from `written`, unless the caller flushed its parts
     /// itself.
     fn unmap(&self, mapping: &Mapping<B>, written: &[u8]) {
@@ -195,15 +228,26 @@ impl<B: HostWindows> DriverContext<B> {
     }
 }
 
+/// The f32 bits of a depth clear value.
+fn depth_bits(depth: f64) -> u32 {
+    (depth as f32).to_bits()
+}
+
+/// The stencil bits of a clear value.
+fn stencil_bits(stencil: u32) -> u8 {
+    (stencil & u32::from(u8::MAX)) as u8
+}
+
 /// The driver's stage of a Gallium stage, for the stages it takes.
-pub fn stage(stage: u32) -> Option<Stage> {
-    match mesa_shader_stage::try_from(stage).ok()? {
-        MESA_SHADER_VERTEX => Some(Stage::Vertex),
-        MESA_SHADER_FRAGMENT => Some(Stage::Fragment),
-        MESA_SHADER_COMPUTE => Some(Stage::Compute),
-        MESA_SHADER_GEOMETRY => Some(Stage::Geometry),
-        MESA_SHADER_TESS_CTRL => Some(Stage::TessControl),
-        MESA_SHADER_TESS_EVAL => Some(Stage::TessEvaluation),
+pub fn stage(stage: values::MesaShaderStage) -> Option<Stage> {
+    use values::MesaShaderStage as S;
+    match stage {
+        S::MESA_SHADER_VERTEX => Some(Stage::Vertex),
+        S::MESA_SHADER_FRAGMENT => Some(Stage::Fragment),
+        S::MESA_SHADER_COMPUTE => Some(Stage::Compute),
+        S::MESA_SHADER_GEOMETRY => Some(Stage::Geometry),
+        S::MESA_SHADER_TESS_CTRL => Some(Stage::TessControl),
+        S::MESA_SHADER_TESS_EVAL => Some(Stage::TessEvaluation),
         _ => None,
     }
 }
@@ -282,8 +326,8 @@ impl<B: HostWindows> Gallium for Driver<B> {
 
     fn is_format_supported(
         &self,
-        format: u32,
-        target: u32,
+        format: values::Format,
+        target: values::TextureTarget,
         sample_count: u32,
         storage_sample_count: u32,
         bindings: u32,
@@ -291,13 +335,34 @@ impl<B: HostWindows> Gallium for Driver<B> {
         guest_call(guest::SCREEN, false, || {
             crate::format::supported(
                 &self.shared.caps.formats,
-                format,
-                target,
+                format.0,
+                target.0,
                 sample_count,
                 storage_sample_count,
                 bindings,
             )
         })
+    }
+
+    /// The interface's limits over Mesa's defaults ([`crate::caps::fill`]).
+    fn caps(&self, caps: &mut GalliumCaps) {
+        crate::caps::fill(caps, &self.shared.caps);
+    }
+
+    /// The stages the driver takes programs for; the geometry and tessellation stages only where
+    /// the back end runs compute work, which the stage helper runs them as.
+    fn shader_caps(&self, stage: values::MesaShaderStage, caps: &mut ShaderCaps) {
+        let staged = self.shared.caps.features.contains(Features::COMPUTE);
+        if self::stage(stage).is_some() && (staged || !crate::caps::STAGED.contains(&stage)) {
+            crate::caps::fill_shader(caps, stage, &self.shared.caps);
+        }
+    }
+
+    /// Compute work's limits, where the back end runs it.
+    fn compute_caps(&self, caps: &mut ComputeCaps) {
+        if self.shared.caps.features.contains(Features::COMPUTE) {
+            crate::caps::fill_compute(caps, &self.shared.caps);
+        }
     }
 
     fn resource_create(&self, template: &ResourceTemplate) -> Option<Resource<B>> {
@@ -355,7 +420,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn bind_sampler_states(
         &self,
-        shader: u32,
+        shader: values::MesaShaderStage,
         start_slot: u32,
         samplers: &[Option<&Arc<Sampler<B>>>],
     ) {
@@ -408,17 +473,17 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         &self,
         resource: &Arc<Resource<B>>,
         level: u32,
-        usage: u32,
+        usage: values::MapFlags,
         area: &PipeBox,
     ) -> Option<Mapped<Mapping<B>>> {
-        self.call(None, || self.map(resource, level, usage, area))
+        self.call(None, || self.map(resource, level, usage.0, area))
     }
 
     /// Written from the caller's bytes, with no copy before.
     fn buffer_subdata(
         &self,
         resource: &Arc<Resource<B>>,
-        usage: u32,
+        usage: values::MapFlags,
         offset: u32,
         size: u32,
         data: &[u8],
@@ -437,7 +502,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
                 buffer,
                 u64::from(offset),
                 data,
-                resources::write_mode(usage),
+                resources::write_mode(usage.0),
             );
         });
     }
@@ -447,36 +512,126 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.call((), || self.unmap(&transfer, written));
     }
 
-    fn clear(&self, _: u32, _: u32, _: u8, _: Option<&ScissorState>, _: &[u32; 4], _: f64, _: u32) {
-        self.call((), || not_moved("clear"));
+    /// Clears the framebuffer's targets `buffers` names, every layer of a layered one, a layer at
+    /// a time. The render condition always holds: a query, which sets one, is not yet moved.
+    fn clear(
+        &self,
+        buffers: u32,
+        _: u32,
+        _: u8,
+        scissor: Option<&ScissorState>,
+        color: &[u32; 4],
+        depth: f64,
+        stencil: u32,
+    ) {
+        self.call((), || {
+            if scissor.is_some() {
+                refuse(format_args!("a scissored clear (the screen reports none)"));
+            }
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            let set = &mut *set;
+            let depth = (buffers & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth));
+            let stencil = (buffers & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil));
+            let layers = set.framebuffer.layer_count();
+            let kept = set.tracker.targets().cloned();
+            let mut made = Vec::new();
+            let mut done = Ok(());
+            for layer in 0..layers {
+                if layer > 0 {
+                    let mut twins = Vec::new();
+                    let (targets, views, _) =
+                        set.framebuffer
+                            .layer_targets(&mut *backend, layer, &mut twins);
+                    if !twins.is_empty() {
+                        refuse(format_args!(
+                            "a clear of a layered target drawn through a twin (not built)"
+                        ));
+                    }
+                    made.extend(views);
+                    done = done.and_then(|()| set.tracker.set_targets(&mut *backend, targets));
+                }
+                for target in 0..set.framebuffer.colors.len() {
+                    if buffers & (PIPE_CLEAR_COLOR0 << target) != 0 {
+                        done = done
+                            .and_then(|()| set.tracker.clear_color(&mut *backend, target, *color));
+                    }
+                }
+                if depth.is_some() || stencil.is_some() {
+                    done = done.and_then(|()| {
+                        set.tracker
+                            .clear_depth_stencil(&mut *backend, depth, stencil)
+                    });
+                }
+            }
+            if layers > 1 {
+                if let Some(kept) = kept {
+                    done = done.and_then(|()| set.tracker.set_targets(&mut *backend, kept));
+                }
+                for view in made {
+                    backend.destroy(Object::TextureView(view));
+                }
+            }
+            if let Err(error) = done {
+                refuse(format_args!("a clear: {error:?}"));
+            }
+            if let Err(error) = set
+                .framebuffer
+                .copy_back_twins(&mut set.tracker, &mut backend)
+            {
+                refuse(format_args!("a clear: {error}"));
+            }
+        });
     }
 
+    /// The render condition always holds: a query, which sets one, is not yet moved.
     fn clear_depth_stencil(
         &self,
-        _: &Surface<'_, Resource<B>>,
-        _: u32,
-        _: f64,
-        _: u32,
-        _: u32,
-        _: u32,
-        _: u32,
-        _: u32,
+        dst: &Surface<'_, Resource<B>>,
+        clear_flags: u32,
+        depth: f64,
+        stencil: u32,
+        dstx: u32,
+        dsty: u32,
+        width: u32,
+        height: u32,
         _: bool,
     ) {
-        self.call((), || not_moved("clear_depth_stencil"));
+        self.call((), || {
+            let value = ClearValue::DepthStencil {
+                depth: (clear_flags & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth)),
+                stencil: (clear_flags & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil)),
+            };
+            let rect = ScissorRect {
+                x: dstx,
+                y: dsty,
+                width,
+                height,
+            };
+            self.clear_surface(dst, value, rect);
+        });
     }
 
+    /// The render condition always holds: a query, which sets one, is not yet moved.
     fn clear_render_target(
         &self,
-        _: &Surface<'_, Resource<B>>,
-        _: &[u32; 4],
-        _: u32,
-        _: u32,
-        _: u32,
-        _: u32,
+        dst: &Surface<'_, Resource<B>>,
+        color: &[u32; 4],
+        dstx: u32,
+        dsty: u32,
+        width: u32,
+        height: u32,
         _: bool,
     ) {
-        self.call((), || not_moved("clear_render_target"));
+        self.call((), || {
+            let rect = ScissorRect {
+                x: dstx,
+                y: dsty,
+                width,
+                height,
+            };
+            self.clear_surface(dst, ClearValue::Color(*color), rect);
+        });
     }
 
     fn create_blend_state(&self, state: &BlendState) -> Option<Arc<Blend>> {
@@ -521,11 +676,11 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.call(None, || not_moved("create_gs_state"))
     }
 
-    fn create_query(&self, _: u32, _: u32) -> Option<Unmoved> {
+    fn create_query(&self, _: values::QueryType, _: u32) -> Option<Unmoved> {
         self.call(None, || not_moved("create_query"))
     }
 
-    fn create_query_end_only_query(&self, _: u32, _: u32) -> Option<Unmoved> {
+    fn create_query_end_only_query(&self, _: values::QueryType, _: u32) -> Option<Unmoved> {
         self.call(None, || not_moved("create_query (end only)"))
     }
 
@@ -646,7 +801,9 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     /// The context's states go with it; a destroyed context's reset is forgotten.
     fn destroy(&self) {
-        *self.set.borrow_mut() = Set::default();
+        let mut old = std::mem::take(&mut *self.set.borrow_mut());
+        old.framebuffer
+            .release(|object| retire(&self.shared.retired, object));
         guest::forget_reset(self.key);
     }
 
@@ -672,11 +829,15 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.call((), || not_moved("draw_vbo"));
     }
 
-    fn end_query(&self, q: Unmoved) -> Option<Unmoved> {
+    fn end_query(&self, q: Unmoved) -> Result<Unmoved, Unmoved> {
         match q {}
     }
 
-    fn flush(&self, _: u32) -> Option<Unmoved> {
+    fn end_query_end_only_query(&self, q: &Unmoved) -> bool {
+        match *q {}
+    }
+
+    fn flush(&self, _: values::FlushFlags) -> Option<Unmoved> {
         self.call(None, || not_moved("flush"))
     }
 
@@ -686,7 +847,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
     fn generate_mipmap(
         &self,
         _: &Arc<Resource<B>>,
-        _: u32,
+        _: values::Format,
         _: u32,
         _: u32,
         _: u32,
@@ -695,8 +856,8 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.call(false, || not_moved("generate_mipmap"))
     }
 
-    fn get_device_reset_status(&self) -> u32 {
-        guest::reset_status(self.key)
+    fn get_device_reset_status(&self) -> values::ResetStatus {
+        values::ResetStatus(guest::reset_status(self.key))
     }
 
     fn get_query_result(&self, q: &Unmoved, _: bool, _: &mut [u8]) -> bool {
@@ -721,11 +882,14 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.texture_barrier(0);
     }
 
-    fn render_condition(&self, query: &Unmoved, _: bool, _: u32) {
-        match *query {}
+    /// No condition can be set: a query is not yet moved; ending one holds always.
+    fn render_condition(&self, query: Option<&Unmoved>, _: bool, _: values::RenderCondFlag) {
+        if let Some(query) = query {
+            match *query {}
+        }
     }
 
-    fn render_condition_end_only_query(&self, query: &Unmoved, _: bool, _: u32) {
+    fn render_condition_end_only_query(&self, query: &Unmoved, _: bool, _: values::RenderCondFlag) {
         match *query {}
     }
 
@@ -754,12 +918,40 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
     /// User clip planes are lowered into the programs by st/mesa (the screen reports none).
     fn set_clip_state(&self, _: &ClipState) {}
 
-    fn set_constant_buffer(&self, _: u32, _: u32, _: Option<&ConstantBuffer<'_, Resource<B>>>) {
+    fn set_constant_buffer(
+        &self,
+        _: values::MesaShaderStage,
+        _: u32,
+        _: Option<&ConstantBuffer<'_, Resource<B>>>,
+    ) {
         self.call((), || not_moved("set_constant_buffer"));
     }
 
-    fn set_framebuffer_state(&self, _: &FramebufferState<'_, Resource<B>>) {
-        self.call((), || not_moved("set_framebuffer_state"));
+    /// The framebuffer's surfaces held and their targets set; the old ones' views and twins go
+    /// when the device is next used (the old twins were copied back after their work).
+    fn set_framebuffer_state(&self, state: &FramebufferState<'_, Resource<B>>) {
+        self.call((), || {
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            let set = &mut *set;
+            let mut old = std::mem::replace(&mut set.framebuffer, Framebuffer::of(state));
+            old.release(|object| retire(&self.shared.retired, object));
+            let mut twins = Vec::new();
+            let (targets, views, samples) =
+                set.framebuffer.layer_targets(&mut *backend, 0, &mut twins);
+            set.framebuffer.target_samples = samples;
+            set.framebuffer.twins = twins;
+            set.framebuffer.views = views;
+            if let Err(error) = set
+                .framebuffer
+                .copy_into_twins(&mut set.tracker, &mut backend)
+            {
+                refuse(format_args!("framebuffer: {error}"));
+            }
+            if let Err(error) = set.tracker.set_targets(&mut *backend, targets) {
+                refuse(format_args!("framebuffer: {error:?}"));
+            }
+        });
     }
 
     fn set_patch_vertices(&self, patch_vertices: u8) {
@@ -776,7 +968,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn set_sampler_views(
         &self,
-        _: u32,
+        _: values::MesaShaderStage,
         _: u32,
         _: u32,
         _: u32,
@@ -799,7 +991,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn set_shader_buffers(
         &self,
-        _: u32,
+        _: values::MesaShaderStage,
         _: u32,
         _: u32,
         _: Option<&[ShaderBuffer<'_, Resource<B>>]>,
@@ -810,7 +1002,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn set_shader_images(
         &self,
-        _: u32,
+        _: values::MesaShaderStage,
         _: u32,
         _: u32,
         _: u32,
@@ -823,7 +1015,12 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.set.borrow_mut().stencil_ref = value.ref_value;
     }
 
-    fn set_stream_output_targets(&self, targets: &[Option<&Arc<Unmoved>>], _: &[u32], _: u32) {
+    fn set_stream_output_targets(
+        &self,
+        targets: &[Option<&Arc<Unmoved>>],
+        _: &[u32],
+        _: values::MesaPrim,
+    ) {
         if let Some(target) = targets.iter().flatten().next() {
             match ***target {}
         }
@@ -857,7 +1054,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         &self,
         resource: &Arc<Resource<B>>,
         level: u32,
-        usage: u32,
+        usage: values::MapFlags,
         area: &PipeBox,
         data: &[u8],
         stride: u32,
@@ -871,7 +1068,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
                 &self.shared.retired,
                 resource,
                 level,
-                usage,
+                usage.0,
                 area,
                 data,
                 stride,
@@ -886,10 +1083,10 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         &self,
         prsc: &Arc<Resource<B>>,
         level: u32,
-        usage: u32,
+        usage: values::MapFlags,
         box_: &PipeBox,
     ) -> Option<Mapped<Mapping<B>>> {
-        self.call(None, || self.map(prsc, level, usage, box_))
+        self.call(None, || self.map(prsc, level, usage.0, box_))
     }
 
     /// Writes what was mapped for writing, unless the caller flushed its parts itself.

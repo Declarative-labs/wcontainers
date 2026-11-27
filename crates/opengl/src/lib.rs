@@ -6,6 +6,8 @@
 #[cfg(mesa)]
 mod blit;
 #[cfg(mesa)]
+mod caps;
+#[cfg(mesa)]
 mod compute;
 #[cfg(mesa)]
 mod context;
@@ -17,6 +19,8 @@ mod draw;
 pub mod driver;
 #[cfg(mesa)]
 mod format;
+#[cfg(mesa)]
+mod framebuffer;
 #[cfg(mesa)]
 mod gallium;
 #[cfg(mesa)]

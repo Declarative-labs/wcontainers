@@ -344,13 +344,13 @@ pub fn blend(state: &BlendState) -> Blend {
         if rt.blend_enable != 0 {
             target.blend = Some((
                 BlendComponent {
-                    src: factor(rt.rgb_src_factor),
-                    dst: factor(rt.rgb_dst_factor),
+                    src: factor(rt.rgb_src_factor.0),
+                    dst: factor(rt.rgb_dst_factor.0),
                     op: blend_op(rt.rgb_func),
                 },
                 BlendComponent {
-                    src: factor(rt.alpha_src_factor),
-                    dst: factor(rt.alpha_dst_factor),
+                    src: factor(rt.alpha_src_factor.0),
+                    dst: factor(rt.alpha_dst_factor.0),
                     op: blend_op(rt.alpha_func),
                 },
             ));
@@ -361,17 +361,17 @@ pub fn blend(state: &BlendState) -> Blend {
             targets,
             same_for_all: !independent,
             alpha_to_coverage: state.alpha_to_coverage != 0,
-            logic_op: (state.logicop_enable != 0).then(|| logic_op(state.logicop_func)),
+            logic_op: (state.logicop_enable != 0).then(|| logic_op(state.logicop_func.0)),
         },
     }
 }
 
 fn face(state: &StencilState) -> StencilFace {
     StencilFace {
-        compare: compare(state.func),
-        fail: stencil_op(state.fail_op),
-        depth_fail: stencil_op(state.zfail_op),
-        pass: stencil_op(state.zpass_op),
+        compare: compare(state.func.0),
+        fail: stencil_op(state.fail_op.0),
+        depth_fail: stencil_op(state.zfail_op.0),
+        pass: stencil_op(state.zpass_op.0),
     }
 }
 
@@ -392,7 +392,7 @@ pub fn depth_stencil<B: Gpu>(
     let back = if back_on { back } else { front };
     let stencil = front.enabled != 0;
     let desc = DepthStencilDesc {
-        depth_compare: depth.then(|| compare(state.depth_func)),
+        depth_compare: depth.then(|| compare(state.depth_func.0)),
         depth_write: depth && state.depth_writemask != 0,
         stencil: stencil.then(|| (face(front), face(back))),
         stencil_read_mask: [mask_byte(front.valuemask), mask_byte(back.valuemask)],
@@ -531,7 +531,7 @@ pub fn raster<B: Gpu>(backend: &mut B, retired: &Retired<B>, state: &RasterizerS
         provoking,
         host_provoking,
         point_size: state.point_size,
-        point_coord_down: state.sprite_coord_mode == PIPE_SPRITE_COORD_UPPER_LEFT,
+        point_coord_down: state.sprite_coord_mode.0 == PIPE_SPRITE_COORD_UPPER_LEFT,
         retired: retired.clone(),
     }
 }
@@ -579,15 +579,6 @@ fn border(color: [f32; COLOR_CHANNELS]) -> BorderColor {
     }
 }
 
-/// The lower bound of a sampler's level of detail. The Gallium trait's `SamplerState` has no
-/// `min_lod` (its generator kept only the second name of p_state.h:487's `float min_lod,
-/// max_lod;`), so every sampler is refused until it carries it (NEEDED, G10).
-fn min_lod(_: &SamplerState) -> f32 {
-    refuse(format_args!(
-        "a sampler: the Gallium trait carries no min_lod (G10)"
-    ))
-}
-
 /// `pipe_context::create_sampler_state`, on a screen whose caps are `caps`.
 pub fn sampler<B: Gpu>(
     backend: &mut B,
@@ -595,8 +586,8 @@ pub fn sampler<B: Gpu>(
     caps: &Caps,
     state: &SamplerState,
 ) -> Sampler<B> {
-    let mip = state.min_mip_filter;
-    let min_lod = min_lod(state);
+    let mip = state.min_mip_filter.0;
+    let min_lod = state.min_lod;
     let lod_range = if mip == PIPE_TEX_MIPFILTER_NONE {
         // The base level alone, with the level of detail free to pass zero so that the host
         // still tells minifying from magnifying, as OpenGL does without mipmaps.
@@ -605,14 +596,14 @@ pub fn sampler<B: Gpu>(
         // The host's levels of detail start at zero, where its magnifying filter takes over, as
         // OpenGL's does at and below zero: a negative bound reads as zero, alike, and a bound past
         // the deepest level reads as that level, which it selects all the same.
-        let deepest = crate::screen::deepest_level(caps) as f32;
+        let deepest = crate::caps::deepest_level(caps) as f32;
         let min = min_lod.clamp(0.0, deepest);
         [min.to_bits(), state.max_lod.clamp(min, deepest).to_bits()]
     };
-    let wraps = [state.wrap_s, state.wrap_t, state.wrap_r];
+    let wraps = [state.wrap_s.0, state.wrap_t.0, state.wrap_r.0];
     let desc = SamplerDesc {
-        min: filter(state.min_img_filter),
-        mag: filter(state.mag_img_filter),
+        min: filter(state.min_img_filter.0),
+        mag: filter(state.mag_img_filter.0),
         mip: if mip == PIPE_TEX_MIPFILTER_LINEAR {
             Filter::Linear
         } else {
@@ -621,7 +612,7 @@ pub fn sampler<B: Gpu>(
         address: wraps.map(address),
         lod_range,
         anisotropy: u16::try_from(state.max_anisotropy.max(1)).unwrap_or(u16::MAX),
-        compare: (state.compare_mode != 0).then(|| compare(state.compare_func)),
+        compare: (state.compare_mode.0 != 0).then(|| compare(state.compare_func.0)),
         // The colour's bits, float or integer.
         border: border(state.border_color.map(f32::from_bits)),
     };
