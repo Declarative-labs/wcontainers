@@ -202,9 +202,6 @@ fn held<H: Clone>(table: &HashMap<u64, H>, number: u64) -> Option<H> {
     table.get(&number).cloned()
 }
 
-/// Why a call naming a destroyed or unknown object is refused (plan section 4.10).
-const GONE: &str = "a handle names an object destroyed before, or one this back end never made";
-
 fn buffer_of(gpu: &WebGpu, b: &Buffer) -> Option<Rc<BufferObj>> {
     held(&gpu.objects.buffers, b.0).map(|h| h.0)
 }
@@ -1499,17 +1496,6 @@ impl Gpu for WebGpu {
         {
             usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
-        // A read of 24-bit depth on a device sampling some words alike compares against the texture
-        // as a depth attachment (`fill::decide_colliding`).
-        if desc.usage.contains(TextureUsage::COPY_SRC)
-            && matches!(
-                desc.format,
-                Format::Depth24Plus | Format::Depth24PlusStencil8
-            )
-            && !self.depth24_colliding.is_empty()
-        {
-            usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
-        }
         let srgb_twin = convert::srgb_twin(format);
         // In the browser a resolve in the other twin is drawn from the samples, and so is every
         // resolve of a format WebGPU does not resolve (`ResolveByDraw`).
@@ -1872,7 +1858,7 @@ impl Gpu for WebGpu {
         match object {
             Object::Buffer(b) => {
                 let Some(b) = self.objects.buffers.remove(&b.0) else {
-                    return self.fail(GONE);
+                    return self.fail(GpuError::GONE);
                 };
                 if b.0.in_arena {
                     return release_slice(self, &b.0);
@@ -1888,7 +1874,7 @@ impl Gpu for WebGpu {
             }
             Object::Texture(t) => {
                 let Some(t) = self.objects.textures.remove(&t.0) else {
-                    return self.fail(GONE);
+                    return self.fail(GpuError::GONE);
                 };
                 give_back_texture_spares(self, &t.0);
                 if pending(t.0.used_in.get()) {
@@ -2184,7 +2170,7 @@ impl Gpu for WebGpu {
 
     fn read_state(&mut self, readback: &Readback) -> ReadState {
         let Some(readback) = readback_of(self, readback) else {
-            self.fail(GONE);
+            self.fail(GpuError::GONE);
             return ReadState::Ready;
         };
         if readback.state.load(Ordering::Acquire) == MAP_PENDING {
@@ -2198,7 +2184,7 @@ impl Gpu for WebGpu {
 
     fn wait_read(&mut self, readback: &Readback) {
         let Some(readback) = readback_of(self, readback) else {
-            return self.fail(GONE);
+            return self.fail(GpuError::GONE);
         };
         let pending = readback.state.load(Ordering::Acquire) == MAP_PENDING;
         if pending && readback.serial == self.serial {
@@ -2246,7 +2232,7 @@ impl Gpu for WebGpu {
         height: u32,
         vsync: bool,
     ) -> Result<(), GpuError> {
-        let surface = surface_of(self, surface).ok_or(GpuError::Invalid(GONE))?;
+        let surface = surface_of(self, surface).ok_or(GpuError::Invalid(GpuError::GONE))?;
         if !self.caps.formats.uses[format as usize].contains(FormatUse::PRESENT) {
             return Err(GpuError::Invalid("surface format without PRESENT"));
         }
@@ -2316,7 +2302,7 @@ impl Gpu for WebGpu {
     }
 
     fn current_texture(&mut self, surface: &Surface) -> Result<TextureView, GpuError> {
-        let surface = surface_of(self, surface).ok_or(GpuError::Invalid(GONE))?;
+        let surface = surface_of(self, surface).ok_or(GpuError::Invalid(GpuError::GONE))?;
         let config = surface.config.borrow().clone().ok_or(GpuError::Invalid(
             "current_texture before configure_surface",
         ))?;
@@ -2398,7 +2384,7 @@ impl Gpu for WebGpu {
     }
 
     fn present(&mut self, surface: &Surface) -> Result<(), GpuError> {
-        let surface = surface_of(self, surface).ok_or(GpuError::Invalid(GONE))?;
+        let surface = surface_of(self, surface).ok_or(GpuError::Invalid(GpuError::GONE))?;
         let frame = surface
             .current
             .borrow_mut()
@@ -2437,7 +2423,7 @@ impl Gpu for WebGpu {
     }
 
     fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
-        let set = query_set_of(self, set).ok_or(GpuError::Invalid(GONE))?;
+        let set = query_set_of(self, set).ok_or(GpuError::Invalid(GpuError::GONE))?;
         if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }

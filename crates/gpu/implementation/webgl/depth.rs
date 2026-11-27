@@ -7,6 +7,7 @@
 
 use crate::platform;
 use std::sync::OnceLock;
+use wcontainers_gpu::format::Format;
 use wcontainers_opengl_es::OpenGlEs;
 use wcontainers_opengl_es::constants as gles;
 
@@ -85,9 +86,6 @@ pub(crate) fn build_equal(gl: &impl OpenGlEs) -> Result<EqualPass, String> {
     })
 }
 
-/// The largest 24-bit word.
-const UNORM24_MAX: u32 = (1 << 24) - 1;
-
 /// The stored 24-bit words a read by sampling ([`UNORM24`]) gives as another word on a device that
 /// samples a stored c as c times `reciprocal` (0: the float nearest c / (2^24 - 1), where every word
 /// samples to its own float and none is listed). Found by converting every word as the device does
@@ -110,14 +108,15 @@ pub(crate) fn colliding(reciprocal: f32) -> Vec<u32> {
 fn scan(reciprocal: f32) -> Vec<u32> {
     let sampled = |c: u32| (c as f32 * reciprocal).to_bits();
     let read = |bits: u32| {
-        let e = ((f32::from_bits(bits) * UNORM24_MAX as f32).round() as u32).min(UNORM24_MAX);
+        let e = ((f32::from_bits(bits) * Format::UNORM24_MAX as f32).round() as u32)
+            .min(Format::UNORM24_MAX);
         if e > 0 && sampled(e) != bits && sampled(e - 1) == bits {
             e - 1
         } else {
             e
         }
     };
-    (0..=UNORM24_MAX)
+    (0..=Format::UNORM24_MAX)
         .filter(|&c| read(sampled(c)) != c)
         .collect()
 }

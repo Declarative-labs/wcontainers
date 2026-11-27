@@ -13,7 +13,7 @@
 
 use crate::fill::convert_by_draw;
 use crate::memory::{copy_buffer_texture, copy_texture_impl, write_texels};
-use crate::{GONE, forget_texture, texture_of};
+use crate::{forget_texture, texture_of};
 use wcontainers_gpu::{
     Gpu, format::FORMAT_FACTS, format::Format, resource::CopyBufferTexture, resource::Extent,
     resource::Origin, resource::TextureDesc, resource::TextureDimension, resource::TextureRegion,
@@ -22,6 +22,7 @@ use wcontainers_gpu::{
 
 use crate::memory::DX12_PLACEMENT_ALIGNMENT;
 use crate::{Texture, WebGpu};
+use wcontainers_gpu::error::GpuError;
 
 /// The format a texture of `format` is held in, where the back end converts it.
 pub(crate) fn held(format: Format) -> Option<Format> {
@@ -449,7 +450,7 @@ pub(crate) fn write_packed(
     mode: WriteMode,
 ) {
     let Some(t) = texture_of(gpu, region.texture) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let format = t.desc.format;
     if !region
@@ -497,7 +498,7 @@ fn first_slice(
     extent: Extent,
 ) -> Option<u32> {
     let Some(t) = texture_of(gpu, region.texture) else {
-        gpu.fail(GONE);
+        gpu.fail(GpuError::GONE);
         return None;
     };
     if !region
@@ -559,7 +560,7 @@ fn convert_region(
     into: bool,
 ) {
     let (Some(t), Some(staged)) = (texture_of(gpu, region.texture), texture_of(gpu, staged)) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     t.used_in.set(gpu.serial);
     let held = (
@@ -597,7 +598,7 @@ pub(crate) fn copy_buffer_packed(
     to_texture: bool,
 ) {
     let Some(t) = texture_of(gpu, region.texture) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let format = t.desc.format;
     let run = raw_run(gpu, format);
@@ -627,7 +628,7 @@ fn copy_buffer_packed_run(
         return;
     }
     let Some(t) = texture_of(gpu, region.texture) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let format = t.desc.format;
     let Some(first) = first_slice(gpu, region, extent) else {
@@ -662,7 +663,7 @@ pub(crate) fn copy_packed(
     extent: Extent,
 ) {
     let (Some(s), Some(d)) = (texture_of(gpu, src.texture), texture_of(gpu, dst.texture)) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let (sf, df) = (s.desc.format, d.desc.format);
     if FORMAT_FACTS[sf as usize].block != FORMAT_FACTS[df as usize].block {
@@ -689,7 +690,7 @@ fn copy_packed_run(
     extent: Extent,
 ) {
     let (Some(s), Some(d)) = (texture_of(gpu, src.texture), texture_of(gpu, dst.texture)) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let (sf, df) = (s.desc.format, d.desc.format);
     if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {

@@ -6,7 +6,7 @@ use crate::draw::split_pass;
 use crate::edge::copy_bytes;
 use crate::fill::{aspect_by_draw, depth_by_draw, stencil_by_draw};
 use crate::packed::{copy_buffer_packed, copy_packed, write_packed};
-use crate::{GONE, HeldReadback, buffer_of, forget_texture, query_set_of, readback_of, texture_of};
+use crate::{HeldReadback, buffer_of, forget_texture, query_set_of, readback_of, texture_of};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::ops::Range;
@@ -577,7 +577,7 @@ pub(crate) fn write_buffer_impl(
     mode: WriteMode,
 ) {
     let Some(b) = buffer_of(gpu, buffer) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     if data.is_empty() {
         return;
@@ -610,7 +610,7 @@ pub(crate) fn write_buffer_from_impl(
     mode: WriteMode,
 ) {
     let Some(b) = buffer_of(gpu, buffer) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let len = data.len();
     let at = b.base.get() + offset;
@@ -689,7 +689,7 @@ pub(crate) fn write_texture_impl(
     mode: WriteMode,
 ) {
     let Some(t) = texture_of(gpu, region.texture) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     if t.blocks.is_some() {
         write_blocks(gpu, region, extent, data, row_pitch, rows_per_layer, mode);
@@ -711,7 +711,7 @@ pub(crate) fn write_texels(
     mode: WriteMode,
 ) {
     let Some(t) = texture_of(gpu, region.texture) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     if !region.stencil && filled_by_draw(t.desc.format) {
         let Some((staged, sf, how)) = depth_staging(gpu, t.desc.format, extent) else {
@@ -728,7 +728,7 @@ pub(crate) fn write_texels(
         // A new texture: written straight from the queue.
         write_texels(gpu, &at, extent, data, row_pitch, rows_per_layer, mode);
         let Some(staged) = forget_texture(gpu, &staged) else {
-            return gpu.fail(GONE);
+            return gpu.fail(GpuError::GONE);
         };
         let (tex, mip, layer, origin) = (
             region.texture.clone(),
@@ -865,7 +865,7 @@ pub(crate) fn copy_buffer_impl(
     size: u64,
 ) {
     let (Some(src), Some(dst)) = (buffer_of(gpu, src), buffer_of(gpu, dst)) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     if gpu.pass.is_some() {
         gpu.fail("copy_buffer inside a pass");
@@ -908,7 +908,7 @@ pub(crate) fn copy_texture_impl(
     extent: Extent,
 ) {
     let (Some(s), Some(d)) = (texture_of(gpu, src.texture), texture_of(gpu, dst.texture)) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     if gpu.pass.is_some() {
         gpu.fail("copy_texture inside a pass");
@@ -1016,7 +1016,7 @@ pub(crate) fn copy_texture_impl(
                 copy_texture_impl(gpu, src, &staged, extent);
                 let how = DepthSource::Unorm16;
                 let Some(bits) = forget_texture(gpu, &bits) else {
-                    return gpu.fail(GONE);
+                    return gpu.fail(GpuError::GONE);
                 };
                 let raw = bits.raw();
                 depth_copy(
@@ -1133,7 +1133,7 @@ fn depth_copy(
     stream: Stream,
 ) {
     let Some(d) = texture_of(gpu, dst.texture) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     if src.0.sample_count() > 1 || d.desc.samples > 1 {
         gpu.fail("multisampled depth copies by a draw are not built yet");
@@ -1170,7 +1170,7 @@ fn stencil_copy(
     extent: Extent,
 ) {
     let Some(d) = texture_of(gpu, dst.texture) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     if src.0.sample_count() > 1 || d.desc.samples > 1 {
         gpu.fail("multisampled stencil copies by a draw are not built yet");
@@ -1206,7 +1206,7 @@ fn aspect_as_colour(
     extent: Extent,
 ) -> Result<Option<Texture>, ()> {
     let Some(t) = texture_of(gpu, region.texture) else {
-        gpu.fail(GONE);
+        gpu.fail(GpuError::GONE);
         return Err(());
     };
     let format = t.desc.format;
@@ -1300,7 +1300,7 @@ pub(crate) fn copy_buffer_texture(
         texture_of(gpu, region.texture),
         buffer_of(gpu, buffer.buffer),
     ) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     if gpu.pass.is_some() {
         gpu.fail("buffer and texture copies inside a pass");
@@ -1359,7 +1359,7 @@ pub(crate) fn copy_buffer_texture(
         copy_buffer_texture(gpu, buffer, &at_origin(&staged), extent, true);
         t.used_in.set(gpu.serial);
         let Some(staged) = forget_texture(gpu, &staged) else {
-            return gpu.fail(GONE);
+            return gpu.fail(GpuError::GONE);
         };
         let raw = staged.raw();
         stencil_copy(
@@ -1382,7 +1382,7 @@ pub(crate) fn copy_buffer_texture(
         copy_buffer_texture(gpu, buffer, &at_origin(&staged), extent, true);
         t.used_in.set(gpu.serial);
         let Some(staged) = forget_texture(gpu, &staged) else {
-            return gpu.fail(GONE);
+            return gpu.fail(GpuError::GONE);
         };
         depth_copy(
             gpu,
@@ -1514,7 +1514,7 @@ pub(crate) fn clear_buffer_impl(
     pattern: &[u8],
 ) {
     let Some(b) = buffer_of(gpu, buffer) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     if gpu.pass.is_some() {
         gpu.fail("clear_buffer inside a pass");
@@ -1639,7 +1639,7 @@ pub(crate) fn read_back_impl(
         } => {
             let start = offset & !(ALIGN - 1);
             let end = (offset + size).next_multiple_of(ALIGN);
-            let buffer = buffer_of(gpu, buffer).ok_or(GpuError::Invalid(GONE))?;
+            let buffer = buffer_of(gpu, buffer).ok_or(GpuError::Invalid(GpuError::GONE))?;
             let target = map_target(gpu, end - start);
             buffer.used_in.set(gpu.serial);
             let raw = buffer.raw.borrow().clone();
@@ -1653,7 +1653,8 @@ pub(crate) fn read_back_impl(
             Ok(readback(gpu, target, None, offset - start, *size, *size, 1))
         }
         ReadSource::Texture { region, extent } => {
-            let texture = texture_of(gpu, region.texture).ok_or(GpuError::Invalid(GONE))?;
+            let texture =
+                texture_of(gpu, region.texture).ok_or(GpuError::Invalid(GpuError::GONE))?;
             if texture.blocks.is_some() {
                 return read_blocks(gpu, region, *extent).ok_or(GpuError::Invalid(
                     "a read back outside the texture's blocks",
@@ -1678,7 +1679,9 @@ pub(crate) fn read_back_impl(
                 None => region,
             };
             let t = match &drawn {
-                Some(drawn) => forget_texture(gpu, drawn).ok_or(GpuError::Invalid(GONE))?,
+                Some(drawn) => {
+                    forget_texture(gpu, drawn).ok_or(GpuError::Invalid(GpuError::GONE))?
+                }
                 None => texture,
             };
             let t = &*t;
@@ -1736,7 +1739,7 @@ fn resolved(
     first: u32,
     count: u32,
 ) -> Result<(wgpu::Buffer, Vec<ResolvedPart>), GpuError> {
-    let set = query_set_of(gpu, set).ok_or(GpuError::Invalid(GONE))?;
+    let set = query_set_of(gpu, set).ok_or(GpuError::Invalid(GpuError::GONE))?;
     if gpu.pass.is_some() {
         return Err(GpuError::Invalid("query results are taken outside a pass"));
     }
@@ -1937,7 +1940,7 @@ pub(crate) fn resolve_queries_impl(
     dst: &Buffer,
     dst_offset: u64,
 ) -> Result<(), GpuError> {
-    let dst = buffer_of(gpu, dst).ok_or(GpuError::Invalid(GONE))?;
+    let dst = buffer_of(gpu, dst).ok_or(GpuError::Invalid(GpuError::GONE))?;
     if !dst_offset.is_multiple_of(QUERY_BYTES) {
         return Err(GpuError::Invalid(
             "query results go to multiples of 8 bytes",
@@ -1975,7 +1978,7 @@ pub(crate) fn finish_read_into_impl(
     dst: &impl VolatileBytes,
 ) {
     let Some(held) = readback_of(gpu, &readback) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let o = &*held;
     let whole = o.state.load(Ordering::Acquire) == MAP_READY
@@ -2004,7 +2007,7 @@ pub(crate) fn finish_read_into_impl(
 
 pub(crate) fn finish_read_impl(gpu: &mut WebGpu, readback: Readback, dst: &mut [u8]) {
     let Some(held) = gpu.objects.readbacks.remove(&readback.0) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let o = &*held.0;
     if o.state.load(Ordering::Acquire) != MAP_READY {

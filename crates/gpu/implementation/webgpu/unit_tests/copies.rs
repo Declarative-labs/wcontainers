@@ -7,7 +7,6 @@
 
 use super::{depth16, draw, gaps};
 
-use crate::fill::UNORM24_MAX;
 use crate::probe::Depth24;
 use wcontainers_gpu::{
     Gpu, caps::FormatUse, draw::AspectOps, draw::ColorAttachment, draw::DepthAttachment,
@@ -186,7 +185,7 @@ fn source_words(format: Format) -> Vec<u32> {
     (0..W * H)
         .map(|i| match format {
             Format::Depth24Plus | Format::Depth24PlusStencil8 => {
-                0xab00_0000 | (i.wrapping_mul(0x0012_3457) & UNORM24_MAX)
+                0xab00_0000 | (i.wrapping_mul(0x0012_3457) & Format::UNORM24_MAX)
             }
             _ => (i as f32 / 31.0 + if i % 3 == 0 { 1.0 / 3.0 } else { 0.0 })
                 .min(1.0)
@@ -199,7 +198,7 @@ fn source_words(format: Format) -> Vec<u32> {
 fn depth_of(format: Format, word: u32) -> f32 {
     match format {
         Format::Depth24Plus | Format::Depth24PlusStencil8 => {
-            (f64::from(word & UNORM24_MAX) / f64::from(UNORM24_MAX)) as f32
+            (f64::from(word & Format::UNORM24_MAX) / f64::from(Format::UNORM24_MAX)) as f32
         }
         _ => f32::from_bits(word),
     }
@@ -211,7 +210,7 @@ fn depth_of(format: Format, word: u32) -> f32 {
 fn same_depth(format: Format, got: f32, want: f32) -> bool {
     match format {
         Format::Depth24Plus | Format::Depth24PlusStencil8 => {
-            (f64::from(got) - f64::from(want)).abs() * f64::from(UNORM24_MAX) < 1.001
+            (f64::from(got) - f64::from(want)).abs() * f64::from(Format::UNORM24_MAX) < 1.001
         }
         _ => got.to_bits() == want.to_bits(),
     }
@@ -643,7 +642,7 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
         // sample a value as a float nearer the next one: llvmpipe's product with the rounded
         // reciprocal), else the bits of the depth a program reads.
         let want: Vec<u32> = if unorm24 {
-            words.iter().map(|w| w & UNORM24_MAX).collect()
+            words.iter().map(|w| w & Format::UNORM24_MAX).collect()
         } else {
             drawn.iter().map(|d| d.to_bits()).collect()
         };
@@ -660,7 +659,7 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
         }
         if unorm24 {
             let off: Vec<_> = (0..words.len())
-                .filter(|i| (words[*i] & UNORM24_MAX).abs_diff(whole[*i]) > 1)
+                .filter(|i| (words[*i] & Format::UNORM24_MAX).abs_diff(whole[*i]) > 1)
                 .collect();
             assert!(
                 off.is_empty(),

@@ -31,6 +31,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
+use wcontainers_gpu::error::GpuError;
 use wcontainers_gpu::{
     caps::*, draw::*, error::*, format::*, helpers::*, resource::*, shader::*, slow::*, state::*, *,
 };
@@ -248,9 +249,6 @@ handle!(VertexLayout);
 handle!(BindingSet);
 handle!(QuerySet);
 handle!(Readback);
-
-/// Why a call naming a destroyed object, or one this back end never made, is refused.
-const GONE: &str = "a handle names an object destroyed before, or one this back end never made";
 
 /// The objects the handles name, by their numbers, from their making to their destroying (a read back's
 /// until it is finished). `F` is the OpenGL ES fence type.
@@ -3500,7 +3498,7 @@ fn draw_unrestarted<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, dr
         Err(_) => return fail(gpu, LossReason::OutOfMemory),
     };
     let Some(ring_held) = held(&gpu.objects.buffers, ring.0) else {
-        return invalid(gpu, GONE.into());
+        return invalid(gpu, GpuError::GONE.into());
     };
     let rewritten = Drawn {
         index: Some(Index {
@@ -3893,7 +3891,8 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, GpuError> {
-        let texture = held(&self.objects.textures, texture.0).ok_or(GpuError::Invalid(GONE))?;
+        let texture =
+            held(&self.objects.textures, texture.0).ok_or(GpuError::Invalid(GpuError::GONE))?;
         let v = make_view(self, &texture, desc)?;
         self.objects.views.insert(v.id, v.clone());
         Ok(TextureView(v.id))
@@ -4014,9 +4013,12 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         let wcontainers_gpu::shader::Program::Render { vertex, fragment } = program else {
             return Err(GpuError::Absent(Features::COMPUTE));
         };
-        let vertex = held(&self.objects.shaders, vertex.0).ok_or(GpuError::Invalid(GONE))?;
+        let vertex =
+            held(&self.objects.shaders, vertex.0).ok_or(GpuError::Invalid(GpuError::GONE))?;
         let fragment = match fragment {
-            Some(f) => Some(held(&self.objects.shaders, f.0).ok_or(GpuError::Invalid(GONE))?),
+            Some(f) => {
+                Some(held(&self.objects.shaders, f.0).ok_or(GpuError::Invalid(GpuError::GONE))?)
+            }
             None => None,
         };
         let pair = (vertex.id, fragment.as_ref().map_or(0, |f| f.id));
@@ -4196,12 +4198,14 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         for e in entries {
             let r = match &e.resource {
                 BindingResource::UniformBuffer(r) => Bound::Uniform(
-                    held(&self.objects.buffers, r.buffer.0).ok_or(GpuError::Invalid(GONE))?,
+                    held(&self.objects.buffers, r.buffer.0)
+                        .ok_or(GpuError::Invalid(GpuError::GONE))?,
                     r.offset,
                     r.size,
                 ),
                 BindingResource::Texture(v) => {
-                    let v = held(&self.objects.views, v.0).ok_or(GpuError::Invalid(GONE))?;
+                    let v =
+                        held(&self.objects.views, v.0).ok_or(GpuError::Invalid(GpuError::GONE))?;
                     // A GL texture is sampled whole in its own target: views to draw into of one
                     // layer, or of a cube's face, cannot be sampled.
                     let t = &v.texture.desc;
@@ -4218,7 +4222,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                     Bound::Texture(v)
                 }
                 BindingResource::Sampler(s) => Bound::Sampler(
-                    held(&self.objects.samplers, s.0).ok_or(GpuError::Invalid(GONE))?,
+                    held(&self.objects.samplers, s.0).ok_or(GpuError::Invalid(GpuError::GONE))?,
                 ),
                 BindingResource::StorageBuffer { .. } | BindingResource::StorageTexture { .. } => {
                     return Err(GpuError::Absent(
@@ -4313,7 +4317,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     fn write_buffer(&mut self, buffer: &Buffer, offset: u64, data: &[u8], mode: WriteMode) {
         match held(&self.objects.buffers, buffer.0) {
             Some(buffer) => write_buffer_held(self, &buffer, offset, data, mode),
-            None => invalid(self, GONE.into()),
+            None => invalid(self, GpuError::GONE.into()),
         }
     }
 
@@ -4330,13 +4334,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             Some(region) => {
                 write_texture_held(self, &region, extent, data, row_pitch, rows_per_layer, mode)
             }
-            None => invalid(self, GONE.into()),
+            None => invalid(self, GpuError::GONE.into()),
         }
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
         let Some(pass) = pass_of(self, pass) else {
-            return invalid(self, GONE.into());
+            return invalid(self, GpuError::GONE.into());
         };
         if let Some(empty) = pass.empty {
             return begin_empty_pass(self, empty, pass.occlusion.clone());
@@ -4543,7 +4547,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
         let Some(drawn) = drawn_of(self, call) else {
-            return invalid(self, GONE.into());
+            return invalid(self, GpuError::GONE.into());
         };
         if !call.restart
             && let (Some(index), DrawRange::Indexed { first, count, .. }) =
@@ -4595,10 +4599,10 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         size: u64,
     ) {
         let Some(src) = held(&self.objects.buffers, src.0) else {
-            return invalid(self, GONE.into());
+            return invalid(self, GpuError::GONE.into());
         };
         let Some(dst) = held(&self.objects.buffers, dst.0) else {
-            return invalid(self, GONE.into());
+            return invalid(self, GpuError::GONE.into());
         };
         // Both sides are made whole first, so afterwards at most the side no copy reached is stale.
         refresh(self, &src, None);
@@ -4663,7 +4667,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     ) {
         match (region_of(self, src), region_of(self, dst)) {
             (Some(src), Some(dst)) => copy_texture_held(self, &src, &dst, extent),
-            _ => invalid(self, GONE.into()),
+            _ => invalid(self, GpuError::GONE.into()),
         }
     }
 
@@ -4675,7 +4679,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     ) {
         match (place_of(self, src), region_of(self, dst)) {
             (Some(src), Some(dst)) => copy_buffer_to_texture_held(self, &src, &dst, extent),
-            _ => invalid(self, GONE.into()),
+            _ => invalid(self, GpuError::GONE.into()),
         }
     }
 
@@ -4687,7 +4691,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     ) {
         match (region_of(self, src), place_of(self, dst)) {
             (Some(src), Some(dst)) => copy_texture_to_buffer_held(self, &src, &dst, extent),
-            _ => invalid(self, GONE.into()),
+            _ => invalid(self, GpuError::GONE.into()),
         }
     }
 
@@ -4695,7 +4699,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     /// buffer of `buffer`, then doubled by copies within each ([`SlowPath::PatternClearCopied`]).
     fn clear_buffer(&mut self, buffer: &Buffer, offset: u64, size: u64, pattern: &[u8]) {
         let Some(buffer) = held(&self.objects.buffers, buffer.0) else {
-            return invalid(self, GONE.into());
+            return invalid(self, GpuError::GONE.into());
         };
         if size == 0 {
             return;
@@ -4763,7 +4767,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         format: Format,
     ) {
         let (Some(src), Some(dst)) = (region_of(self, src), region_of(self, dst)) else {
-            return invalid(self, GONE.into());
+            return invalid(self, GpuError::GONE.into());
         };
         let (s, d) = (&src.texture, &dst.texture);
         if s.desc.samples == 1 || d.desc.samples != 1 {
@@ -4833,7 +4837,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Self::Readback, GpuError> {
-        let src = source_of(self, src).ok_or(GpuError::Invalid(GONE))?;
+        let src = source_of(self, src).ok_or(GpuError::Invalid(GpuError::GONE))?;
         let r = read_back_held(self, &src)?;
         let number = id(self);
         self.objects.readbacks.insert(number, r);
@@ -4846,7 +4850,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         first: u32,
         count: u32,
     ) -> Result<Self::Readback, GpuError> {
-        let set = held(&self.objects.query_sets, set.0).ok_or(GpuError::Invalid(GONE))?;
+        let set = held(&self.objects.query_sets, set.0).ok_or(GpuError::Invalid(GpuError::GONE))?;
         let slots = set.slots.borrow();
         let queries = slots
             .get(first as usize..(first + count) as usize)
@@ -4873,7 +4877,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     /// reads nothing, the device having been lost when it was made.
     fn read_state(&mut self, readback: &Self::Readback) -> ReadState {
         let Some(readback) = held(&self.objects.readbacks, readback.0) else {
-            invalid(self, GONE.into());
+            invalid(self, GpuError::GONE.into());
             return ReadState::Ready;
         };
         let r = readback.borrow();
@@ -4892,7 +4896,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
 
     fn wait_read(&mut self, readback: &Self::Readback) {
         let Some(readback) = held(&self.objects.readbacks, readback.0) else {
-            return invalid(self, GONE.into());
+            return invalid(self, GpuError::GONE.into());
         };
         if readback.borrow().pbo.is_none() {
             // Natively the results arrive while the device thread spins. WebGL makes them available only
@@ -4930,7 +4934,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
 
     fn finish_read(&mut self, readback: Self::Readback, dst: &mut [u8]) {
         let Some(readback) = self.objects.readbacks.remove(&readback.0) else {
-            return invalid(self, GONE.into());
+            return invalid(self, GpuError::GONE.into());
         };
         if let Some(kept) = readback.borrow_mut().host.take() {
             let n = kept.len().min(dst.len());
@@ -5124,7 +5128,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         src: &ReadSource<'_, Self>,
         dst: &mut [u8],
     ) -> Result<(), GpuError> {
-        let src = source_of(self, src).ok_or(GpuError::Invalid(GONE))?;
+        let src = source_of(self, src).ok_or(GpuError::Invalid(GpuError::GONE))?;
         read_back_now_held(self, &src, dst)
     }
 
@@ -5137,7 +5141,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         rects: &[ScissorRect],
     ) -> Result<(), GpuError> {
         let id = view;
-        let view = held(&self.objects.views, view.0).ok_or(GpuError::Invalid(GONE))?;
+        let view = held(&self.objects.views, view.0).ok_or(GpuError::Invalid(GpuError::GONE))?;
         if rects.is_empty() {
             return Ok(());
         }
@@ -5229,7 +5233,8 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         mips: Range<u32>,
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
-        let texture = held(&self.objects.textures, texture.0).ok_or(GpuError::Invalid(GONE))?;
+        let texture =
+            held(&self.objects.textures, texture.0).ok_or(GpuError::Invalid(GpuError::GONE))?;
         let levels = mips.start.max(1)..mips.end.min(desc.mip_levels);
         let every_layer = layers.start == 0 && layers.end >= desc.depth_or_layers;
         let native = FormatUse::RENDER | FormatUse::FILTER;
@@ -5386,12 +5391,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             ));
         }
         let Some(drawn) = drawn_of(self, call) else {
-            return Err(GpuError::Invalid(GONE));
+            return Err(GpuError::Invalid(GpuError::GONE));
         };
         let mut held_targets = Vec::with_capacity(targets.len());
         for t in targets {
             held_targets.push(BufferRange {
-                buffer: held(&self.objects.buffers, t.buffer.0).ok_or(GpuError::Invalid(GONE))?,
+                buffer: held(&self.objects.buffers, t.buffer.0)
+                    .ok_or(GpuError::Invalid(GpuError::GONE))?,
                 offset: t.offset,
                 size: t.size,
             });
@@ -5646,7 +5652,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
 
     /// `queryCounterEXT` with `TIMESTAMP_EXT`, which GL writes between any two commands.
     fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
-        let set = held(&self.objects.query_sets, set.0).ok_or(GpuError::Invalid(GONE))?;
+        let set = held(&self.objects.query_sets, set.0).ok_or(GpuError::Invalid(GpuError::GONE))?;
         if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }

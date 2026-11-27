@@ -3,6 +3,12 @@
 use crate::format::*;
 
 impl Format {
+    /// The bits of `Depth24Plus`'s depth as a back end stores it: a 24-bit unorm word.
+    pub const UNORM24_BITS: u32 = 24;
+
+    /// The largest 24-bit unorm depth word, the one that stands for 1.0.
+    pub const UNORM24_MAX: u32 = (1 << Self::UNORM24_BITS) - 1;
+
     /// The bytes one sample of colour targets in these formats holds, in attachment order, as
     /// [`crate::caps::Limits::color_bytes_per_sample`] bounds it: each target starts at a multiple of its
     /// alignment and adds its cost ([`FormatFacts::target_bytes`]). None where one cannot be a colour

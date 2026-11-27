@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use wcontainers_gpu::format::Format;
 
 /// The depth the probe's triangle is drawn at.
 const PROBE_DEPTH: f32 = 0.1;
@@ -54,7 +55,7 @@ impl Depth24 {
     /// Reads the answer: the depth 0.1 lands on, biased by one unit.
     pub(crate) fn of(read: f32) -> Depth24 {
         let base = PROBE_DEPTH;
-        let max = f64::from(crate::fill::UNORM24_MAX);
+        let max = f64::from(Format::UNORM24_MAX);
         // The 24-bit step 0.1 is stored as, one above; read back within one step, as programs read
         // 24-bit depth.
         let step = (f64::from(base) * max).round() + 1.0;

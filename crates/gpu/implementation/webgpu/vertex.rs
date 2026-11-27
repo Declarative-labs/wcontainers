@@ -3,7 +3,7 @@
 //! has, made by a compute program before the draw and kept until the source buffer is written.
 
 use crate::draw::split_pass;
-use crate::{GONE, buffer_of, held};
+use crate::{buffer_of, held};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -12,6 +12,7 @@ use wcontainers_gpu::{
 };
 
 use crate::{BufferObj, GROUP, Stream, WebGpu, convert, with_group};
+use wcontainers_gpu::error::GpuError;
 
 /// Makes the shadow elements: each operation reads one attribute of a source element and writes
 /// it, widened where its format is lacking, at its place in the shadow element.
@@ -332,7 +333,7 @@ pub(crate) type Bound = (usize, u64, wgpu::Buffer);
 /// an open pass. None when the device was marked lost.
 pub(crate) fn vertex_shadows(gpu: &mut WebGpu, call: &DrawCall<'_, WebGpu>) -> Option<Vec<Bound>> {
     let Some(vertex_layout) = held(&gpu.objects.vertex_layouts, call.vertex_layout.0) else {
-        gpu.fail(GONE);
+        gpu.fail(GpuError::GONE);
         return None;
     };
     let layout = vertex_layout.0.id;
@@ -345,7 +346,7 @@ pub(crate) fn vertex_shadows(gpu: &mut WebGpu, call: &DrawCall<'_, WebGpu>) -> O
             continue;
         };
         let Some(src) = buffer_of(gpu, vb.buffer) else {
-            gpu.fail(GONE);
+            gpu.fail(GpuError::GONE);
             return None;
         };
         let key = (src.id, vb.offset, layout, slot);

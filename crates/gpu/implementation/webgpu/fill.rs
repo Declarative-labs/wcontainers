@@ -16,12 +16,6 @@ use crate::{Stream, WebGpu, convert};
 /// The vertices of the triangle covering the viewport.
 pub(crate) const COVER_VERTICES: Range<u32> = 0..3;
 
-/// Bits of 24-bit unorm depth (`depth24plus` as this back end reads and writes it).
-const UNORM24_BITS: u32 = 24;
-
-/// The largest 24-bit unorm depth's integer.
-pub(crate) const UNORM24_MAX: u32 = (1 << UNORM24_BITS) - 1;
-
 /// Bits of a stencil value: the stencil draw's programs, one a bit.
 const STENCIL_BITS: usize = u8::BITS as usize;
 
@@ -1013,7 +1007,7 @@ fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource
         ),
         DepthSource::Unorm24 => (
             "texture_2d<u32>",
-            NEAREST_OF_UNORM24.replace(VALUE, &format!("(v.x & {UNORM24_MAX}u)")),
+            NEAREST_OF_UNORM24.replace(VALUE, &format!("(v.x & {}u)", Format::UNORM24_MAX)),
         ),
         // The stored value found by the device's own conversion, as a read finds it, and written as
         // its nearest float: the sampled float itself can store as the next value (llvmpipe samples
@@ -1349,15 +1343,15 @@ pub(crate) fn colliding(by_product: bool) -> Vec<u32> {
         .get_or_init(|| {
             let sampled = |c: u32| (c as f32 * PRODUCT_RECIPROCAL).to_bits();
             let read = |bits: u32| {
-                let e =
-                    ((f32::from_bits(bits) * UNORM24_MAX as f32).round() as u32).min(UNORM24_MAX);
+                let e = ((f32::from_bits(bits) * Format::UNORM24_MAX as f32).round() as u32)
+                    .min(Format::UNORM24_MAX);
                 if e > 0 && sampled(e) != bits && sampled(e - 1) == bits {
                     e - 1
                 } else {
                     e
                 }
             };
-            (0..=UNORM24_MAX)
+            (0..=Format::UNORM24_MAX)
                 .filter(|&c| read(sampled(c)) != c)
                 .collect()
         })
@@ -1369,7 +1363,7 @@ fn nearest(word: u32) -> f32 {
     if word == 0 {
         0.0
     } else {
-        f32::from_bits((word as f32 * 2f32.powi(-(UNORM24_BITS as i32))).to_bits() + 1)
+        f32::from_bits((word as f32 * 2f32.powi(-(Format::UNORM24_BITS as i32))).to_bits() + 1)
     }
 }
 
@@ -1620,7 +1614,7 @@ fn unorm24_functions(gpu: &WebGpu) -> String {
     };
     UNORM24_READ
         .replace("{SAMPLED}", sampled)
-        .replace("{MAX}", &UNORM24_MAX.to_string())
+        .replace("{MAX}", &Format::UNORM24_MAX.to_string())
 }
 
 fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat) -> DepthProgram {

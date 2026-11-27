@@ -24,9 +24,6 @@ enum Kind {
     DepthFloat,
 }
 
-/// The bits of 24-bit unorm depth.
-const UNORM24_BITS: u32 = 24;
-
 /// A format's kind and the width in bits of each of its four components.
 fn bits(format: Format) -> Option<(Kind, [u32; 4])> {
     use Format as F;
@@ -51,7 +48,7 @@ fn bits(format: Format) -> Option<(Kind, [u32; 4])> {
         F::Rg11b10Float => Some((SmallFloat, [11, 11, 10, 0])),
         F::Depth16Unorm => n(Depth(16), 16),
         // A buffer's 24-bit depth is a 32-bit word.
-        F::Depth24Plus | F::Depth24PlusStencil8 => n(Depth(UNORM24_BITS), 32),
+        F::Depth24Plus | F::Depth24PlusStencil8 => n(Depth(Format::UNORM24_BITS), 32),
         F::Depth32Float | F::Depth32FloatStencil8 => n(DepthFloat, 32),
         _ => None,
     }
@@ -103,7 +100,7 @@ pub(crate) fn depth_unit(format: Format) -> Option<[f32; 2]> {
 /// so it is refused.
 pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
     let (from, wf) = bits(src)?;
-    if from == Kind::Depth(UNORM24_BITS) {
+    if from == Kind::Depth(Format::UNORM24_BITS) {
         return None;
     }
     let (to, wt) = bits(dst)?;
@@ -172,12 +169,12 @@ pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String>
         // that float's steps, so the nearest float is v 2^-24's bits plus one (zero stays zero). In
         // integers, so that no compiler regroups the sum below (Mesa makes v (2^-24 + 2^-48) of it,
         // whose sum rounds to 2^-24, one step low).
-        Kind::Depth(UNORM24_BITS) => (
+        Kind::Depth(Format::UNORM24_BITS) => (
             "",
             format!(
                 "uintBitsToFloat(floatBitsToUint(float(r.x & {max}u) * unit.x) \
                  + uint((r.x & {max}u) != 0u))",
-                max = (1u64 << UNORM24_BITS) - 1
+                max = (1u64 << Format::UNORM24_BITS) - 1
             ),
         ),
         // 2^-16 + 2^-32 is a float, so no regrouping rounds it.

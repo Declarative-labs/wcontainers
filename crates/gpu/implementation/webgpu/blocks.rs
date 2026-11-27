@@ -14,7 +14,8 @@ use wcontainers_gpu::{
     resource::TextureRegion, resource::WriteMode, slow::SlowPath,
 };
 
-use crate::{GONE, Readback, WebGpu, texture_of};
+use crate::{Readback, WebGpu, texture_of};
+use wcontainers_gpu::error::GpuError;
 
 /// Texels along each side of a BC block, as `Format::block` gives every BC format.
 const SIDE: usize = 4;
@@ -245,7 +246,7 @@ pub(crate) fn write_blocks(
     mode: WriteMode,
 ) {
     let Some(t) = texture_of(gpu, region.texture) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let Some(blocks) = &t.blocks else {
         return gpu.fail("a block write into a texture holding no blocks");
@@ -284,7 +285,7 @@ fn blocks_of(
     extent: Extent,
 ) -> Option<Vec<u8>> {
     let Some(t) = texture_of(gpu, region.texture) else {
-        gpu.fail(GONE);
+        gpu.fail(GpuError::GONE);
         return None;
     };
     let blocks = t.blocks.as_ref()?;
@@ -337,7 +338,7 @@ pub(crate) fn copy_blocks(
     extent: Extent,
 ) {
     let (Some(s), Some(d)) = (texture_of(gpu, src.texture), texture_of(gpu, dst.texture)) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let (sbw, sbh, bytes) = FORMAT_FACTS[s.desc.format as usize].block;
     let (cols, rows) = (extent.width.div_ceil(sbw), extent.height.div_ceil(sbh));
@@ -379,7 +380,7 @@ pub(crate) fn copy_buffer_blocks(
     to_texture: bool,
 ) {
     let Some(t) = texture_of(gpu, region.texture) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let (bw, bh, bytes) = FORMAT_FACTS[t.desc.format as usize].block;
     let (row, rows) = (

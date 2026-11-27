@@ -21,7 +21,7 @@ use wcontainers_gpu::{
 };
 
 use crate::{
-    GONE, HeldBuffer, HeldSampler, HeldView, WebGpu, buffer_of, convert, held, layout, program_of,
+    HeldBuffer, HeldSampler, HeldView, WebGpu, buffer_of, convert, held, layout, program_of,
     query_set_of, set_of, texture_of, view_of,
 };
 
@@ -800,7 +800,7 @@ fn render_pipeline(
     let (Some(program), Some(vertex_layout), Some(blend), Some(raster), Some(depth_stencil)) =
         blocks
     else {
-        return Err(GONE);
+        return Err(GpuError::GONE);
     };
     let crate::ProgramObj::Render {
         vertex, fragment, ..
@@ -1030,12 +1030,12 @@ pub(crate) fn begin_pass_impl(gpu: &mut WebGpu, pass: &PassDesc<'_, WebGpu>) {
         let resolve = match c.resolve {
             Some(r) => match view_of(gpu, r) {
                 Some(r) => Some(r),
-                None => return gpu.fail(GONE),
+                None => return gpu.fail(GpuError::GONE),
             },
             None => None,
         };
         let Some(v) = view_of(gpu, c.view) else {
-            return gpu.fail(GONE);
+            return gpu.fail(GpuError::GONE);
         };
         for (view, t) in std::iter::once(&*v)
             .chain(resolve.as_deref())
@@ -1097,7 +1097,7 @@ pub(crate) fn begin_pass_impl(gpu: &mut WebGpu, pass: &PassDesc<'_, WebGpu>) {
     let depth_view = match pass.depth.as_ref() {
         Some(d) => match view_of(gpu, d.view) {
             Some(v) => Some(v),
-            None => return gpu.fail(GONE),
+            None => return gpu.fail(GpuError::GONE),
         },
         None => None,
     };
@@ -1168,7 +1168,7 @@ pub(crate) fn begin_pass_impl(gpu: &mut WebGpu, pass: &PassDesc<'_, WebGpu>) {
     let occlusion_set = match pass.occlusion {
         Some(q) => match query_set_of(gpu, q) {
             Some(q) => Some(q),
-            None => return gpu.fail(GONE),
+            None => return gpu.fail(GpuError::GONE),
         },
         None => None,
     };
@@ -1270,7 +1270,7 @@ pub(crate) fn prepare_impl(gpu: &mut WebGpu, desc: &PrepareDesc<'_, WebGpu>) {
         return;
     };
     let Some(program) = program_of(gpu, desc.program) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let targets = desc.targets;
     let own_target = targets.colors.iter().all(Option::is_none) && targets.depth_stencil.is_none();
@@ -1334,7 +1334,7 @@ pub(crate) fn draw_impl(gpu: &mut WebGpu, call: &DrawCall<'_, WebGpu>) {
     // left in a packed target is rounded to its bits first: a draw of several primitives is
     // drawn one primitive at a time.
     let Some(blend) = held(&gpu.objects.blends, call.blend.0) else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let reads = gpu
         .pass
@@ -1458,7 +1458,7 @@ fn primitives(
         let size = INDEX_FORMATS[index.format as usize].size as u64;
         let start = index.offset + u64::from(first) * size;
         let Some(index_buffer) = buffer_of(gpu, index.buffer) else {
-            gpu.fail(GONE);
+            gpu.fail(GpuError::GONE);
             return None;
         };
         let end = (start + u64::from(count) * size).min(index_buffer.desc.size);
@@ -1511,12 +1511,12 @@ fn draw_in(
         None => None,
     };
     let Some(program) = program_of(gpu, call.program) else {
-        return Err(GONE);
+        return Err(GpuError::GONE);
     };
     let mut sets: [Option<Rc<SetObj>>; MAX_BINDING_SETS] = Default::default();
     for (held, set) in sets.iter_mut().zip(call.bindings) {
         if let Some(set) = set {
-            *held = Some(set_of(gpu, set).ok_or(GONE)?);
+            *held = Some(set_of(gpu, set).ok_or(GpuError::GONE)?);
         }
     }
     let layouts = program.layout_keys(&sets);
@@ -1616,7 +1616,7 @@ fn draw_in(
             }
             continue;
         }
-        let b = buffer_of(gpu, vb.buffer).ok_or(GONE)?;
+        let b = buffer_of(gpu, vb.buffer).ok_or(GpuError::GONE)?;
         let now = Some((b.id, b.generation.get(), vb.offset));
         if last.vertex[slot] != now {
             rp.set_vertex_buffer(
@@ -1628,7 +1628,7 @@ fn draw_in(
         }
     }
     if let (Some(i), Some(format)) = (&call.index, index_format) {
-        let b = buffer_of(gpu, i.buffer).ok_or(GONE)?;
+        let b = buffer_of(gpu, i.buffer).ok_or(GpuError::GONE)?;
         let now = Some((b.id, b.generation.get(), i.offset, format));
         if last.index != now {
             rp.set_index_buffer(b.raw.borrow().slice(b.base.get() + i.offset..), format);
@@ -1723,12 +1723,12 @@ fn draw_in(
             *first_instance..first_instance + instances,
         ),
         DrawRange::Indirect { args, offset } => {
-            let args = buffer_of(gpu, args).ok_or(GONE)?;
+            let args = buffer_of(gpu, args).ok_or(GpuError::GONE)?;
             args.used_in.set(gpu.serial);
             rp.draw_indirect(&args.raw.borrow(), args.base.get() + offset);
         }
         DrawRange::IndexedIndirect { args, offset } => {
-            let args = buffer_of(gpu, args).ok_or(GONE)?;
+            let args = buffer_of(gpu, args).ok_or(GpuError::GONE)?;
             args.used_in.set(gpu.serial);
             rp.draw_indexed_indirect(&args.raw.borrow(), args.base.get() + offset);
         }
@@ -1746,14 +1746,14 @@ pub(crate) fn dispatch_impl(
     if call.immediates.len() > gpu.caps.limits.immediate_bytes as usize {
         return Err(GpuError::Invalid("immediates past immediate_bytes"));
     }
-    let program = program_of(gpu, call.program).ok_or(GpuError::Invalid(GONE))?;
+    let program = program_of(gpu, call.program).ok_or(GpuError::Invalid(GpuError::GONE))?;
     let crate::ProgramObj::Compute { id, shader } = &*program else {
         return Err(GpuError::Invalid("dispatch with a render program"));
     };
     let mut sets: [Option<Rc<SetObj>>; MAX_BINDING_SETS] = Default::default();
     for (held, set) in sets.iter_mut().zip(call.bindings) {
         if let Some(set) = set {
-            *held = Some(set_of(gpu, set).ok_or(GpuError::Invalid(GONE))?);
+            *held = Some(set_of(gpu, set).ok_or(GpuError::Invalid(GpuError::GONE))?);
         }
     }
     let keys = program.layout_keys(&sets);
@@ -1793,7 +1793,7 @@ pub(crate) fn dispatch_impl(
     }
     let indirect = match &call.groups {
         DispatchGroups::Indirect { args, offset } => {
-            let args = buffer_of(gpu, args).ok_or(GpuError::Invalid(GONE))?;
+            let args = buffer_of(gpu, args).ok_or(GpuError::Invalid(GpuError::GONE))?;
             args.used_in.set(gpu.serial);
             Some((args.raw.borrow().clone(), args.base.get() + offset))
         }
@@ -1837,7 +1837,7 @@ pub(crate) fn resolve_impl(
     let (Some(src_texture), Some(dst_texture)) =
         (texture_of(gpu, src.texture), texture_of(gpu, dst.texture))
     else {
-        return gpu.fail(GONE);
+        return gpu.fail(GpuError::GONE);
     };
     let stored = src_texture.held;
     let format = crate::packed::held(format).unwrap_or(format);
