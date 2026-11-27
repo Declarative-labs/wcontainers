@@ -1,0 +1,15 @@
+[package]
+name = "wcontainers-egl"
+description = "EGL, the Khronos interface between OpenGL ES and the platform (ANGLE's libEGL, Mesa's), as a safe trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[lints]
+workspace = true

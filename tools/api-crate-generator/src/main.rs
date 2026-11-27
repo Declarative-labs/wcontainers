@@ -8,6 +8,7 @@
 mod api;
 mod complete;
 mod emit;
+mod khronos;
 mod layout;
 mod mapping;
 mod metadata;
@@ -81,6 +82,19 @@ fn main() -> ExitCode {
         eprintln!("usage: api-crate-generator census|generate <Windows.Win32.winmd> ...");
         return ExitCode::FAILURE;
     };
+    // Khronos's registries, not Microsoft's metadata.
+    if let ("khronos", [gl, egl, angle, out]) = (command.as_str(), rest) {
+        return match khronos::generate(gl, egl, angle, std::path::Path::new(out)) {
+            Ok(report) => {
+                println!("{report}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("api-crate-generator: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let Some((winmd, rest)) = rest.split_first() else {
         eprintln!("usage: api-crate-generator {command} <Windows.Win32.winmd> ...");
         return ExitCode::FAILURE;

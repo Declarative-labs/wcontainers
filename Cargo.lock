@@ -4278,6 +4278,18 @@ name = "wcontainers-docker"
 version = "0.1.0"
 
 [[package]]
+name = "wcontainers-egl"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-egl-direct"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "wcontainers-egl",
+]
+
+[[package]]
 name = "wcontainers-executor"
 version = "0.1.0"
 dependencies = [
@@ -4785,6 +4797,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-observation-collector"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-observation-collector-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-observation-collector",
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
 name = "wcontainers-opengl"
 version = "0.1.0"
 dependencies = [
@@ -4800,6 +4827,31 @@ dependencies = [
  "wcontainers-shaders",
  "wgpu",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "wcontainers-opengl-es"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-egl",
+]
+
+[[package]]
+name = "wcontainers-opengl-es-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-egl",
+ "wcontainers-opengl-es",
+]
+
+[[package]]
+name = "wcontainers-opengl-es-direct"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-egl",
+ "wcontainers-egl-direct",
+ "wcontainers-opengl-es",
+ "wcontainers-opengl-es-conformance",
 ]
 
 [[package]]
