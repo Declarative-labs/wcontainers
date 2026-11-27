@@ -26,25 +26,26 @@ pub(crate) struct DepthRead {
 }
 
 /// The 24-bit value stored for depth `d` as sampled, by the device's own conversion: the uniform
-/// `reciprocal24` is 0 where the device samples a stored k as the float nearest k / (2^24 - 1) (as Direct3D
-/// asks), else the float it multiplies k by (llvmpipe: the float nearest 1 / (2^24 - 1)); the back end's
-/// probe at creation sets it. Rounding d (2^24 - 1) alone can be one high: in the upper part of each
-/// binade the two conversions give one float for neighbouring values, and the product itself rounds (a
-/// scan of all 2^24 words under both conversions found it never one low). So the rounded value and the
-/// one below it are each converted as the device does, the one giving d's bits kept (the rounded value
-/// where neither does). Words the device samples to one float are told apart by [`EQUAL`]. v 2^-24 is exact and v / (2^24 - 1) more than half and
-/// at most one of its float steps above it, so the nearest float is its bits plus one.
+/// `reciprocal24` is 0 where the device samples a stored c as the float nearest c / (2^24 - 1) (as
+/// Direct3D asks), else the float it multiplies c by (llvmpipe: the float nearest 1 / (2^24 - 1)); the
+/// back end's probe at creation sets it. c 2^-24 is exact and c / (2^24 - 1) lies above it by more than
+/// half a float step and at most one, so the nearest float is c 2^-24's bits plus one; under both
+/// conversions d is at least
+/// c / (2^24 - 1), so the product d (2^24 - 1), rounded once, is at least c, and its whole part `e` is c
+/// or one high (in the upper part of each binade neighbouring values give one float). So e and the value
+/// below it are each converted as the device does, the one giving d's bits kept (e where neither does).
+/// A sampled depth is at most 1, so e is at most 2^24 - 1; at 0, `e - 1u` wraps to a word whose float
+/// is above 1, which no sampled depth has. Words the device samples to one float are told apart by
+/// [`EQUAL`].
 pub(crate) const UNORM24: &str = "uniform highp float reciprocal24;
 uint sampled24(uint c) {
     if (reciprocal24 != 0.0) return floatBitsToUint(float(c) * reciprocal24);
     return c == 0u ? 0u : floatBitsToUint(float(c) * exp2(-24.0)) + 1u;
 }
 uint unorm24(float d) {
-    uint e = min(uint(round(d * 16777215.0)), 16777215u);
+    uint e = uint(d * 16777215.0);
     uint bits = floatBitsToUint(d);
-    if (sampled24(e) == bits) return e;
-    if (e > 0u && sampled24(e - 1u) == bits) return e - 1u;
-    return e;
+    return sampled24(e) != bits && sampled24(e - 1u) == bits ? e - 1u : e;
 }
 ";
 
@@ -361,5 +362,163 @@ pub(crate) fn stored(format: wcontainers_gpu::format::Format) -> Option<(u32, us
         F::Depth24Plus | F::Depth24PlusStencil8 => Some((16_777_215, 4)),
         F::Depth32Float | F::Depth32FloatStencil8 => Some((0, 4)),
         _ => None,
+    }
+}
+
+/// [`UNORM24`] run by the device for every 24-bit word under both conversions it may sample stored
+/// depth by, against the values worked out here on the processor. A device takes only the conversion
+/// its probe found (llvmpipe the product), so the other one's text is reached by no read on this
+/// host; a draw runs both here.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::{UNORM24, link};
+    use crate::platform;
+    use wcontainers_gpu::StandaloneGpu;
+    use wcontainers_opengl_es::{OpenGlEs, PixelPack, constants as gles};
+
+    /// Every 24-bit word is run.
+    const WORDS: u32 = 1 << 24;
+    /// The width of the target, in texels.
+    const WIDE: u32 = 4096;
+    /// The rows one draw runs.
+    const ROWS: u32 = 1024;
+    /// The word llvmpipe's product samples to the float of another (1.0, as 0xffffff does).
+    const PRODUCT_COLLIDING: u32 = 0xff_fffe;
+
+    /// For the word under each fragment: the word, the sampled float's bits, the word read back from it.
+    fn fragment() -> String {
+        format!(
+            "#version 300 es
+precision highp float;
+precision highp int;
+uniform uint base;
+out highp uvec4 o;
+{UNORM24}void main() {{
+    uint c = base + uint(gl_FragCoord.y) * {WIDE}u + uint(gl_FragCoord.x);
+    uint s = sampled24(c);
+    o = uvec4(c, s, unorm24(uintBitsToFloat(s)), 0u);
+}}
+"
+        )
+    }
+
+    /// The bits of the float nearest c / (2^24 - 1): the quotient in f64, rounded once to f32.
+    fn nearest_float(c: u32) -> u32 {
+        ((f64::from(c) / f64::from(WORDS - 1)) as f32).to_bits()
+    }
+
+    /// The float llvmpipe multiplies a stored word by, the float nearest 1 / (2^24 - 1).
+    fn product_reciprocal() -> f32 {
+        (1.0 / f64::from(WORDS - 1)) as f32
+    }
+
+    /// The words whose sampled float or read word is not the right value, at most eight, as (word,
+    /// sampled, read), how many in all, and how many words were drawn other than once.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct Wrong {
+        count: u32,
+        first: Vec<(u32, u32, u32)>,
+        not_once: u32,
+    }
+
+    /// Draws every word with `reciprocal24` set to `reciprocal` (0: the nearest float) and states, for
+    /// every word c: the sampled float is the nearest float of c or c times the reciprocal; the read
+    /// gives back c, but for the one word the product samples as another's float, which reads as that
+    /// word (0xffffff).
+    fn check(reciprocal: f32) -> Wrong {
+        type Native = crate::Gl<wcontainers_opengl_es_direct::OpenGlEsContext>;
+        let gpu = <Native as StandaloneGpu>::new(crate::GlConfig {
+            egl: std::env::var_os("WEBGL_ANGLE_DIR").map(std::path::PathBuf::from),
+            off: Vec::new(),
+        })
+        .expect("an OpenGL ES 3.0 context from WEBGL_ANGLE_DIR's EGL library or the system's");
+        let gl = &gpu.gl;
+        let program = link(gl, &fragment()).expect("the read's program links");
+        let base = platform::location(gl, program, "base").expect("uniform base");
+        let at = platform::location(gl, program, "reciprocal24").expect("uniform reciprocal24");
+        let renderbuffer = platform::one(|n| gl.gen_renderbuffers(n)).expect("a renderbuffer");
+        gl.bind_renderbuffer(gles::RENDERBUFFER, renderbuffer);
+        gl.renderbuffer_storage(gles::RENDERBUFFER, gles::RGBA32UI, WIDE as i32, ROWS as i32);
+        let framebuffer = platform::one(|n| gl.gen_framebuffers(n)).expect("a framebuffer");
+        gl.bind_framebuffer(gles::FRAMEBUFFER, framebuffer);
+        gl.framebuffer_renderbuffer(
+            gles::FRAMEBUFFER,
+            gles::COLOR_ATTACHMENT0,
+            gles::RENDERBUFFER,
+            renderbuffer,
+        );
+        for cap in [
+            gles::SCISSOR_TEST,
+            gles::DEPTH_TEST,
+            gles::STENCIL_TEST,
+            gles::BLEND,
+            gles::CULL_FACE,
+            gles::RASTERIZER_DISCARD,
+        ] {
+            gl.disable(cap);
+        }
+        gl.color_mask(true, true, true, true);
+        gl.viewport(0, 0, WIDE as i32, ROWS as i32);
+        gl.use_program(program);
+        gl.uniform1f(at, reciprocal);
+        let mut seen = vec![0u8; WORDS as usize];
+        let mut wrong = Wrong::default();
+        let mut texels = vec![0u8; (WIDE * ROWS * 16) as usize];
+        for first in (0..WORDS).step_by((WIDE * ROWS) as usize) {
+            gl.uniform1ui(base, first);
+            gl.draw_arrays(gles::TRIANGLES, 0, 3);
+            gl.read_pixels(
+                0,
+                0,
+                WIDE as i32,
+                ROWS as i32,
+                gles::RGBA_INTEGER,
+                gles::UNSIGNED_INT,
+                PixelPack::Bytes(&mut texels),
+            );
+            for t in texels.chunks_exact(16) {
+                let [c, s, r] =
+                    [0, 4, 8].map(|k| u32::from_le_bytes([t[k], t[k + 1], t[k + 2], t[k + 3]]));
+                let Some(once) = seen.get_mut(c as usize) else {
+                    wrong.not_once += 1;
+                    continue;
+                };
+                *once = once.saturating_add(1);
+                let sampled = if reciprocal == 0.0 {
+                    nearest_float(c)
+                } else {
+                    (c as f32 * reciprocal).to_bits()
+                };
+                let read = if reciprocal != 0.0 && c == PRODUCT_COLLIDING {
+                    WORDS - 1
+                } else {
+                    c
+                };
+                if (s, r) != (sampled, read) {
+                    wrong.count += 1;
+                    if wrong.first.len() < 8 {
+                        wrong.first.push((c, s, r));
+                    }
+                }
+            }
+        }
+        wrong.not_once += seen.iter().filter(|&&n| n != 1).count() as u32;
+        gl.use_program(0);
+        gl.delete_program(program);
+        gl.bind_framebuffer(gles::FRAMEBUFFER, 0);
+        gl.delete_framebuffers(&[framebuffer]);
+        gl.bind_renderbuffer(gles::RENDERBUFFER, 0);
+        gl.delete_renderbuffers(&[renderbuffer]);
+        wrong
+    }
+
+    #[test]
+    fn every_24_bit_word_reads_back_as_itself_where_a_device_samples_the_nearest_float() {
+        assert_eq!(check(0.0), Wrong::default());
+    }
+
+    #[test]
+    fn every_24_bit_word_reads_back_as_itself_but_one_where_a_device_samples_the_product() {
+        assert_eq!(check(product_reciprocal()), Wrong::default());
     }
 }
