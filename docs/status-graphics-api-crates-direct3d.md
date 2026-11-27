@@ -11,6 +11,126 @@ HEAD..FETCH_HEAD` 0, MEASURED): nothing to merge. origin/graphics-api-crates (ce
 (9333bd4b4); only Cargo.lock conflicted (both sides kept: the Gallium direct crate's entry). No interface file of his is
 touched by any commit of this branch.
 
+## R. Run of 2026-11-27 evening: values compared, plants committed, mutation runs (logs d3d/run-1127c/)
+
+Merged origin/graphics-api-crates d2cd0e0c4 (055ce667f, clean); his main ac696ea19 already inside (count 0). Commits:
+db940d1ee, ebc7e6ac6, 24582daa0, 7051deefa, 0bcfa1fbc, 3304a1492 (all pushed).
+
+### R.1 Every answer compared with what the implementation gave (FIX 1)
+
+- The recorder answers KNOWN values: every integer 1 to 126 by a salt of the method and field, `true`, enumerations
+  and handles non-zero, every structure a literal of known fields, made from the interface crates' text only
+  (src/glue_hostile.rs `Shapes`), never from the glue's decoders (the check's point (i): the reference shares no code).
+  It writes known bytes into every caller's buffer it is lent, and logs every argument it receives.
+- The suite passes KNOWN arguments (enumerations a declared non-zero value no special line refuses, one element in every
+  array, an object it holds where one is optional) and notes, for every method both glues carry to the implementation,
+  its answer (`Debug`, every field; an object named only as one), the caller's bytes after it, and what the
+  implementation received. `every_answer_and_argument_equals_the_reference` (the recorder's conformance_through_glues)
+  drives the recorder directly and through both glues and compares line by line; a method that differs by design is
+  named in src/api.rs `SUITE_DIFFERENT` with the reason (28 lines: debug breaks and exception modes refused, the
+  immediate context and a context's device answered from the glue's record, multithread protection turned on, a row
+  clearing bit 0, and the suite's own known arguments past documented ranges); any other difference fails.
+- Counts by method (the generator's ANSWERS lines, MEASURED report d3d/run-1127c/report.txt):
+
+| API | plain data, every field | a status only | holds objects (all but identity) / object or failure / object or none / list of objects | returns nothing (arguments compared) | answered by a glue's record (not the implementation's) | not glued |
+|---|---|---|---|---|---|---|
+| d3dcommon | 1 | 1 | 0 / 0 / 0 / 0 | 0 | 0 | 2 |
+| DXGI | 74 | 51 | 3 / 24 / 1 / 1 | 17 | 11 | 15 |
+| Direct3D 11 (with the DXGI faces its kinds answer) | 201 | 99 | 19 / 69 / 11 / 21 | 132 (+3 compared by the bytes they write) | 30 | 51 |
+| Direct3D 12 | 6 | 6 | 0 / 9 / 0 / 0 | 12 | 1 | 19 |
+| COM | (no methods: IUnknown is the bookkeeping's, tested by its own tests) |
+
+  Not compared: an object's identity (an object comes back "an object"); the 42 methods a glue answers from its record
+  (descriptions recorded at creation, the immediate context; compared with that record by the slice's round trip and
+  the hostile probes, not by this test); the not-glued (both glues refuse, the hostile tests check the refusal).
+- The check's three plants (d3d12 plant list, last three lines): CAUGHT, each by `every_answer_equals_the_reference`
+  at suite.rs:2029 (MEASURED, job gacdp3 at ebc7e6ac6, `PLANT 248 checker.serve-getdesc-garbage: CAUGHT status 101`, 249,
+  250 the same).
+
+### R.2 The exact C tests catch what only the reference caught (FIX 2)
+
+tests/exact now also makes BC2 and BC3 textures (2D off the block grid, 3D, a full chain) and the four 96-bit formats
+(1D array, 2D, 3D), hands every box past an edge to both glues (the serving glue gets one byte and must refuse before the
+implementation; the calling glue gets the whole subresource plus 64 KiB and must refuse before the system), and COM's
+shadow memory is exactly the length lent under the `c-caller` feature (`exact-shadow`, lent.rs), so that a touch past
+what the glue lends is outside the block. MEASURED (job gacd 20261127-152343, 24582daa0's tree): "EXACT SERVING: 21
+resources created, 996 uploads, 312 boxes past an edge refused, 97 maps"; "EXACT CALLING: 622 short bytes refused, 996
+exact uploads, 312 boxes past an edge refused, 406 maps"; under AddressSanitizer status 0, 0 reports.
+Plants (plants/lengths.tsv, 39: each rule one byte under and over, and the checks' seven), MEASURED jobs gacdl1/gacdl2
+(24582daa0) and gacd 20261127-170918 (the two whose `const fn` the runner missed, rerun): reference tests 39 of 39
+CAUGHT; exact under AddressSanitizer 35 of 39 CAUGHT, among them all four the check named: bc2-eight-bytes,
+r32g32b32-as-8, lent-rows-minus-one, box-past-accepted, each `ERROR: AddressSanitizer: heap-buffer-overflow`. Survived
+under the exact tests: `lent_length_*.over` (4): lending one byte more of the glue's own memory is no access a C caller
+touching only the documented bytes can see; the reference tests catch all four.
+
+### R.3 The default-deny branch for an unjudged UINT64 (FIX 3)
+
+The judging is now one function, `uint64_refusals` (src/glue.rs); generator tests `an_unjudged_uint64_refuses_the_method`
+(the fence's value with its line taken out of the table, and a UINT64 no line ever held: each refused with "a UINT64
+src/api.rs has not judged an address or a number"), `a_judged_number_passes`, `addresses_refuse_the_method_by_their_kind`.
+MEASURED: generator tests status 0 in every job of this run.
+
+### R.4 The Windows-target setup for the implementations track (FIX 4)
+
+wcontainers-scratch/graphics-api-crates/d3d/wintool/: flake.nix, flake.lock, rust-toolchain.toml (Rust 1.99.0 with
+x86_64-pc-windows-gnu and -msvc), check-windows.sh, README (three lines). MinGW's gcc/g++ 16.2.0 come in as
+`CC/CXX/AR_x86_64_pc_windows_gnu` only (as a shell input the cross compiler also became the host's `CC` and broke the
+host's build scripts), with mcfgthread's headers added (`CXXFLAGS_x86_64_pc_windows_gnu`). MEASURED (job gacd-win
+20261127-161938 on the implementations branch 398a91f7b with its submodules filled): `wcontainers-shader-converters-linked`
+builds for windows-gnu (libdxbc_spirv.a, libdxil_spirv.a written by MinGW's g++); the windows-gnu check then stops only
+in `wcontainers-directx` (733) and the Direct3D 12 front's examples (169, 415): `unsafe` under the workspace's `forbid`,
+the implementations track's code, not the toolchain. windows-msvc: crates without C or C++ build scripts only (no MSVC
+compiler here): the three direct crates status 0.
+
+### R.5 The test bar: plants and the mutation tool
+
+| Group | Run at | Mutants or plants | Caught | Survived | Unviable / invalid | Not run |
+|---|---|---|---|---|---|---|
+| generator, lines changed this run and the last (cargo-mutants `--in-diff`, oracle tests/written.rs) | 7051deefa | 193 | 157 | 30 | 6 | 0 |
+| lengths.rs (cargo-mutants, suite: the crate's unit tests and the exact C tests, release) | shards 0 to 2 at 7051deefa, 3 to 5 at 3304a1492 | 289 | 200 | 81 | 8 | 0 |
+| plants/direct3d-12.tsv (a field of every copy function, an argument of every call each way, the check's 3) | 0bcfa1fbc | 250 | 209 | 23 | 18 (an object or a structure with no other value to name) | 0 |
+| plants/lengths.tsv, reference tests / exact under ASan | 24582daa0 | 39 / 39 | 39 / 35 | 0 / 4 | 0 | 0 |
+
+Survivors, each with why (MEASURED lists in d3d/run-1127c/):
+- Generator (30, mutants-generator-missed.txt): 8 in codecs' `first_values` and flag detection (src/glue_hostile.rs
+  1308 to 1331), superseded this run by `Shapes` and reached by nothing: to remove; 7 in `known_value`'s tuple salts
+  and `answer_summary`'s variable names (equivalent: the output differs only where no set has a tuple answer); 4 in
+  `recorded_method` and 2 in `uint64s` (fixed arrays of UINT64: none in the set); 5 in `with_dev_dependencies` and
+  `returned_structures_through_pointers` and 2 in `write_direct`, paths the five APIs never take; 1 `Shapes::zero`,
+  1 `argument`. Not reached for the committed set; each is to be removed or given a set that reaches it.
+- lengths.rs (81, mutants-lengths-missed.txt): the description checks and the derived getters, which no test of this
+  suite gives a documented value: checked_swap_chain 18, checked_texture_1d/2d/3d 23, within_served_bound and its four
+  forms 10, padded_extent 3, resolved_texture_* 3, type_of_* 4, data_size_of_query 7, checked_buffer 2, total, mips;
+  the 12 of data_size_of_query, type_of_buffer and checked_buffer were shards 1 and 2 at 7051deefa, before the tests
+  `data_size_of_every_query_kind_is_its_documented_structure` and `a_buffer_is_of_the_buffer_dimension_and_checked_by_
+  its_documented_ranges` (3304a1492; not re-measured). Next: tests from Microsoft's pages for the swap chain's,
+  textures' and the served bound's rules, then a rerun of these mutants (`cargo mutants --re`).
+- Direct3D 12 plants (23; jobs gacdp1 to gacdp3 at 0bcfa1fbc, logs plants-d3d12-0bcf-{1,2,3}.log; the first run at
+  ebc7e6ac6, before known arguments, had 108 survivors): the unions D3D12_CLEAR_VALUE and D3D12_DEPTH_STENCIL_VALUE (5:
+  a union is passed as zero bytes, its members reading the same bytes); D3D12_RANGE and the CPU and GPU descriptor
+  handles (6: Unmap and the handles are not carried to the implementation through both glues, so nothing compares
+  them: reached by nothing in the suite); and 12 arguments that are optional objects or their pointers
+  (SetCompute/GraphicsRootSignature, CreateCommandList's and Reset's initial state, SetDescriptorHeaps, Unmap, the
+  clear value's and the query heap's pointers): the recorder logs an object as "an object", so passing none instead of
+  one is not seen. Next: log whether an optional object is there, and carry Unmap and the handles (D3).
+### R.7 The claim at 3304a1492 (pushed; x86-64; logs claim-3304a1492-*.log)
+
+| Bar | Result (MEASURED) |
+|---|---|
+| Generator build, its tests (the three UINT64 tests among them); written twice; equal to the tree | 0, 0; IDENTICAL; SAME AS WRITTEN |
+| check, clippy -D warnings (22 packages); windows-gnu, windows-msvc type-check | 0, 0; 0, 0 |
+| Tests (the comparison through both glues among them); under AddressSanitizer | status 0; status 0, 0 reports |
+| C caller honest, default and AddressSanitizer | 0, 0: "cases 753 of 755, exports 9 of 9; never reached 2 = unreachable listed 2" |
+| Exact C tests default and AddressSanitizer; lengths reference tests | 0; 0, 0 reports; 0 |
+| Fuzzing under AddressSanitizer, 10M calls: hostile set / C caller | seed 11: 0 (1,475 s; 625,966 lies, 0 panics back; with known arguments ten times the work of a2f3a88d0's 117 s) / 0 (100 s); seeds 12, 13: 0 and 0 (1,434 s and 1,425 s; 546,371 and 938,934 lies; 0 panics back) / 0 and 0 (221 s, 222 s); 0 reports in all six |
+| Lines naming `unsafe` | COM direct 95, d3dcommon direct 63, DXGI direct 2,548, Direct3D 11 direct 7,115, Direct3D 12 direct 784: unchanged from c6339e7a7; interface, recorder, hostile, conformance crates 0 (the hostile and recorder 1 is `#![forbid(unsafe_code)]` of their tests) |
+| Linter | not run this run: its source copy (.gacd/lint) was moved away by the last run and no binary was left on the machine |
+
+### R.6 Not done this run, and why
+
+D3's 11 remaining Direct3D 12 methods, the Direct3D 12 hostile set, D2, A6 and A7: not started; this run's time went to
+the bar above. Next in order: D3 (the (heap, index) line first), waiting on nothing.
+
 ## 0. Run of 2026-11-27 afternoon: the check's findings, the two rulings, D3 continued
 
 Commits: f710cf5b2 (lengths reference, exact C tests, CreateQuery test, the C caller moved), 54a46fafb (GPU addresses
