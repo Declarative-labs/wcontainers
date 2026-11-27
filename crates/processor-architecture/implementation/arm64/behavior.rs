@@ -8,7 +8,9 @@ use crate::load_store::scalable_access::{
 };
 use crate::load_store::{LoadStoreChoices, LoadStoreInstruction};
 use crate::sve::{ScalableOperation, to_scalable_instruction};
-use crate::system_register::{NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS};
+use crate::system_register::{
+    NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS, PRESENTED_SYSTEM_REGISTERS,
+};
 use crate::{
     AccessDirection, DocumentedInstruction, DocumentedOperation, Instruction, PreciseInstruction,
     SmeTrapCode, to_documented_operation,
@@ -119,6 +121,20 @@ pub enum StoreExclusiveOverlap {
     databake(path = wcontainers_processor_architecture_arm64)
 )]
 pub enum MisalignedExclusive {
+    AlignmentFault,
+    WithinSixteenBytes,
+}
+
+/// Where an ordered or atomic access that is not at a multiple of its size may lie without an alignment fault: a chip
+/// without [FEAT_LSE2](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_LSE2) faults on it, as [AArch64.UnalignedAccessFaults](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#AArch64.UnalignedAccessFaults.3)
+/// has it, and a chip with it, SCTLR_EL1.nAA clear as Linux leaves it, lets it lie anywhere inside 16 aligned bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
+pub enum MisalignedOrderedOrAtomic {
     AlignmentFault,
     WithinSixteenBytes,
 }
@@ -250,13 +266,18 @@ impl PreciseInstruction<Infallible> {
             },
             Self::SystemInstruction(behavior) => PreciseInstruction::SystemInstruction(behavior),
             Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
+            Self::WithoutOptionalEncodings(documented) => {
+                PreciseInstruction::WithoutOptionalEncodings(documented)
+            }
             Self::LevelSpecific(never) => match never {},
         }
     }
 
     pub const fn to_instruction(self) -> Instruction<Infallible> {
         match self {
-            Self::Documented(documented) => documented.instruction(),
+            Self::Documented(documented) | Self::WithoutOptionalEncodings(documented) => {
+                documented.instruction()
+            }
             Self::LoadStore { instruction, .. } => instruction.instruction(),
             Self::Brk => Instruction::Brk,
             Self::Rdvl(_) => Instruction::Rdvl,
@@ -309,7 +330,19 @@ fn list_every_level_behaviors(
     if instruction.is_optional() && !is_modeled_as_unimplemented(instruction) {
         behaviors.push(PreciseInstruction::Unimplemented(instruction));
     }
+    if has_optional_encodings(instruction)
+        && let Some(documented) = DocumentedInstruction::new(instruction)
+    {
+        behaviors.push(PreciseInstruction::WithoutOptionalEncodings(documented));
+    }
     behaviors
+}
+
+/// Whether some encodings of the instruction need a feature its list row does not name, so that a chip without it makes
+/// them undefined: the half-precision fixed-point conversions of [FEAT_FP16](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_FP16) and PMULL of 64-bit elements, of
+/// [FEAT_PMULL](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-0-architecture-extension#:~:text=FEAT_PMULL).
+const fn has_optional_encodings(instruction: Instruction<Infallible>) -> bool {
+    crate::advanced_simd::to_optional_encoding(instruction).is_some()
 }
 
 /// Whether the instruction takes input from outside memory and the processor, so that no state decides what it does:
@@ -411,9 +444,13 @@ fn list_modeled_behaviors(
             } else {
                 AccessDirection::Write
             };
-            [NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS]
-                .map(|choices| PreciseInstruction::SystemRegisterMove { direction, choices })
-                .to_vec()
+            [
+                NEOVERSE_V2_SYSTEM_REGISTERS,
+                OTHER_SYSTEM_REGISTERS,
+                PRESENTED_SYSTEM_REGISTERS,
+            ]
+            .map(|choices| PreciseInstruction::SystemRegisterMove { direction, choices })
+            .to_vec()
         }
         Instruction::Hint | Instruction::MsrImmediate | Instruction::Sys | Instruction::Sysl => {
             crate::system_instruction::list_system_instruction_behaviors(instruction)
@@ -561,6 +598,7 @@ fn list_load_store_behaviors(
         failed_store_exclusive: None,
         store_exclusive_overlap: None,
         misaligned_exclusive: None,
+        misaligned_ordered_or_atomic: None,
         fault_address_tag: None,
         reservation_granule_bytes: None,
     };
@@ -641,6 +679,15 @@ fn list_load_store_behaviors(
             MisalignedExclusive::WithinSixteenBytes,
         ],
         |choices, choice| choices.misaligned_exclusive = Some(choice),
+    );
+    let combinations = widen(
+        combinations,
+        open.misaligned_ordered_or_atomic,
+        &[
+            MisalignedOrderedOrAtomic::AlignmentFault,
+            MisalignedOrderedOrAtomic::WithinSixteenBytes,
+        ],
+        |choices, choice| choices.misaligned_ordered_or_atomic = Some(choice),
     );
     // No state single-stepping reaches holds the monitor, so the one granule a chip was measured to have is listed.
     let combinations = widen(

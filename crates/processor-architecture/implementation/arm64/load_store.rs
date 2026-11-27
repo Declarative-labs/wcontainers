@@ -21,8 +21,8 @@ use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchi
 
 use crate::behavior::{
     FailedStoreExclusive, FaultAddressTag, LoadIntoBaseWithWriteback, LoadPairIntoOneRegister,
-    MisalignedExclusive, MisalignedStackPointer, StoreAcrossFault, StoreExclusiveOverlap,
-    StoreOfBaseWithWriteback,
+    MisalignedExclusive, MisalignedOrderedOrAtomic, MisalignedStackPointer, StoreAcrossFault,
+    StoreExclusiveOverlap, StoreOfBaseWithWriteback,
 };
 #[cfg(verus_keep_ghost)]
 use crate::branch::{branch_address, is_outside_lower};
@@ -623,6 +623,7 @@ pub struct LoadStoreChoices {
     pub failed_store_exclusive: Option<FailedStoreExclusive>,
     pub store_exclusive_overlap: Option<StoreExclusiveOverlap>,
     pub misaligned_exclusive: Option<MisalignedExclusive>,
+    pub misaligned_ordered_or_atomic: Option<MisalignedOrderedOrAtomic>,
     pub fault_address_tag: Option<FaultAddressTag>,
     /// The bytes of the reservation granule the exclusive monitor marks, which CTR_EL0.ERG gives.
     pub reservation_granule_bytes: Option<u64>,
@@ -653,6 +654,9 @@ impl LoadStoreChoices {
             misaligned_exclusive: self
                 .misaligned_exclusive
                 .filter(|_| open.misaligned_exclusive),
+            misaligned_ordered_or_atomic: self
+                .misaligned_ordered_or_atomic
+                .filter(|_| open.misaligned_ordered_or_atomic),
             fault_address_tag: self.fault_address_tag.filter(|_| open.fault_address_tag),
             reservation_granule_bytes: self
                 .reservation_granule_bytes
@@ -672,6 +676,7 @@ pub struct OpenCases {
     pub failed_store_exclusive: bool,
     pub store_exclusive_overlap: bool,
     pub misaligned_exclusive: bool,
+    pub misaligned_ordered_or_atomic: bool,
     pub fault_address_tag: bool,
     pub reservation_granule: bool,
 }
@@ -765,6 +770,17 @@ impl LoadStoreInstruction {
             misaligned_exclusive: operation.alignment == Alignment::Exclusive
                 && (BYTE as u64 + 1..SINGLE_COPY_ATOMIC_BYTES).contains(&u64::from(
                     operation.bytes * (registers - u32::from(stores_exclusive)),
+                )),
+            // An ordered or atomic access is misaligned exactly where it leaves its 16 aligned bytes when it fills them,
+            // and a byte is aligned anywhere.
+            misaligned_ordered_or_atomic: operation.alignment == Alignment::WithinSixteenBytes
+                && (BYTE as u64 + 1..SINGLE_COPY_ATOMIC_BYTES).contains(&u64::from(
+                    operation.bytes
+                        * if operation.transfer == Transfer::CompareAndSwapPair {
+                            2
+                        } else {
+                            1
+                        },
                 )),
             // A prefetch never faults; a literal's address is the instruction's own, which is never tagged.
             fault_address_tag: base.is_some() && operation.transfer != Transfer::Prefetch,
@@ -1357,12 +1373,27 @@ pub open spec fn all_in_aligned_quantity(address: u64, size: nat, alignment: nat
 /// Whether an access of `size` bytes at the address raises no alignment fault, as [AArch64.UnalignedAccessFaults](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#AArch64.UnalignedAccessFaults.3)
 /// gives it with FEAT_LSE2 and SCTLR_EL1.A and nAA clear, as Linux leaves them: an exclusive, atomic or ordered access
 /// faults unless it lies in 16 aligned bytes, any other access never; where the chip's behavior for a misaligned
-/// exclusive is the fault of a chip before FEAT_LSE2, an exclusive access faults unless it is aligned to its size.
-pub open spec fn aligned_access(alignment: Alignment, misaligned_exclusive: Option<MisalignedExclusive>, address: u64, size: nat) -> bool {
-    match (alignment, misaligned_exclusive) {
-        (Alignment::Unchecked, _) => true,
-        (Alignment::Exclusive, Some(MisalignedExclusive::AlignmentFault)) => address as int % (size as int) == 0,
-        _ => all_in_aligned_quantity(address, size, 16),
+/// exclusive is the fault of a chip before FEAT_LSE2, an exclusive access faults unless it is aligned to its size, and
+/// where its behavior for a misaligned ordered or atomic access is that fault, so does an ordered or atomic access.
+pub open spec fn aligned_access(
+    alignment: Alignment,
+    misaligned_exclusive: Option<MisalignedExclusive>,
+    misaligned_ordered_or_atomic: Option<MisalignedOrderedOrAtomic>,
+    address: u64,
+    size: nat,
+) -> bool {
+    match alignment {
+        Alignment::Unchecked => true,
+        Alignment::Exclusive => if misaligned_exclusive == Some(MisalignedExclusive::AlignmentFault) {
+            address as int % (size as int) == 0
+        } else {
+            all_in_aligned_quantity(address, size, 16)
+        },
+        Alignment::WithinSixteenBytes => if misaligned_ordered_or_atomic == Some(MisalignedOrderedOrAtomic::AlignmentFault) {
+            address as int % (size as int) == 0
+        } else {
+            all_in_aligned_quantity(address, size, 16)
+        },
     }
 }
 
@@ -1370,13 +1401,14 @@ pub open spec fn aligned_access(alignment: Alignment, misaligned_exclusive: Opti
 fn is_aligned(
     alignment: Alignment,
     misaligned_exclusive: Option<MisalignedExclusive>,
+    misaligned_ordered_or_atomic: Option<MisalignedOrderedOrAtomic>,
     address: u64,
     total: u64,
 ) -> (aligned: bool)
     requires
         1 <= total <= 32,
     ensures
-        aligned == aligned_access(alignment, misaligned_exclusive, address, total as nat),
+        aligned == aligned_access(alignment, misaligned_exclusive, misaligned_ordered_or_atomic, address, total as nat),
 {
     let granule = if crate::planted::is(265) {
         SINGLE_COPY_ATOMIC_BYTES / 2
@@ -1393,6 +1425,7 @@ fn is_aligned(
                 0 <= a % 16 < 16,
                 1 <= t <= 32;
     }
+    let ordered_or_atomic_faults = matches!(misaligned_ordered_or_atomic, Some(MisalignedOrderedOrAtomic::AlignmentFault));
     // VERUS: `planted::any` has no specification, so it is two `is`.
     crate::planted::is(276) || match (alignment, misaligned_exclusive) {
         _ if crate::planted::is(436) => true,
@@ -1404,6 +1437,7 @@ fn is_aligned(
         (Alignment::Exclusive, None) if crate::planted::is(42) => true,
         (Alignment::WithinSixteenBytes, _) if crate::planted::is(158) => address.is_multiple_of(total),
         (Alignment::Exclusive, _) if crate::planted::is(166) => address.is_multiple_of(total),
+        (Alignment::WithinSixteenBytes, _) if ordered_or_atomic_faults => address.is_multiple_of(total),
         (Alignment::WithinSixteenBytes, _) => within_sixteen_bytes,
         (Alignment::Exclusive, Some(MisalignedExclusive::WithinSixteenBytes)) | (Alignment::Exclusive, None) => {
             within_sixteen_bytes
@@ -2048,7 +2082,13 @@ pub open spec fn accessed_outcome(
             Some(tag) => tag,
             None => FaultAddressTag::KeepsTopByte,
         };
-        if total > 0 && !aligned_access(operation.alignment, choices.misaligned_exclusive, address, total) {
+        if total > 0 && !aligned_access(
+            operation.alignment,
+            choices.misaligned_exclusive,
+            choices.misaligned_ordered_or_atomic,
+            address,
+            total,
+        ) {
             (
                 Err(Exception::DataAbort {
                     status: FaultStatus::AlignmentFault,
@@ -3767,7 +3807,13 @@ fn simulate_access<LevelSpecific, Architecture>(
         Transfer::Load(_) | Transfer::Prefetch | Transfer::Atomic(_) | Transfer::CompareAndSwapPair => AccessDirection::Read,
     };
     // VERUS: an access of no bytes, which only a prefetch makes, has no alignment to check.
-    let aligned = total == 0 || is_aligned(operation.alignment, choices.misaligned_exclusive, address, total as u64);
+    let aligned = total == 0 || is_aligned(
+        operation.alignment,
+        choices.misaligned_exclusive,
+        choices.misaligned_ordered_or_atomic,
+        address,
+        total as u64,
+    );
     let tag = match choices.fault_address_tag {
         Some(tag) => tag,
         None => FaultAddressTag::KeepsTopByte,

@@ -19903,6 +19903,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     floating_point_status_bits: 4160749727u64,
                     random_number_registers: true,
                     tag_check_override: false,
+                    speculative_store_bypass_safe: true,
+                    data_independent_timing: true,
+                    memory_tagging: true,
                 },
             },
         ),
@@ -19918,6 +19921,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     floating_point_status_bits: 4160749727u64,
                     random_number_registers: true,
                     tag_check_override: false,
+                    speculative_store_bypass_safe: true,
+                    data_independent_timing: true,
+                    memory_tagging: true,
                 },
             },
         ),
@@ -20524,6 +20530,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -20549,6 +20558,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -20574,6 +20586,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -20599,6 +20614,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -20624,6 +20642,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -20649,6 +20668,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -20674,6 +20694,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -20699,6 +20720,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23552,6 +23574,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23583,6 +23606,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23612,6 +23636,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23641,6 +23666,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23670,6 +23696,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                         wcontainers_processor_architecture_arm64::StoreExclusiveOverlap::Runs,
                     ),
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23699,6 +23726,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                         wcontainers_processor_architecture_arm64::StoreExclusiveOverlap::Runs,
                     ),
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23726,6 +23754,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23753,6 +23782,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23830,6 +23860,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                         wcontainers_processor_architecture_arm64::StoreExclusiveOverlap::Runs,
                     ),
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23859,6 +23890,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                         wcontainers_processor_architecture_arm64::StoreExclusiveOverlap::Runs,
                     ),
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23884,6 +23916,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23909,6 +23942,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23940,6 +23974,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23971,6 +24006,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -23998,6 +24034,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24025,6 +24062,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24056,6 +24094,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24087,6 +24126,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24114,6 +24154,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24141,6 +24182,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24172,6 +24214,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24203,6 +24246,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24230,6 +24274,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24257,6 +24302,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     misaligned_exclusive: Some(
                         wcontainers_processor_architecture_arm64::MisalignedExclusive::WithinSixteenBytes,
                     ),
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24282,6 +24328,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24307,6 +24354,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24332,6 +24380,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24357,6 +24406,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24382,6 +24432,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24407,6 +24460,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24432,6 +24488,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24457,6 +24516,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24482,6 +24544,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24507,6 +24572,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24532,6 +24600,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24557,6 +24628,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24582,6 +24656,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24607,6 +24684,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24632,6 +24712,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24657,6 +24740,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24682,6 +24768,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24707,6 +24794,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24732,6 +24820,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24757,6 +24846,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24782,6 +24872,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24807,6 +24900,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24832,6 +24928,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24857,6 +24956,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24882,6 +24984,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24907,6 +25012,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24932,6 +25040,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24957,6 +25068,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -24982,6 +25096,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25007,6 +25124,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25032,6 +25152,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25057,6 +25180,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25172,6 +25298,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25197,6 +25324,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25222,6 +25350,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25247,6 +25376,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25272,6 +25402,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25297,6 +25430,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25322,6 +25458,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25347,6 +25486,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25372,6 +25514,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25397,6 +25542,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25422,6 +25570,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25447,6 +25598,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25472,6 +25626,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -25627,6 +25784,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -25648,6 +25806,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -25669,6 +25828,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -25690,6 +25850,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -25711,6 +25872,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -25732,6 +25894,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -25753,6 +25916,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -26690,6 +26854,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26717,6 +26882,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26744,6 +26910,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26771,6 +26938,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26798,6 +26966,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26825,6 +26994,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26852,6 +27022,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26879,6 +27050,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26906,6 +27078,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26933,6 +27106,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -26986,6 +27160,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27015,6 +27190,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27042,6 +27218,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27069,6 +27246,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27112,6 +27290,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27139,6 +27318,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27166,6 +27346,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27195,6 +27376,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27224,6 +27406,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27251,6 +27434,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27278,6 +27462,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27329,6 +27514,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27356,6 +27542,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27383,6 +27570,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27410,6 +27598,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27451,6 +27640,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27478,6 +27668,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27505,6 +27696,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27532,6 +27724,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27559,6 +27752,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27586,6 +27780,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27613,6 +27808,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27666,6 +27862,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27695,6 +27892,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27722,6 +27920,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27749,6 +27948,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27792,6 +27992,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27819,6 +28020,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27846,6 +28048,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27875,6 +28078,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27904,6 +28108,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27931,6 +28136,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -27958,6 +28164,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28007,6 +28214,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28032,6 +28240,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28057,6 +28266,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28082,6 +28292,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28107,6 +28318,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28132,6 +28344,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28159,6 +28372,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28184,6 +28398,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28211,6 +28426,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28236,6 +28452,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28261,6 +28478,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28286,6 +28504,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28313,6 +28532,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28338,6 +28558,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28365,6 +28586,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28390,6 +28612,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28415,6 +28638,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28442,6 +28666,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28467,6 +28692,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28494,6 +28720,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28519,6 +28746,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28542,6 +28770,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -28567,6 +28796,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28592,6 +28822,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28619,6 +28850,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28646,6 +28878,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28673,6 +28906,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28700,6 +28934,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28725,6 +28960,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28750,6 +28986,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28777,6 +29014,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28802,6 +29040,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28831,6 +29070,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28858,6 +29098,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28885,6 +29126,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28912,6 +29154,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28939,6 +29182,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28964,6 +29208,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -28993,6 +29238,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29020,6 +29266,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29047,6 +29294,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29074,6 +29322,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29099,6 +29348,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29128,6 +29378,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29155,6 +29406,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29182,6 +29434,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29207,6 +29460,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29232,6 +29486,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29257,6 +29512,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29282,6 +29538,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29307,6 +29564,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29334,6 +29592,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29359,6 +29618,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29384,6 +29644,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29409,6 +29670,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29436,6 +29698,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29461,6 +29724,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29486,6 +29750,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29513,6 +29778,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29538,6 +29804,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29565,6 +29832,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29592,6 +29860,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29619,6 +29888,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29646,6 +29916,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29671,6 +29942,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29696,6 +29968,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29723,6 +29996,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29748,6 +30022,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29777,6 +30052,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29804,6 +30080,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29831,6 +30108,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29858,6 +30136,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29885,6 +30164,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29910,6 +30190,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29939,6 +30220,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29966,6 +30248,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -29993,6 +30276,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30020,6 +30304,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30045,6 +30330,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30074,6 +30360,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30101,6 +30388,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30128,6 +30416,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30153,6 +30442,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30178,6 +30468,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30203,6 +30494,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30228,6 +30520,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30253,6 +30546,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30278,6 +30572,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30303,6 +30598,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30328,6 +30624,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30353,6 +30650,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30378,6 +30676,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30421,6 +30720,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30446,6 +30746,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30471,6 +30772,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30496,6 +30798,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30521,6 +30824,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30546,6 +30850,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30571,6 +30876,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30596,6 +30902,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30621,6 +30928,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30664,6 +30972,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30689,6 +30998,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30714,6 +31024,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30739,6 +31050,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30764,6 +31076,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30789,6 +31102,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30814,6 +31128,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30839,6 +31154,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30864,6 +31180,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30907,6 +31224,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30932,6 +31250,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30957,6 +31276,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -30982,6 +31302,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31007,6 +31328,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31032,6 +31354,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31057,6 +31380,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31082,6 +31406,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31107,6 +31432,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31132,6 +31458,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31175,6 +31502,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31200,6 +31530,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31225,6 +31558,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31250,6 +31586,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31275,6 +31614,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31300,6 +31642,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31325,6 +31670,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31350,6 +31698,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31375,6 +31726,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31418,6 +31772,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31443,6 +31800,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31468,6 +31828,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31493,6 +31856,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31518,6 +31884,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31543,6 +31912,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31568,6 +31940,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31593,6 +31968,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31618,6 +31996,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31661,6 +32042,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31686,6 +32070,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31711,6 +32098,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31736,6 +32126,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31761,6 +32154,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31786,6 +32182,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31811,6 +32210,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31836,6 +32238,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31861,6 +32266,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31904,6 +32312,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31929,6 +32340,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31954,6 +32368,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -31979,6 +32396,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32004,6 +32424,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32029,6 +32452,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32054,6 +32480,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32079,6 +32508,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32104,6 +32536,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32129,6 +32564,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32172,6 +32610,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32197,6 +32638,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32222,6 +32666,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32247,6 +32694,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32272,6 +32722,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32297,6 +32750,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32322,6 +32778,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32347,6 +32806,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32372,6 +32834,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32397,6 +32862,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32422,6 +32890,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32447,6 +32918,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32472,6 +32946,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32497,6 +32974,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32522,6 +33002,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32547,6 +33030,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32572,6 +33058,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32597,6 +33086,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32622,6 +33114,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32647,6 +33142,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32672,6 +33170,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32697,6 +33198,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32722,6 +33226,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32747,6 +33254,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32772,6 +33282,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32797,6 +33310,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32822,6 +33338,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32847,6 +33366,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32872,6 +33394,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32897,6 +33422,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32922,6 +33450,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32947,6 +33478,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32972,6 +33506,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -32997,6 +33534,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33022,6 +33562,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33047,6 +33590,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33072,6 +33618,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33097,6 +33646,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33122,6 +33674,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33147,6 +33702,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33172,6 +33730,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33197,6 +33758,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33222,6 +33786,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33247,6 +33814,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33272,6 +33842,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33297,6 +33870,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33352,6 +33928,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33377,6 +33956,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33402,6 +33984,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33427,6 +34012,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33452,6 +34040,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33477,6 +34068,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33502,6 +34096,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33527,6 +34124,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33552,6 +34152,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33595,6 +34198,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33620,6 +34226,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33645,6 +34254,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33670,6 +34282,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33695,6 +34310,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33720,6 +34338,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33745,6 +34366,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33770,6 +34394,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33795,6 +34422,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33820,6 +34450,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33845,6 +34478,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33870,6 +34506,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33895,6 +34534,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33920,6 +34562,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33945,6 +34590,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33970,6 +34618,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -33995,6 +34646,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34020,6 +34674,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34045,6 +34702,9 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: Some(
+                        wcontainers_processor_architecture_arm64::MisalignedOrderedOrAtomic::WithinSixteenBytes,
+                    ),
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34790,6 +35450,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34815,6 +35476,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34840,6 +35502,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34865,6 +35528,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34890,6 +35554,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34915,6 +35580,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34940,6 +35606,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34965,6 +35632,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -34990,6 +35658,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35015,6 +35684,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35040,6 +35710,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35065,6 +35736,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35092,6 +35764,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35117,6 +35790,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35144,6 +35818,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35169,6 +35844,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35194,6 +35870,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35219,6 +35896,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35246,6 +35924,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35271,6 +35950,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35298,6 +35978,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35323,6 +36004,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35348,6 +36030,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35375,6 +36058,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35400,6 +36084,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35427,6 +36112,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35452,6 +36138,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35475,6 +36162,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -35509,6 +36197,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35534,6 +36223,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35559,6 +36249,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35586,6 +36277,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35611,6 +36303,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35638,6 +36331,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35663,6 +36357,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35688,6 +36383,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35713,6 +36409,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35738,6 +36435,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35763,6 +36461,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35788,6 +36487,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35815,6 +36515,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35840,6 +36541,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35867,6 +36569,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35892,6 +36595,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35917,6 +36621,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35942,6 +36647,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35969,6 +36675,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -35994,6 +36701,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -36021,6 +36729,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -36046,6 +36755,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -36071,6 +36781,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -36098,6 +36809,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -36123,6 +36835,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -36150,6 +36863,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -36175,6 +36889,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -36198,6 +36913,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: None,
                     reservation_granule_bytes: None,
                 },
@@ -36223,6 +36939,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
@@ -36248,6 +36965,7 @@ pub const SAMPLE: super::Sample = super::Sample {
                     failed_store_exclusive: None,
                     store_exclusive_overlap: None,
                     misaligned_exclusive: None,
+                    misaligned_ordered_or_atomic: None,
                     fault_address_tag: Some(
                         wcontainers_processor_architecture_arm64::FaultAddressTag::KeepsTopByte,
                     ),
