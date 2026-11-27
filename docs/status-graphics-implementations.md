@@ -908,6 +908,168 @@ ad62381ac (webgpu), both pushed; every number below MEASURED at ad62381ac on bot
 - Next: GI4 waits on him; webgpu's last 5 on his second question; GI6's removal on the cost question; GI7 on the API
   track's OpenGL ES trait (AC10); GI8 part B on its Mesa compiler (AC11) and Gallium (AC8) traits.
 
+## The tenth run (2026-11-27): GI7, WebGL 2 on the OpenGL ES crate's trait
+
+Logs in the scratch folder graphics-implementations/r10/ (before-*, before2-*, before3-*, after-*, after2-*, after3-*,
+profile-*, exp-keep-arm.log, dev*.log); the job is tools/r10-job.sh, the draw counter tools/r10_drawcount.py, the
+mechanical passes tools/gi7_port.py, gi7_calls.py, gi7_fix.py, gi7_functions.py, gi7_handles.py, gi7_mirrors.py,
+gi7_split.py. Every number below MEASURED at a pushed commit, both machines, unless named.
+
+### His main
+
+- `git fetch /Users/thomaseaton/Documents/GitHub/wcontainers main` gives ac696ea19; `git merge-base --is-ancestor
+  FETCH_HEAD HEAD` exit 0 and `git log HEAD..FETCH_HEAD` empty: nothing to merge (the day's instruction-interface
+  changes are in it, as the ninth run recorded; no graphics crate names those interfaces).
+
+### What came from the API track (24c372f21)
+
+- `crates/egl` and `crates/opengl-es` (interfaces, constants, `implementation/direct`, the OpenGL ES conformance
+  crate) from origin/graphics-api-crates as at 1571b4566, the docs-only rerun of 9429dd43f (`git diff 1571b4566
+  origin/graphics-api-crates -- crates/egl crates/opengl-es` empty), by `git checkout <branch> -- <paths>`. No
+  generator path was taken: the crates build without one (the generator is its own workspace, tools/
+  api-crate-generator, and nothing in the two crates reads it); their files name it in their first line only.
+- MEASURED: all five packages check with `--all-targets`, clippy `-D warnings` exits 0, and the OpenGL ES suite on
+  the direct crates over the pinned Mesa's EGL passes 4 of 4 (`TEST-OPENGL-ES-DIRECT`).
+
+### GI7: gpu-webgl on the trait (19feea113, 900024812, 0833bd8d2, d0f51528a)
+
+- `Gl<O: OpenGlEs>`: every glow call is a call of the trait (`O` is the OpenGL ES context); glow and khronos-egl are
+  gone from webgl's dependencies (nir still uses them). Natively `Gl<wcontainers_opengl_es_direct::OpenGlEsContext>`
+  implements `StandaloneGpu` with `GlConfig { egl: Option<PathBuf>, off }`: it loads the EGL library (once per
+  process and folder: below), makes an OpenGL ES 3 context with a 1 by 1 pixel buffer, and keeps the EGL objects in
+  a guard destroyed after the context's last call. In the browser `Gl<O>` implements `StandaloneGpu` for any `O`
+  with `GlConfig { gl: O, off }`, waiting for the OpenGL ES crate's implementation on WebGL.
+- platform.rs is the OpenGL ES calls in the forms the back end uses (names, logs, strings, extensions, the copying
+  buffer read) and the EGL context; the old native and browser platform modules (function pointers, transmutes, the
+  JSPI import, khronos-egl) are gone. The extension calls are the trait's `*_oes`, `*_ext`, `*_angle` methods.
+- What the trait lacks (NEEDED-FROM-API-CRATES.md, section "After GI7", for the API track): glStencilFuncSeparate
+  and glStencilOpSeparate (missed by our own list; until then a block whose faces differ loses the device as not
+  built, no test meets it), eight extension values (defined in platform.rs with the registry's numbers until then),
+  the WebGL implementation, eglCreateWindowSurface, an owned EGL context, the cost of the glue's checks, and the
+  library unloaded with its last handle.
+- What it costs: no window surface natively, so `create_surface` refuses every window (as it did on Linux, where no
+  host ever gave one); the Windows ANGLE test `present_shows_the_frame` is ignored with that reason; directx's
+  `webgl` feature (Windows only) would not build: the change it needs is graphics-implementations/r10/
+  directx-webgl.patch, not applied (directx is not this track's). The browser pages (webgl's `browser` and
+  `draw-cost`, trace's `replay`) do not build for wasm32 until the WebGL implementation exists; the browser's
+  `#[unsafe(no_mangle)] extern "C" fn suite_run` is a `#[wasm_bindgen]` export now (INFERRED to keep the plain
+  WebAssembly export the page's `WebAssembly.promising` calls; not run, the page cannot build yet).
+- Its two helper impl blocks are functions taking `gpu: &mut Gl<O>` (900024812, tools/gi7_functions.py): 66 methods;
+  the constructor and the six public accessors stay in one inherent block.
+- Its handles are plain data (d0f51528a): `Buffer`, `Texture`, `TextureView`, `Sampler`, `Shader`, `Program`,
+  `Blend`, `DepthStencil`, `Raster`, `VertexLayout`, `BindingSet`, `QuerySet`, `Readback`, `Surface` are `pub struct
+  X(pub u64)`, deriving only `Clone` and `Debug`; `Fence<F>` is `{ sync: Option<F>, done: Rc<Cell<bool>> }` with pub
+  fields, as webgpu's. The back end keeps each object in a table per kind until `destroy` (a read back until it is
+  finished; shaders and programs of equal text are one object and leave with their last handle); a number it never
+  gave or already destroyed is refused (`Invalid` where the call answers a result, the device lost where it answers
+  nothing). The Gpu methods the back end also called itself are split into a method that looks the handles up and an
+  internal function on the objects it holds (`make_texture`, `write_texture_held`, `read_back_held`, ...); a draw's,
+  a pass's and a copy's objects are looked up once at the method (`Drawn`, `HeldPass`, `Region`, `Place`, `Source`).
+  Textures the back end makes for itself never enter the table.
+- The EGL library once per process (0833bd8d2): the speed comparison below found the whole suite in one process
+  31% slower after the port, every program about 55 ms more (in-process profile, ARM64: sum 12,084 ms before, 15,881
+  after); the glue unloads the library with its last handle and Mesa loads its driver again. A scratch copy keeping a
+  second load alive gave 12.2 s (exp-keep-arm.log); the commit keeps the loaded library in a process-wide list.
+
+### Unsafe lines (the track's one method, tools/count-unsafe.sh)
+
+| crate | d19c23829 (before) | d0f51528a (after) |
+|---|---|---|
+| gpu-webgl | 159 (implementation.rs 96, platform.rs 41, state.rs 8, shader.rs 5, depth.rs 4, caps.rs 3, examples/browser.rs 1, examples/common/angle.rs 1) | 0 |
+| every other crate of the track | unchanged (webgpu 19, shaders 71, shader-converters 5, nir 113, opengl 354, test-window 12, the rest 0) | unchanged |
+| total | 733 | 574 |
+
+Brought in, not written here (the API track's `implementation/direct` crates, each denying unsafe code and marking
+each use): egl-direct 56 lines, 39 `#[expect(unsafe_code, reason)]` marks; opengl-es-direct 474 lines, 318 marks
+(the API track's own count, 95 and 792, counts comment lines too); egl, opengl-es and the conformance crate 0.
+
+### Measured at the pushed tip d0f51528a (both machines alike unless named; after3-*.log)
+
+- `cargo check --all-targets`: egl, egl-direct, opengl-es, opengl-es-direct, opengl-es-conformance, gpu-webgl,
+  shaders, gpu-trace, directx exit 0 under the workspace lints, `forbid` included (before: gpu-webgl 101 with 166
+  error lines, shaders through it). clippy `--all-targets --no-deps -D warnings` and `cargo fmt --check` of gpu-webgl
+  exit 0; clippy of the webgl library for wasm32 exits 0 (dev22). Cargo.lock: the five API packages added, glow and
+  khronos-egl no longer webgl's (still nir's); the same hash before and after each job on both machines.
+- wasm32: the libraries of gpu-webgl, gpu-webgpu, gpu, gpu-trace, opengl-es and egl exit 0; webgpu's scenes page 0;
+  webgl's `browser` and `draw-cost` and trace's `replay` 101 (no WebGL implementation of the trait yet).
+- gpu-webgl on the pinned Mesa's EGL (llvmpipe, surfaceless, no old lints table any more): 89 passed, 2 failed, its
+  17 own tests and 72 of the 74 suite programs; the two are the ones that failed before the port, the same way
+  (`a_copy_within_one_depth_or_stencil_subresource_moves_the_region`: depth24 rounding, 0.6249999 for 0.625;
+  `edges_through_pixel_centres_follow_the_top_left_rule`: texel (0, 0) not drawn). Before (d19c23829, scratch copy
+  with the old table, both machines): the same 89 and 2.
+- shaders 158 passed, 5 ignored (lavapipe); the OpenGL ES suite on the direct crates 4 of 4.
+- Not run: ANGLE (Windows only, the desktop is not used in this run), the browser page (cannot build yet).
+
+### Speed before and after (release, llvmpipe with LP_NUM_THREADS=4, one test thread)
+
+The draw-heaviest suite programs by the number of interface draws each makes (counted on the recorder through the
+trace crate, tools/r10_drawcount.py: 55, 8, 6, 5, 4, 3, 3), each run alone 7 times, median ms; and the whole suite in
+one process, 3 runs. "absent" is `absent_abilities_answer_absent`, which draws nothing: the process, the context and
+the probes.
+
+| ARM64 | d19c23829 (two runs) | 19feea113 | 0833bd8d2 | d0f51528a |
+|---|---|---|---|---|
+| every_vertex_format_reads_its_element (55 draws) | 717, 726 | 727 | 723 | 722 |
+| the_occlusion_counter_counts_every_sample_that_passes (8) | 376, 380 | 379 | 378 | 377 |
+| missing_components_read_their_defaults (6) | 445, 450 | 449 | 448 | 445 |
+| stencil_operations_and_tests (5) | 250, 252 | 253 | 251 | 250 |
+| copies_between_depth_stencil_textures_move_both_aspects (4) | 245, 249 | 247 | 250 | 246 |
+| vertices_pulled_from_storage_match_the_fetched_ones (3) | 175, 177 | 176 | 177 | 175 |
+| textured_draw_with_depth_and_blending (3) | 266, 269 | 268 | 266 | 266 |
+| absent | 176, 179 | 177 | 177 | 176 |
+| whole suite, one process (s) | 12.12 to 12.25 | 16.00 to 16.11 | 12.11 to 12.13 | 12.08 to 12.11 |
+
+| x86-64 | d19c23829 (three runs) | 19feea113 | 0833bd8d2 | d0f51528a |
+|---|---|---|---|---|
+| every_vertex_format_reads_its_element | 667, 718, 666 | 669 | 668 | 727 |
+| the_occlusion_counter_counts_every_sample_that_passes | 244, 262, 243 | 247 | 248 | 265 |
+| missing_components_read_their_defaults | 272, 270, 272 | 274 | 278 | 298 |
+| stencil_operations_and_tests | 204, 202, 204 | 204 | 208 | 225 |
+| copies_between_depth_stencil_textures_move_both_aspects | 201, 199, 201 | 203 | 205 | 222 |
+| vertices_pulled_from_storage_match_the_fetched_ones | 169, 168, 172 | 178 | 172 | 176 |
+| textured_draw_with_depth_and_blending | 217, 216, 223 | 233 | 223 | 221 |
+| absent | 170, 169, 172 | 187 | 174 | 171 |
+| whole suite, one process (s) | 10.34 to 11.05 | 13.89 to 14.72 | 10.31 to 10.33 | 10.35 to 10.39 |
+
+- Reading: on ARM64, the quieter machine, every draw-heavy program is within 1% of before at every commit: the glue's
+  checks (an eglGetCurrentContext per command, the per-draw attribute queries, the pixel store reads) cost nothing
+  visible next to llvmpipe's own work, and the plain-data handles nothing either. On x86-64 the numbers move by up
+  to 8% between runs of the same commit (before: 667 and 718 for the first program), and the tip's run met a
+  one-minute load of 8 against 4 to 5 for the others; its whole suite equals before's. The one real loss, the
+  library reloaded for every back end, is gone since 0833bd8d2.
+- The x86-64 before run (before-x86.log) built with 96 jobs: its job omitted `--jobs 12`, against the run's rule
+  (every later job passed it). Its times are kept because the runs that followed with 12 agree with it.
+
+### Linter (da55b9d7, x86-64, no model key; r9/after-x86 at ad62381ac, the code of d19c23829, against r10/after3-x86)
+
+| crates/gpu/implementation/webgl | before | after |
+|---|---|---|
+| all rules | 6,724 | 6,649 |
+| public_outside_interface | 177 | 88 (the handles' private fields and `PartialEq`, the helper blocks, `pub mod platform` and the Rc handle types gone) |
+| conformance_not_run | 0 | 2 (below) |
+| unparsed | 7 | 7 |
+| name_unanswered, summary_unanswered | 0, 4 | 20, 18 (new names and summaries wait on the model's answers; the key stays on the Mac) |
+
+- New, for the orchestrator: conformance_not_run 2: "`wcontainers_gpu::StandaloneGpu` is implemented for
+  `wcontainers_gpu_webgl::Gl<wcontainers_opengl_es_direct::OpenGlEsContext>`, which is not an exported type, so the
+  conformance suite, run on the exported one, never runs this implementation" (and its twin on the run's line). The
+  native `StandaloneGpu` names the direct implementation because the EGL type cannot be named by `Gl<O>` alone (a
+  generic impl over `O: OnEgl<E>` leaves `E` unconstrained). It runs: conformance_run.rs builds that type and its 74
+  programs run (above).
+- crates/egl 141 and crates/opengl-es 1,377 findings come with the API track's crates (their own status counts them).
+
+### Milestones
+
+- GI7 reached by its brief's bar where it can be measured here: the crate and shaders build under `forbid` with all
+  targets on both machines; gpu-webgl's 17 and the shared suite pass as before the port (on Mesa's EGL, not ANGLE:
+  ANGLE is the desktop's, not used in this run); shaders 158 (157 and the tessellation test); wasm32 check of the
+  library exit 0 under `forbid`. Not met: the browser pages, which wait on the trait's WebGL implementation. The
+  independent check is owed.
+- Also done: webgl's two helper blocks as functions, its handles as plain data, gpu-webgl's 159 unsafe lines gone.
+- Next: GI4 and the window question wait on the owner; GI6's removal on the cost question; GI8 part B on the API
+  track's Mesa compiler (AC11) and Gallium (AC8) traits; the browser route and two-sided stencil on the API track
+  (NEEDED-FROM-API-CRATES.md, "After GI7").
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
@@ -947,3 +1109,9 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   (an outside API's `implementation/direct`, the place the rules allow); crates/gpu/implementation/metal 0. No new
   outside crate (Cargo.lock: the four Metal workspace packages only).
 - No hostile-guest suite exists, so none was run in any run (the thread-test design review is still owed to the owner).
+- Tenth run (24c372f21 to d0f51528a): gpu-webgl 159 to 0 lines (MEASURED with count-unsafe.sh at d19c23829 and
+  d0f51528a); the track's total 733 to 574. No marked exception written here. Brought in with the API track's crates,
+  not written here: egl-direct 56 lines under 39 marks and opengl-es-direct 474 under 318, each in a crate whose own
+  table denies unsafe code (an outside API's `implementation/direct`). New dependencies: the five workspace crates
+  wcontainers-egl, -egl-direct, -opengl-es, -opengl-es-direct, -opengl-es-conformance (libloading 0.8.9 through
+  egl-direct, already in the lock); webgl dropped glow and khronos-egl. No hostile-guest suite exists, none was run.

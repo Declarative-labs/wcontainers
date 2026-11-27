@@ -1,6 +1,10 @@
 # Graphics WebGL 2 back end status (G3, G3b)
 
 Track: `crates/gpu-webgl`, the WebGL 2 back end on glow, branch `phase-2-graphics-webgl`.
+
+Since GI7 (branch `graphics-implementations`, 2026-11-27) the back end is `crates/gpu/implementation/webgl` and
+draws through the OpenGL ES crate's trait (`wcontainers_opengl_es::OpenGlEs`), not glow; what follows is its
+history. Its current state is in docs/status-graphics-implementations.md, the tenth run.
 Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
