@@ -24,6 +24,7 @@ mod file;
 mod fs;
 mod guest_machine;
 mod hugetlb;
+mod identification;
 pub mod linux;
 mod linux_extra;
 mod loader;
@@ -283,7 +284,9 @@ pub struct Kernel {
     entry_now: u64,
     /// The monotonic clock when the kernel last handed control back, which is when the thread it
     /// picks next starts running.
-    last_now: u64,
+    pub(crate) last_now: u64,
+    /// Whether a thread gave way (`sched_yield`) since the runner last looked, which ends its run.
+    pub(crate) gave_way: bool,
     /// The current thread's CPU time when it was picked, for how much of its slice is used.
     picked_runtime: u64,
     /// The last process or thread number handed out. Both share one space, as in Linux.
@@ -431,6 +434,7 @@ impl Kernel {
             wall_offset: 0,
             entry_now: 0,
             last_now: 0,
+            gave_way: false,
             picked_runtime: 0,
             last_id: 0,
             ceiling: 0,

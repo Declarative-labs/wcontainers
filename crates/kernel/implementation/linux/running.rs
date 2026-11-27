@@ -13,7 +13,9 @@ use wcontainers_executor::{
     Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf,
     SystemCallResponse, TrapHandler,
 };
-use wcontainers_processor_architecture_arm64::{ConditionFlags, Exception, ExclusiveMonitor};
+use wcontainers_processor_architecture_arm64::{
+    AccessDirection, ConditionFlags, Exception, ExclusiveMonitor,
+};
 
 use crate::guest_machine::Predicates;
 
@@ -36,7 +38,55 @@ pub(crate) enum Exit {
     IllegalInstruction,
     /// A breakpoint instruction (`brk`), with its 16-bit comment.
     Breakpoint { comment: u16 },
+    /// A read of a system register that EL1 traps and Linux answers for the program, with the
+    /// program counter at its instruction and the general register it reads into (31 for none).
+    SystemRegisterRead { read: EmulatedRead, register: u8 },
 }
+
+/// What a trapped system register read the kernel answers asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EmulatedRead {
+    /// CNTFRQ_EL0: the counter's ticks a second.
+    Frequency,
+    /// CNTVCT_EL0, CNTPCT_EL0 and their self-synchronized forms: the count.
+    Count,
+    /// An identification register, and what it reads.
+    Identification(u64),
+}
+
+/// The encoding fields (op0, op1, CRn, CRm) every EL0 counter register shares
+/// (<https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CNTVCT-EL0--Counter-timer-Virtual-Count-Register#:~:text=Accessing%20CNTVCT_EL0>).
+const COUNTER_REGISTERS: (u8, u8, u8, u8) = (3, 3, 14, 0);
+
+/// Returns the counter a read of the system register of encoding op2 `op2` among
+/// [`COUNTER_REGISTERS`] gives: 0 is CNTFRQ_EL0, 1 CNTPCT_EL0, 2 CNTVCT_EL0, 5 CNTPCTSS_EL0 and
+/// 6 CNTVCTSS_EL0.
+fn counter_of(op2: u8) -> Option<EmulatedRead> {
+    match op2 {
+        0 => Some(EmulatedRead::Frequency),
+        1 | 2 | 5 | 6 => Some(EmulatedRead::Count),
+        _ => None,
+    }
+}
+
+/// PSTATE's SSBS, DIT and TCO, at their bits of SPSR_EL1, which a thread's saved PSTATE keeps
+/// beside the condition flags, as Linux keeps them in its saved registers.
+pub(crate) const PROCESS_STATE_CONTROLS: u64 = {
+    let mut mask = 0;
+    let mut index = 0;
+    while index
+        < wcontainers_processor_architecture_arm64::system_register::PROCESS_STATE_CONTROLS.len()
+    {
+        if let Some(bit) =
+            wcontainers_processor_architecture_arm64::system_register::PROCESS_STATE_CONTROLS[index]
+                .to_process_state_bit()
+        {
+            mask |= bit;
+        }
+        index += 1;
+    }
+    mask
+};
 
 /// The processor's state of a thread at EL0, which adds no state to what every level has.
 type Processor = wcontainers_processor_architecture_arm64::Processor<()>;
@@ -162,13 +212,17 @@ fn exit_of(exception: Option<Exception>, registers: &RegisterBlock) -> Exit {
             syndrome,
             fault_address,
         } => exit_of_syndrome(syndrome, fault_address, registers),
-        // A supervisor call goes to the hook first, and Linux lets EL0 wait untrapped. A trapped
-        // system access names no exit yet, as when the processor kept it as its syndrome.
+        Exception::SystemAccessTrapped(access) => exit_of_system_access(
+            (access.op0, access.op1, access.crn, access.crm),
+            access.op2,
+            access.rt,
+            access.direction == AccessDirection::Read,
+        ),
+        // A supervisor call goes to the hook first, and Linux lets EL0 wait untrapped.
         exception @ (Exception::InstructionAbort { .. }
         | Exception::SmeTrap(_)
         | Exception::SupervisorCall { .. }
-        | Exception::WaitTrapped(_)
-        | Exception::SystemAccessTrapped(_)) => {
+        | Exception::WaitTrapped(_)) => {
             panic!("an execution ended on an exception no exit names: {exception:?}")
         }
     }
@@ -197,7 +251,42 @@ fn exit_of_syndrome(syndrome: u64, fault_address: u64, registers: &RegisterBlock
         Some(Class::DataAbortLowerEL) => Exit::AlignmentFault {
             address: fault_address,
         },
+        Some(Class::TrappedMsrMrs) => {
+            let field = |shift: u32, width: u32| {
+                u8::try_from((syndrome >> shift) & ((1 << width) - 1))
+                    .expect("a syndrome field is narrower than a byte")
+            };
+            // ISS of an MSR or MRS trap: Op0 [21:20], Op2 [19:17], Op1 [16:14], CRn [13:10],
+            // Rt [9:5], CRm [4:1], Direction [0], 1 for a read
+            // (<https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=ISS%20encoding%20for%20an%20exception%20from%20MSR%2C%20MRS%2C%20or%20System%20instruction%20execution%20in%20AArch64%20state>).
+            exit_of_system_access(
+                (field(20, 2), field(14, 3), field(10, 4), field(1, 4)),
+                field(17, 3),
+                field(5, 5),
+                field(0, 1) == 1,
+            )
+        }
         _ => panic!("an execution ended on an exception no exit names: syndrome {syndrome:#x}"),
+    }
+}
+
+/// Returns the exit of a trapped system access of encoding `(op0, op1, CRn, CRm)` and `op2`, into
+/// or from general register `register`, a read if `read`: a read of the counter or of an
+/// identification register the kernel answers as Linux does, else an access Linux does not
+/// emulate, which ends as an undefined instruction does.
+fn exit_of_system_access(encoding: (u8, u8, u8, u8), op2: u8, register: u8, read: bool) -> Exit {
+    if !read {
+        return Exit::IllegalInstruction;
+    }
+    let emulated = if encoding == COUNTER_REGISTERS {
+        counter_of(op2)
+    } else {
+        crate::identification::read(&crate::identification::PRESENTED, encoding, op2)
+            .map(EmulatedRead::Identification)
+    };
+    match emulated {
+        Some(read) => Exit::SystemRegisterRead { read, register },
+        None => Exit::IllegalInstruction,
     }
 }
 
@@ -222,6 +311,7 @@ fn to_processor(registers: &RegisterBlock, predicates: Predicates) -> Processor 
         floating_point_status: u64::from(registers.fpsr),
         predicate_registers: predicates.registers,
         first_fault_register: predicates.first_fault,
+        process_state_controls: registers.pstate & PROCESS_STATE_CONTROLS,
         software_thread_id: registers.tpidr_el0,
         exclusive_monitor: ExclusiveMonitor::Open,
         exception: None,
@@ -240,7 +330,8 @@ fn to_registers(processor: &Processor) -> RegisterBlock {
         x: processor.general_purpose_registers,
         sp: processor.stack_pointer,
         pc: processor.program_counter,
-        pstate: u64::from(processor.condition_flags.bits()),
+        pstate: u64::from(processor.condition_flags.bits())
+            | processor.process_state_controls & PROCESS_STATE_CONTROLS,
         v: processor.vector_registers.map(halves),
         fpsr: u32::try_from(processor.floating_point_status)
             .expect("FPSR's upper half is reserved as zero"),
@@ -253,7 +344,7 @@ fn to_registers(processor: &Processor) -> RegisterBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wcontainers_processor_architecture_arm64::INSTRUCTION_SIZE;
+    use wcontainers_processor_architecture_arm64::{INSTRUCTION_SIZE, SystemAccess};
 
     #[test]
     fn registers_come_back_from_the_processor_state_unchanged() {
@@ -263,7 +354,7 @@ mod tests {
         }
         registers.sp = u64::MAX;
         registers.pc = u64::from(u32::MAX);
-        registers.pstate = u64::from(ConditionFlags::all().bits());
+        registers.pstate = u64::from(ConditionFlags::all().bits()) | PROCESS_STATE_CONTROLS;
         registers.v[1] = [u64::MAX, u64::MIN];
         registers.v[2] = [u64::MIN, u64::MAX];
         registers.fpsr = u32::MAX;
@@ -352,5 +443,106 @@ mod tests {
         for (exception, exit) in kept_whole {
             assert_eq!(exit_of(exception, &registers), exit, "{exception:?}");
         }
+    }
+
+    /// A trapped `mrs` of the system register `(op0, op1, crn, crm, op2)` into `rt`.
+    fn trapped_read(encoding: (u8, u8, u8, u8, u8), rt: u8) -> Exception {
+        let (op0, op1, crn, crm, op2) = encoding;
+        Exception::SystemAccessTrapped(SystemAccess {
+            op0,
+            op1,
+            crn,
+            crm,
+            op2,
+            rt,
+            direction: AccessDirection::Read,
+        })
+    }
+
+    /// The same read kept whole as its syndrome, in the ISS layout of an MSR or MRS trap.
+    fn trapped_read_syndrome(encoding: (u8, u8, u8, u8, u8), rt: u8) -> Option<Exception> {
+        let (op0, op1, crn, crm, op2) = encoding;
+        let specific = u64::from(op0) << 20
+            | u64::from(op2) << 17
+            | u64::from(op1) << 14
+            | u64::from(crn) << 10
+            | u64::from(rt) << 5
+            | u64::from(crm) << 1
+            | 1;
+        undecoded(ESR_EL1::EC::Value::TrappedMsrMrs, specific, 0)
+    }
+
+    #[test]
+    fn trapped_counter_and_identification_reads_are_answered_and_other_system_accesses_are_undefined()
+     {
+        let registers = RegisterBlock::ZERO;
+        let frequency = (3, 3, 14, 0, 0);
+        let physical = (3, 3, 14, 0, 1);
+        let virtual_count = (3, 3, 14, 0, 2);
+        let virtual_self_synchronized = (3, 3, 14, 0, 6);
+        let virtual_timer_control = (3, 3, 14, 3, 1);
+        let main_id = (3, 0, 0, 0, 0);
+        let system_control = (3, 0, 1, 0, 0);
+        let cases = [
+            (
+                frequency,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Frequency,
+                    register: 3,
+                },
+            ),
+            (
+                physical,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Count,
+                    register: 3,
+                },
+            ),
+            (
+                virtual_count,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Count,
+                    register: 3,
+                },
+            ),
+            (
+                virtual_self_synchronized,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Count,
+                    register: 3,
+                },
+            ),
+            (virtual_timer_control, Exit::IllegalInstruction),
+            (
+                main_id,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Identification(0x000F_0000),
+                    register: 3,
+                },
+            ),
+            (system_control, Exit::IllegalInstruction),
+        ];
+        for (encoding, exit) in cases {
+            assert_eq!(
+                exit_of(Some(trapped_read(encoding, 3)), &registers),
+                exit,
+                "{encoding:?}"
+            );
+            assert_eq!(
+                exit_of(trapped_read_syndrome(encoding, 3), &registers),
+                exit,
+                "{encoding:?} kept whole"
+            );
+        }
+        let write = Exception::SystemAccessTrapped(SystemAccess {
+            op0: 3,
+            op1: 3,
+            crn: 14,
+            crm: 0,
+            op2: 2,
+            rt: 3,
+            direction: AccessDirection::Write,
+        });
+        assert_eq!(exit_of(Some(write), &registers), Exit::IllegalInstruction);
     }
 }

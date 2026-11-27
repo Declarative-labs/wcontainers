@@ -306,44 +306,6 @@ fn cpu_limit_times(kernel: &Kernel, pid: Pid) -> Option<(u64, Option<u64>)> {
     })
 }
 
-/// How long the thread may run before its process reaches its CPU time limit or a CPU timer of its
-/// own or its process's is due.
-pub(crate) fn cpu_slice(kernel: &Kernel, tid: Tid) -> Option<u64> {
-    let pid = kernel.threads[&tid].process;
-    let limit = cpu_limit_times(kernel, pid).map(|(soft, hard)| {
-        soft.min(hard.unwrap_or(u64::MAX))
-            .saturating_sub(super::time::process_cpu_time(kernel, pid))
-            .max(1)
-    });
-    if kernel.timers.cpu.is_empty() {
-        return limit;
-    }
-    kernel
-        .timers
-        .cpu
-        .iter()
-        .filter_map(|id| {
-            let timer = &kernel.timers.all[id];
-            if ![
-                Clock::Process(pid),
-                Clock::ProcessUser(pid),
-                Clock::Thread(tid),
-            ]
-            .contains(&timer.clock)
-            {
-                return None;
-            }
-            Some(
-                timer
-                    .expires?
-                    .saturating_sub(now(kernel, timer.clock)?)
-                    .max(1),
-            )
-        })
-        .chain(limit)
-        .min()
-}
-
 /// Fires every wall clock timer due by the time the kernel was entered.
 pub(crate) fn fire_due<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
