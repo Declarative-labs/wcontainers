@@ -4,7 +4,7 @@
 # listed is zero. Fields the function computes from the shader capabilities take those of zero capabilities
 # (max_constant_buffer_size from the fragment stage's max_const_buffer0_size: 0; hardware_gl_select needs the geometry
 # stage's indirect_temp_addr: false); performance_monitor needs driver query functions, which the served screen does not
-# set (false); dmabuf is set only from a screen file descriptor (zero). The direct crate's test `caps_defaults_agree`
+# set (false); dmabuf is set only from a screen file descriptor (zero). The direct crate's test `caps_are_mesas_defaults`
 # compares Caps::default() with what the C function writes.
 accelerated = 1
 graphics = true

@@ -2457,8 +2457,8 @@ impl<E: Egl> Egl for CountedEgl<'_, E> {
 /// The EGL methods of the trait (the counting wrapper's places).
 pub const EGL_TRAIT_METHODS: usize = 15;
 
-/// The places of the methods `call_one` never calls (glClientWaitSync and glFinish).
-pub const NOT_FUZZED: [usize; 2] = [23, 59];
+/// The places of the methods `call_one` never calls: none (glClientWaitSync waits no time).
+pub const NOT_FUZZED: [usize; 0] = [];
 
 /// Calls each extension's command; one answering while the context names none of its extensions fails.
 fn extension_calls<G: OpenGlEs>(gl: &G, named: &dyn Fn(&[&str]) -> bool) {
@@ -2515,8 +2515,8 @@ fn extension_calls<G: OpenGlEs>(gl: &G, named: &dyn Fn(&[&str]) -> bool) {
     }
 }
 
-/// The number of the trait's methods `call_one` calls (154 of 156: glClientWaitSync and glFinish are called by the
-/// scenarios, never with a picked timeout, which could wait for ever).
+/// The number of the trait's methods, each of which `call_one` calls (glClientWaitSync with a timeout of 0: a picked one
+/// could wait for ever).
 pub const METHODS: usize = 156;
 
 /// Calls the trait's method numbered `which`, with arguments picked by `seed`.
@@ -2605,6 +2605,9 @@ fn call_one<G: OpenGlEs>(gl: &G, fence: &G::Fence, which: usize, seed: usize) {
                 let value = vec![0_u32; length(seed.wrapping_add(2))];
                 gl.clear_bufferuiv(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), &value);
             }
+        }
+        23 => {
+            let _ = gl.client_wait_sync(fence, pick(&WORDS, seed.wrapping_add(1)), 0);
         }
         24 => {
             gl.color_mask(seed.wrapping_add(0).is_multiple_of(2), seed.wrapping_add(1).is_multiple_of(2), seed.wrapping_add(2).is_multiple_of(2), seed.wrapping_add(3).is_multiple_of(2));
@@ -2740,6 +2743,9 @@ fn call_one<G: OpenGlEs>(gl: &G, fence: &G::Fence, which: usize, seed: usize) {
         }
         58 => {
             let _ = gl.fence_sync(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)));
+        }
+        59 => {
+            gl.finish();
         }
         60 => {
             gl.flush();

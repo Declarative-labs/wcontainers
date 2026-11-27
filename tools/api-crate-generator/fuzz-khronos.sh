@@ -1,14 +1,14 @@
 #!/bin/bash
 # Fuzzes the OpenGL ES and EGL glue under AddressSanitizer with a hostile caller (the suite's `fuzz`): over the
-# system's EGL (Mesa), and over the generated stand-in library (fakes/opengl-es/fake_egl.c), which reads and writes
+# system's EGL (Mesa), and over the generated stand-in library (crates/opengl-es/implementation/direct/fake/fake_egl.c), which reads and writes
 # the most each command may and lies wherever the registry leaves the answer to the library.
-#   fuzz-khronos.sh <work folder> <generated folder> <runs>      run from the repository's root, inside `nix develop`
+#   fuzz-khronos.sh <work folder> <runs>      run from the repository's root, inside `nix develop`
 # <runs> lists "mode:seed:calls" (mode mesa or liar), run side by side, each one process.
 set -uo pipefail
-work=$1 generated=$2; shift 2
+work=$1; shift
 runs=$*
 mkdir -p "$work/fake" "$work/runs"
-cc -O1 -g -std=c11 -shared -fPIC -o "$work/fake/libEGL.so.1" "$generated/fakes/opengl-es/fake_egl.c" -ldl; echo "fake build status $?"
+cc -O1 -g -std=c11 -shared -fPIC -o "$work/fake/libEGL.so.1" crates/opengl-es/implementation/direct/fake/fake_egl.c -ldl; echo "fake build status $?"
 # The repository's own flags, AddressSanitizer, and the executable's symbols exported so that the stand-in finds
 # AddressSanitizer's region check.
 export RUSTFLAGS="-Zcrate-attr=feature(register_tool) -Zcrate-attr=register_tool(reviewable) -Zsanitizer=address -C force-frame-pointers=yes -C link-arg=-rdynamic"

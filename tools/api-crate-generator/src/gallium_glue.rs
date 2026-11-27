@@ -22,9 +22,9 @@ const HEADER_C: &str = "/* Written by tools/api-crate-generator from Mesa 26.3.1
 
 /// How many bytes of client memory a field names, read by the glue during the call (`gallium_interface::CLIENT_MEMORY`
 /// says why each is carried): an expression over the flat copy's fields, or the length the call gives.
-const MEMORY_LENGTH: &[(&str, &str, MemoryLength)] = &[
-    ("pipe_draw_info.index", "user", MemoryLength::IndexBytes),
-    ("pipe_constant_buffer", "user_buffer", MemoryLength::Fields("buffer_offset", "buffer_size")),
+const MEMORY_LENGTH: &[(&str, MemoryLength)] = &[
+    ("pipe_draw_info.index.user", MemoryLength::IndexBytes),
+    ("pipe_constant_buffer.user_buffer", MemoryLength::Fields("buffer_offset", "buffer_size")),
 ];
 
 #[derive(Clone, Copy)]
@@ -73,13 +73,11 @@ pub(crate) fn rust_flat(name: &str) -> String {
 fn c_number(rust: &str) -> &'static str {
     match rust {
         "u8" => "uint8_t",
-        "i8" => "int8_t",
         "u16" => "uint16_t",
         "i16" => "int16_t",
         "u32" => "uint32_t",
         "i32" => "int32_t",
         "u64" => "uint64_t",
-        "i64" => "int64_t",
         "f32" => "float",
         "f64" => "double",
         _ => "uintptr_t",
@@ -135,7 +133,7 @@ fn kind_of(structure: &str, field: &CParam, header: &Header) -> Result<Kind, Str
             } else if let Some(rust) = number(base) {
                 if rust == "bool" { Kind::Flag } else { Kind::Number { rust, bits, value: None } }
             } else if let Some(inner) = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union ")) {
-                if inner == "pipe_color_union" || (header.unions.iter().any(|union| union == inner) && !inner.contains('.')) {
+                if inner == "pipe_color_union" {
                     Kind::Color
                 } else {
                     Kind::Nested(inner.to_string())
@@ -145,7 +143,8 @@ fn kind_of(structure: &str, field: &CParam, header: &Header) -> Result<Kind, Str
             }
         }
         1 if client_memory(structure, &field.name).is_some() => {
-            let length = MEMORY_LENGTH.iter().find(|(s, f, _)| *s == structure && *f == field.name).map(|(_, _, length)| *length).ok_or_else(|| format!("{structure}.{}: client memory of no length", field.name))?;
+            let place = format!("{structure}.{}", field.name);
+            let length = MEMORY_LENGTH.iter().find(|(at, _)| *at == place).map(|(_, length)| *length).ok_or_else(|| format!("{place}: client memory of no length"))?;
             Kind::Memory(length)
         }
         1 => match HANDLE_KINDS.iter().find(|(handle, _)| *handle == base) {
@@ -234,20 +233,21 @@ impl Writer<'_> {
         let _ = writeln!(self.rust, "}}\n");
         // Rust: the keys and client memory it names.
         let mut keys = String::new();
-        for field in fields.iter().filter(|field| names_keys(&field.kind, self.header, 0)) {
+        for field in fields.iter().filter(|field| names_keys(&field.kind, self.header, &[])) {
             keys_of(field, &format!("self.{}", field.rust), &fields, 0, &mut keys);
         }
         let keys_parameter = if keys.is_empty() { "_keys" } else { "keys" };
         let _ = writeln!(self.rust, "impl {flat} {{\n    /// Lists the objects and the client memory this copy names.\n    pub fn keys(&self, {keys_parameter}: &mut Keys) {{\n{keys}    }}\n");
         // Rust: the owned structure.
         let mut kinds = Vec::new();
-        kinds_named(name, self.header, &mut kinds, 0);
+        kinds_named(name, self.header, &mut kinds);
         let owned = if kinds.is_empty() {
             format!("wcontainers_gallium::{}", type_name(name))
         } else {
             format!("wcontainers_gallium::{}<'a, {}>", type_name(name), kinds.iter().map(|kind| format!("G::{kind}")).collect::<Vec<_>>().join(", "))
         };
-        let borrows = !kinds.is_empty() || fields.iter().any(|field| names_keys(&field.kind, self.header, 0));
+        // The owned structure borrows exactly when it names objects (client memory sits beside an object in each).
+        let borrows = !kinds.is_empty();
         let held = if borrows || fields.iter().any(|field| matches!(field.kind, Kind::Nested(_))) { "held" } else { "_held" };
         let (lifetime, lent) = if borrows { ("'a, ", "&'a ") } else { ("", "&") };
         let mut body = String::new();
@@ -297,11 +297,14 @@ fn flat_value(field: &Field, place: &str, depth: usize) -> String {
     }
 }
 
-/// Whether a field names any object or client memory (else its flat copy lists no keys).
-fn names_keys(kind: &Kind, header: &Header, depth: usize) -> bool {
+/// Whether a field names any object or client memory (else its flat copy lists no keys); `inside`: the structures
+/// around it, each entered once, so that a header whose structure holds itself ends.
+fn names_keys(kind: &Kind, header: &Header, inside: &[&str]) -> bool {
     match kind {
         Kind::Object(_) | Kind::Memory(_) => true,
-        Kind::Nested(inner) => depth < 8 && fields(inner, header).is_ok_and(|fields| fields.iter().any(|field| names_keys(&field.kind, header, depth + 1))),
+        Kind::Nested(inner) => {
+            !inside.contains(&inner.as_str()) && fields(inner, header).is_ok_and(|fields| fields.iter().any(|field| names_keys(&field.kind, header, &[inside, &[inner.as_str()]].concat())))
+        }
         _ => false,
     }
 }
@@ -422,13 +425,16 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gal
         if name.contains('.') {
             continue;
         }
-        let mut body = String::new();
         let fields = fields(name, header)?;
-        for field in &fields {
-            c_copy(field, &format!("in->{}", field.c), &format!("out->{}", field.c), header, 0, &mut body)?;
+        // A structure the driver fills only goes to Mesa (its `_to` below): no copy from Mesa.
+        if !filled_or_held(name) {
+            let mut body = String::new();
+            for field in &fields {
+                c_copy(field, &format!("in->{}", field.c), &format!("out->{}", field.c), header, 0, &mut body)?;
+            }
+            let _ = writeln!(functions, "void {}_from(const struct {name} *in, struct {} *out)\n{{\n    memset(out, 0, sizeof *out);\n{body}}}\n", c_flat(name), c_flat(name));
         }
-        let _ = writeln!(functions, "void {}_from(const struct {name} *in, struct {} *out)\n{{\n    memset(out, 0, sizeof *out);\n{body}}}\n", c_flat(name), c_flat(name));
-        if filled_or_held(name) && !name.contains('.') && crate::gallium::FILLED.iter().any(|filled| filled.structure == name) {
+        if crate::gallium::FILLED.iter().any(|filled| filled.structure == name) {
             let mut back = String::new();
             for field in &fields {
                 c_copy(field, &format!("in->{}", field.c), &format!("out->{}", field.c), header, 0, &mut back)?;
@@ -444,25 +450,21 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gal
     std::fs::create_dir_all(&direct).map_err(|error| error.to_string())?;
     let write = |path: std::path::PathBuf, text: &str| std::fs::write(&path, text).map_err(|error| format!("{}: {error}", path.display()));
     let mut prototypes = String::new();
-    for name in writer.done.iter().filter(|name| !name.contains('.')) {
+    for name in writer.done.iter().filter(|name| !name.contains('.') && !filled_or_held(name)) {
         let _ = writeln!(prototypes, "void {}_from(const struct {name} *in, struct {} *out);", c_flat(name), c_flat(name));
     }
     write(
         direct.join("flat.h"),
-        &format!("{HEADER_C}/* Mesa's structures as the glue copies them: no bit-field, no union, every object its address. */\n#ifndef WC_GALLIUM_FLAT_H\n#define WC_GALLIUM_FLAT_H\n\n#include <stddef.h>\n#include <stdint.h>\n\n{}\n/* Each structure Mesa passes, flattened (flat.c). */\n{}\n#endif\n", writer.c_types, writer.done.iter().filter(|name| !name.contains('.')).map(|name| { let back = if crate::gallium::FILLED.iter().any(|filled| filled.structure == *name) { format!("void {}_to(const struct {} *in, struct {name} *out);\n", c_flat(name), c_flat(name)) } else { String::new() }; format!("struct {name};\nvoid {}_from(const struct {name} *in, struct {} *out);\n{back}", c_flat(name), c_flat(name)) }).collect::<String>()),
+        &format!("{HEADER_C}/* Mesa's structures as the glue copies them: no bit-field, no union, every object its address. */\n#ifndef WC_GALLIUM_FLAT_H\n#define WC_GALLIUM_FLAT_H\n\n#include <stddef.h>\n#include <stdint.h>\n\n{}\n/* Each structure Mesa passes, flattened (flat.c). */\n{}\n#endif\n", writer.c_types, writer.done.iter().filter(|name| !name.contains('.')).map(|name| { let back = if crate::gallium::FILLED.iter().any(|filled| filled.structure == *name) { format!("void {}_to(const struct {} *in, struct {name} *out);\n", c_flat(name), c_flat(name)) } else { String::new() }; let from = if filled_or_held(name) { String::new() } else { format!("void {}_from(const struct {name} *in, struct {} *out);\n", c_flat(name), c_flat(name)) }; format!("struct {name};\n{from}{back}") }).collect::<String>()),
     )?;
-    write(
-        direct.join("flat.c"),
-        &format!("{HEADER_C}/* Each structure Mesa passes, copied into its flat form; and each flat form's size, which the Rust side checks. */\n#include <string.h>\n\n#include \"pipe/p_context.h\"\n#include \"pipe/p_defines.h\"\n#include \"pipe/p_screen.h\"\n#include \"pipe/p_state.h\"\n#include \"util/u_transfer_helper.h\"\n#include \"util/blend.h\"\n#include \"compiler/shader_enums.h\"\n\n#include \"flat.h\"\n\n{prototypes}\nsize_t wc_flat_size(unsigned which);\nsize_t wc_flat_layout(unsigned which, unsigned what);\nint64_t wc_value(unsigned which);\n\n{functions}size_t wc_flat_size(unsigned which)\n{{\n    switch (which) {{\n{sizes}        default: return 0;\n    }}\n}}\n\n/* Field `which` of FIELDS in flat.rs: `what` 0 its offset in the flat form, 1 its size there, 2 its offset in Mesa's\n * structure (from the structure holding it, for a nested one), 3 its size there; a bit-field's Mesa offset and size are\n * WC_BIT_FIELD (no offsetof); a field not listed, WC_NO_FIELD. */\n#define WC_BIT_FIELD ((size_t)-1)\n#define WC_NO_FIELD ((size_t)-2)\nsize_t wc_flat_layout(unsigned which, unsigned what)\n{{\n    switch (which * 4 + what) {{\n{layout_cases}        default: return WC_NO_FIELD;\n    }}\n}}\n\n/* Value `which` of values() in flat.rs, as C computes it from Mesa's headers. */\nint64_t wc_value(unsigned which)\n{{\n    switch (which) {{\n{}        default: return INT64_MIN;\n    }}\n}}\n", crate::gallium_values::c_cases(values)),
-    )?;
+    let flat_c = format!("{HEADER_C}/* Each structure Mesa passes, copied into its flat form; and each flat form's size, which the Rust side checks. */\n#include <string.h>\n\n#include \"pipe/p_context.h\"\n#include \"pipe/p_defines.h\"\n#include \"pipe/p_screen.h\"\n#include \"pipe/p_state.h\"\n#include \"util/u_transfer_helper.h\"\n#include \"util/blend.h\"\n#include \"compiler/shader_enums.h\"\n\n#include \"flat.h\"\n\n{prototypes}\nsize_t wc_flat_size(unsigned which);\nsize_t wc_flat_layout(unsigned which, unsigned what);\nint64_t wc_value(unsigned which);\n\n{functions}size_t wc_flat_size(unsigned which)\n{{\n    switch (which) {{\n{sizes}        default: return 0;\n    }}\n}}\n\n/* Field `which` of FIELDS in flat.rs: `what` 0 its offset in the flat form, 1 its size there, 2 its offset in Mesa's\n * structure (from the structure holding it, for a nested one), 3 its size there; a bit-field's Mesa offset and size are\n * WC_BIT_FIELD (no offsetof); a field not listed, WC_NO_FIELD. */\n#define WC_BIT_FIELD ((size_t)-1)\n#define WC_NO_FIELD ((size_t)-2)\nsize_t wc_flat_layout(unsigned which, unsigned what)\n{{\n    switch (which * 4 + what) {{\n{layout_cases}        default: return WC_NO_FIELD;\n    }}\n}}\n\n/* Value `which` of values() in flat.rs, as C computes it from Mesa's headers. */\nint64_t wc_value(unsigned which)\n{{\n    switch (which) {{\n{}        default: return INT64_MIN;\n    }}\n}}\n", crate::gallium_values::c_cases(values));
+    write(direct.join("flat.c"), &flat_c)?;
     let mut size_checks = String::new();
     for (at, name) in size_names.iter().enumerate() {
         let _ = writeln!(size_checks, "    ({at}, core::mem::size_of::<{}>()),", rust_flat(name));
     }
-    write(
-        direct.join("flat.rs"),
-        &format!("{HEADER_RUST}//! Mesa's structures as the glue's C copies them (flat.h): mirrors with C's layout (no bit-field, no union, each\n//! object its key), the keys and client memory each names, and the trait's owned structure made from each.\n\nuse wcontainers_gallium::Gallium;\n\nuse crate::FieldLayout;\nuse crate::held::{{Held, Keys, ObjectKind, each, flag, within}};\n\n{}/// Each flat form's index in flat.c's `wc_flat_size` and its size in Rust.\npub const SIZES: &[(u32, usize)] = &[\n{size_checks}];\n\n/// Every field of every flat form, in flat.c's `wc_flat_layout` order: its Mesa structure, its name, its offset and size\n/// in the Rust mirror, its width if Mesa declares it a bit-field, and whether its size in Mesa is its size here (a\n/// number, a flag, an object, client memory or a color; not a structure, flattened, nor a bit-field), or at least its\n/// size there (an enumeration, which Mesa may pack).\npub const FIELDS: &[FieldLayout] = &[\n{field_rows}];\n\n/// The fields of Mesa's structures the flat forms do not carry (`FIELDS_LEFT_OUT` of the generator, each with its reason\n/// in interface.rs): with FIELDS, every field of each structure.\npub const LEFT_OUT: &[(&str, &str)] = &[\n{left_rows}];\n\n/// Every declared value of the trait (values.rs) with its C name, in flat.c's `wc_value` order.\npub fn values() -> Vec<(&'static str, i64)> {{\n    vec![\n{}    ]\n}}\n", writer.rust, crate::gallium_values::rust_list(values)),
-    )?;
+    let flat_rs = format!("{HEADER_RUST}//! Mesa's structures as the glue's C copies them (flat.h): mirrors with C's layout (no bit-field, no union, each\n//! object its key), the keys and client memory each names, and the trait's owned structure made from each.\n\nuse wcontainers_gallium::Gallium;\n\nuse crate::FieldLayout;\nuse crate::held::{{Held, Keys, ObjectKind, each, flag, within}};\n\n{}/// Each flat form's index in flat.c's `wc_flat_size` and its size in Rust.\npub const SIZES: &[(u32, usize)] = &[\n{size_checks}];\n\n/// Every field of every flat form, in flat.c's `wc_flat_layout` order: its Mesa structure, its name, its offset and size\n/// in the Rust mirror, its width if Mesa declares it a bit-field, and whether its size in Mesa is its size here (a\n/// number, a flag, an object, client memory or a color; not a structure, flattened, nor a bit-field), or at least its\n/// size there (an enumeration, which Mesa may pack).\npub const FIELDS: &[FieldLayout] = &[\n{field_rows}];\n\n/// The fields of Mesa's structures the flat forms do not carry (`FIELDS_LEFT_OUT` of the generator, each with its reason\n/// in interface.rs): with FIELDS, every field of each structure.\npub const LEFT_OUT: &[(&str, &str)] = &[\n{left_rows}];\n\n/// Every declared value of the trait (values.rs) with its C name, in flat.c's `wc_value` order.\npub fn values() -> Vec<(&'static str, i64)> {{\n    vec![\n{}    ]\n}}\n", writer.rust, crate::gallium_values::rust_list(values));
+    write(direct.join("flat.rs"), &flat_rs)?;
     write(direct.join("implementation.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/implementation.rs")))?;
     std::fs::create_dir_all(direct.join("tests")).map_err(|error| error.to_string())?;
     write(direct.join("held.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/held.rs")))?;
@@ -471,8 +473,10 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gal
     write(direct.join("serve.rs"), &serve_rust)?;
     write(direct.join("serve.c"), &serve_c)?;
     let (fills_c, fills_rust) = caller_fills(header)?;
-    write(direct.join("caller.c"), &format!("{HEADER_C}{}", include_str!("../templates/gallium/caller.c").replace("/* FILLED */\n", &fills_c)))?;
-    write(direct.join("tests").join("served.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/served.rs").replace("// FILLED\n", &fills_rust)))?;
+    let (caps_c, caps_checks, _) = caps_filled(header)?;
+    write(direct.join("caller.c"), &format!("{HEADER_C}{}", include_str!("../templates/gallium/caller.c").replace("/* FILLED */\n", &fills_c).replace("/* CAPS FILLED */\n", &caps_c)))?;
+    write(direct.join("tests").join("served.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/served.rs").replace("// FILLED\n", &fills_rust).replace("// CAPS CHECKS\n", &caps_checks)))?;
+    write(direct.join("caps-plants.txt"), &caps_plants(&flat_c, &flat_rs, &serve_c, &serve_rust)?)?;
     write(direct.join("build.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/build.rs")))?;
     write(direct.join("Cargo.toml"), include_str!("../templates/gallium/direct.toml"))?;
     write(direct.join("tests").join("layouts.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/layouts.rs")))?;
@@ -504,7 +508,7 @@ fn caller_fills(header: &Header) -> Result<(String, String), String> {
         let mut debugs = Vec::new();
         for at in 0..*count {
             let path = if *count == 1 { format!("{parameter}->") } else { format!("{parameter}[{at}].") };
-            let (assignments, debug) = crate::gallium_interface::filled(header, structure, &path, &mut counter)?;
+            let (assignments, debug, _) = crate::gallium_interface::filled(header, structure, &path, &mut counter)?;
             body.push_str(&assignments);
             debugs.push(debug);
         }
@@ -568,4 +572,199 @@ fn field_layouts(header: &Header, done: &BTreeSet<String>) -> Result<(String, St
         }
     }
     Ok((cases, rows, left, which))
+}
+
+/// The seeds of the capabilities test, each the counter's start: every field of every capability structure takes a
+/// value of its own, the second seed's two past the first's, so that each flag is true in one seed and false in the
+/// other (`filled` turns a flag every second field).
+const CAPS_SEEDS: [u64; 2] = [0, 2];
+
+/// One numbered check of caller.c's `wc_caller_caps_filled` for each assignment `filled` wrote, and its name in
+/// served.rs's `CAPS_CHECKS`.
+fn caps_checks(assignments: &str, seed: usize, number: &mut usize, c: &mut String, names: &mut String) {
+    for line in assignments.lines() {
+        if let Some((place, value)) = line.trim().strip_suffix(';').and_then(|statement| statement.split_once(" = ")) {
+            *number += 1;
+            let _ = writeln!(c, "        if (status == 0 && {place} != {value})\n            status = {number};");
+            let _ = writeln!(names, "    \"seed {seed}: {place} = {value}\",");
+        }
+    }
+}
+
+/// For the capabilities test: caller.c's `wc_caller_caps_filled`, which holds Mesa's screen to the values the
+/// recording implementation sets for a seed, each check numbered; served.rs's `CAPS_CHECKS`, naming each check; and the
+/// recording crate's functions giving those values (`filled_shader_caps`, `filled_caps`, `filled_compute_caps`).
+pub(crate) fn caps_filled(header: &Header) -> Result<(String, String, String), String> {
+    let stages = header.known_numbers.get("MESA_SHADER_MESH_STAGES").copied().ok_or("no value for MESA_SHADER_MESH_STAGES")?;
+    let mut c = String::from(
+        "/* Mesa's screen held, field by field, to the capabilities the recording implementation sets for `seed`\n * (Recording::filling_caps): 0 when every field holds its value, else the number of the first that does not\n * (tests/served.rs's CAPS_CHECKS names each). The screen is destroyed. */\nint wc_caller_caps_filled(uintptr_t address, int seed);\nint wc_caller_caps_filled(uintptr_t address, int seed)\n{\n    struct pipe_screen *screen = (struct pipe_screen *)address;\n    int status = 0;\n",
+    );
+    let mut names = String::from("/// What each check of caller.c's `wc_caller_caps_filled` holds, by its number less one.\nconst CAPS_CHECKS: &[&str] = &[\n");
+    let (mut shader, mut caps, mut compute) = (String::new(), String::new(), String::new());
+    let mut number = 0;
+    for (seed, start) in CAPS_SEEDS.iter().enumerate() {
+        let mut counter = *start;
+        let _ = writeln!(c, "    if (seed == {seed}) {{");
+        for stage in 0..stages {
+            let (assignments, _, rust) = crate::gallium_interface::filled(header, "pipe_shader_caps", &format!("screen->shader_caps[{stage}]."), &mut counter)?;
+            caps_checks(&assignments, seed, &mut number, &mut c, &mut names);
+            let _ = writeln!(shader, "        ({seed}, {stage}) => {rust},");
+        }
+        let (assignments, _, rust) = crate::gallium_interface::filled(header, "pipe_caps", "screen->caps.", &mut counter)?;
+        caps_checks(&assignments, seed, &mut number, &mut c, &mut names);
+        let _ = writeln!(caps, "        {seed} => {rust},");
+        let (assignments, _, rust) = crate::gallium_interface::filled(header, "pipe_compute_caps", "screen->compute_caps.", &mut counter)?;
+        caps_checks(&assignments, seed, &mut number, &mut c, &mut names);
+        let _ = writeln!(compute, "        {seed} => {rust},");
+        let _ = writeln!(c, "    }}");
+    }
+    c.push_str("    screen->destroy(screen);\n    return status;\n}\n");
+    names.push_str("];\n");
+    let rust = format!(
+        "\n/// The seeds `filling_caps` takes.\npub const CAPS_SEEDS: usize = {};\n\n/// Every field of a stage's `ShaderCaps` set to a value of its own, by seed (the direct crate's caller.c holds Mesa's\n/// screen to the same values); Mesa's defaults past the seeds and the stages.\npub fn filled_shader_caps(seed: usize, stage: usize) -> ShaderCaps {{\n    match (seed, stage) {{\n{shader}        _ => ShaderCaps::default(),\n    }}\n}}\n\n/// Every field of `Caps` set to a value of its own, by seed; Mesa's defaults past the seeds.\npub fn filled_caps(seed: usize) -> Caps {{\n    match seed {{\n{caps}        _ => Caps::default(),\n    }}\n}}\n\n/// Every field of `ComputeCaps` set to a value of its own, by seed; Mesa's defaults past the seeds.\npub fn filled_compute_caps(seed: usize) -> ComputeCaps {{\n    match seed {{\n{compute}        _ => ComputeCaps::default(),\n    }}\n}}\n",
+        CAPS_SEEDS.len()
+    );
+    Ok((c, names, rust))
+}
+
+/// The head of the capabilities' plant list.
+const CAPS_PLANTS_HEAD: &str = "# Gallium's capabilities glue, its plant list (written by tools/api-crate-generator, src/gallium_glue.rs `caps_plants`):\n# one plant per field of each copy toward Mesa's screen (flat.c's wc_flat_*_to: the field dropped; flat.rs's `of`: its\n# value replaced by its default), one per argument of the capabilities' glue (serve.c's asks and copies, serve.rs's\n# functions) and one per place serve.c reads a stage's capability. Every plant must make tests/served.rs fail\n# (every_cap_reaches_mesas_screen holds every field of Mesa's screen to the values the implementation set, in two seeds,\n# and the two capabilities Mesa computes from the stages to Mesa's rule). Run from the repository's root, with\n# WCONTAINERS_MESA set:\n#   python3 -I tools/plants/run-plants.py crates/gallium/implementation/direct/caps-plants.txt --workers 10\ntest: cargo test -q --features hostile -p wcontainers-gallium-direct --test served\n";
+
+/// The capabilities' glue arguments and the places serve.c reads a stage's capability, each a plant: (file, name, the
+/// text, its replacement).
+const CAPS_GLUE_PLANTS: &[(&str, &str, &str, &str)] = &[
+    ("serve.c", "the stage asked of the implementation", "table->shader_caps(key, 0, stage)", "table->shader_caps(key, 0, 0)"),
+    ("serve.c", "the screen's key in each stage's ask", "table->shader_caps(key, 0, stage)", "table->shader_caps(0, 0, stage)"),
+    ("serve.c", "each stage's copy from the implementation's", "wc_flat_pipe_shader_caps_to(&flat,", "wc_flat_pipe_shader_caps_to(&(const struct wc_flat_pipe_shader_caps){0},"),
+    ("serve.c", "each stage written into its own place", "(struct pipe_shader_caps *)&screen->shader_caps[stage]", "(struct pipe_shader_caps *)&screen->shader_caps[0]"),
+    ("serve.c", "the fragment stage's first constant buffer size", "screen->shader_caps[MESA_SHADER_FRAGMENT].max_const_buffer0_size", "screen->shader_caps[MESA_SHADER_VERTEX].max_const_buffer0_size"),
+    ("serve.c", "hardware selection needs both of the geometry stage's", "geometry->indirect_temp_addr && geometry->max_shader_buffers", "geometry->indirect_temp_addr || geometry->max_shader_buffers"),
+    ("serve.c", "the screen's key in the caps' ask", "table->caps(key, 0,", "table->caps(0, 0,"),
+    ("serve.c", "the caps' copy from the implementation's", "wc_flat_pipe_caps_to(&caps,", "wc_flat_pipe_caps_to(&(const struct wc_flat_pipe_caps){0},"),
+    ("serve.c", "the screen's key in the compute caps' ask", "table->compute_caps(key, 0)", "table->compute_caps(0, 0)"),
+    ("serve.c", "the compute caps' copy from the implementation's", "wc_flat_pipe_compute_caps_to(&compute,", "wc_flat_pipe_compute_caps_to(&(const struct wc_flat_pipe_compute_caps){0},"),
+    ("serve.rs", "the stage handed to the implementation", "served.screen.shader_caps(values::MesaShaderStage(stage), &mut caps);", "served.screen.shader_caps(values::MesaShaderStage(0), &mut caps);"),
+    (
+        "serve.rs",
+        "the screen's key in shader_caps",
+        "    let mut caps = wcontainers_gallium::ShaderCaps::default();\n    if let Some(served) = registry::screen::<Served<G>>(screen) {",
+        "    let mut caps = wcontainers_gallium::ShaderCaps::default();\n    if let Some(served) = registry::screen::<Served<G>>(0) {",
+    ),
+    ("serve.rs", "the screen's key in caps", "..wcontainers_gallium::Caps::default() };\n    if let Some(served) = registry::screen::<Served<G>>(screen) {", "..wcontainers_gallium::Caps::default() };\n    if let Some(served) = registry::screen::<Served<G>>(0) {"),
+    (
+        "serve.rs",
+        "the screen's key in compute_caps",
+        "    let mut caps = wcontainers_gallium::ComputeCaps::default();\n    if let Some(served) = registry::screen::<Served<G>>(screen) {",
+        "    let mut caps = wcontainers_gallium::ComputeCaps::default();\n    if let Some(served) = registry::screen::<Served<G>>(0) {",
+    ),
+    ("serve.rs", "the fragment stage's constant buffer size handed on", "max_constant_buffer_size: constant_buffer0_size,", "max_constant_buffer_size: 0,"),
+    ("serve.rs", "hardware selection handed on as false", "hardware_gl_select: hardware_select != 0,", "hardware_gl_select: false,"),
+    ("serve.rs", "hardware selection handed on as true", "hardware_gl_select: hardware_select != 0,", "hardware_gl_select: true,"),
+    ("serve.rs", "each stage's caps as the implementation set them", "FlatShaderCaps::of(&caps)", "FlatShaderCaps::of(&wcontainers_gallium::ShaderCaps::default())"),
+    ("serve.rs", "the caps as the implementation set them", "FlatCaps::of(&caps)", "FlatCaps::of(&wcontainers_gallium::Caps::default())"),
+    ("serve.rs", "the compute caps as the implementation set them", "FlatComputeCaps::of(&caps)", "FlatComputeCaps::of(&wcontainers_gallium::ComputeCaps::default())"),
+];
+
+/// One plant changing line `at` of `text` (the file `file` of the direct crate) to `new`: the text changed is that line
+/// with as many lines before it as make it occur once in the file.
+fn line_plant(out: &mut String, file: &str, name: &str, text: &str, lines: &[&str], at: usize, new: &str) -> Result<(), String> {
+    let mut first = at;
+    while text.matches(&lines[first..=at].join("\n")).count() != 1 {
+        first = first.checked_sub(1).ok_or_else(|| format!("{file}: {name}: no text before it makes it occur once"))?;
+    }
+    let before: String = lines[first..at].iter().map(|line| format!("{line}\n")).collect();
+    let _ = writeln!(out, "\nplant: {file} {name}\nfile: crates/gallium/implementation/direct/{file}\nold:\n{before}{}\nnew:\n{before}{new}\nend", lines[at]);
+    Ok(())
+}
+
+/// The capabilities' plant list (crates/gallium/implementation/direct/caps-plants.txt), from the files written.
+fn caps_plants(flat_c: &str, flat_rs: &str, serve_c: &str, serve_rs: &str) -> Result<String, String> {
+    let mut out = String::from(CAPS_PLANTS_HEAD);
+    let c_lines: Vec<&str> = flat_c.lines().collect();
+    for filled in crate::gallium::FILLED {
+        let opening = format!("void {}_to(", c_flat(filled.structure));
+        let start = c_lines.iter().position(|line| line.starts_with(&opening)).ok_or_else(|| format!("flat.c: no {opening}"))?;
+        for at in start + 2..c_lines.len() {
+            let line = c_lines[at];
+            if line == "}" {
+                break;
+            }
+            if line.ends_with(';') {
+                let indent = &line[..line.len() - line.trim_start().len()];
+                line_plant(&mut out, "flat.c", &format!("{}_to drops {}", c_flat(filled.structure), line.trim()), flat_c, &c_lines, at, &format!("{indent}/* dropped */"))?;
+            }
+        }
+    }
+    let rust_lines: Vec<&str> = flat_rs.lines().collect();
+    let structures = crate::gallium::FILLED.iter().map(|filled| filled.structure).chain(crate::gallium_interface::HELD_IN_FILLED.iter().copied());
+    for structure in structures {
+        let opening = format!("    pub fn of(owned: &wcontainers_gallium::{}) -> {} {{", type_name(structure), rust_flat(structure));
+        let start = rust_lines.iter().position(|line| *line == opening).ok_or_else(|| format!("flat.rs: no {opening}"))?;
+        for at in start + 2..rust_lines.len() {
+            let line = rust_lines[at];
+            let Some((field, value)) = line.trim().strip_suffix(',').and_then(|field| field.split_once(": ")) else { break };
+            let replaced = if value.contains("::of(&owned.") { value.replace(&format!("&owned.{field}"), "&Default::default()") } else { "Default::default()".to_string() };
+            line_plant(&mut out, "flat.rs", &format!("{}::of takes no {field}", rust_flat(structure)), flat_rs, &rust_lines, at, &format!("            {field}: {replaced},"))?;
+        }
+    }
+    for (file, name, old, new) in CAPS_GLUE_PLANTS {
+        let text = if *file == "serve.c" { serve_c } else { serve_rs };
+        if text.matches(old).count() != 1 {
+            return Err(format!("{file}: {name}: its text is not there once"));
+        }
+        let _ = writeln!(out, "\nplant: {file} {name}\nfile: crates/gallium/implementation/direct/{file}\nold:\n{old}\nnew:\n{new}\nend");
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::{Field, Kind, field_layouts, flat_value, keys_of, names_keys, owned_value};
+    use crate::cheader::read;
+
+    fn field(kind: Kind, dims: &[usize]) -> Field {
+        Field { c: "x".to_string(), rust: "x".to_string(), kind, dims: dims.to_vec() }
+    }
+
+    /// An array of flags goes back to Mesa element by element, is read element by element (each refused past 1), and
+    /// an array of objects lists each element's key.
+    #[test]
+    fn arrays_element_by_element() {
+        let flags = field(Kind::Flag, &[2]);
+        assert_eq!(flat_value(&flags, "owned.x", 0), "owned.x.map(|element0| u8::from(element0))");
+        assert_eq!(owned_value(&flags, "self.x", &[], 0), "each(&self.x, |element0| flag(*element0))?");
+        let mut keys = String::new();
+        keys_of(&field(Kind::Object("Resource"), &[2]), "self.x", &[], 0, &mut keys);
+        assert_eq!(keys, "        for element0 in &self.x {\n            keys.object(ObjectKind::Resource, *element0);\n        }\n");
+    }
+
+    /// A bit-field's value is checked against its width only where the width is narrower than the number and the
+    /// number unsigned (a signed bit-field's value is the number's own).
+    #[test]
+    fn widths_checked() {
+        let number = |rust, bits| field(Kind::Number { rust, bits: Some(bits), value: None }, &[]);
+        assert_eq!(owned_value(&number("u32", 3), "self.x", &[], 0), "within(self.x, 3)?");
+        assert_eq!(owned_value(&number("i32", 3), "self.x", &[], 0), "self.x");
+        assert_eq!(owned_value(&number("u64", 64), "self.x", &[], 0), "self.x");
+    }
+
+    /// An enumeration (and the two stage types) may be packed by the compiler: its size in Mesa is at most the flat one.
+    #[test]
+    fn declared_values_are_at_least() {
+        let header = read(&["enum e { A };\nstruct s { enum e a; mesa_shader_stage b; gl_shader_stage c; unsigned d; };".to_string()]);
+        let (_, rows, _, count) = field_layouts(&header, &BTreeSet::from(["s".to_string()])).expect("laid out");
+        assert_eq!(count, 4);
+        let at_least: Vec<bool> = rows.lines().map(|row| row.ends_with("at_least: true },")).collect();
+        assert_eq!(at_least, [true, true, true, false]);
+    }
+
+    /// Keys are found through structures held by value, and a structure holding itself (a header outside C) ends.
+    #[test]
+    fn keys_through_structures_held() {
+        let header = read(&["struct a { struct a again; int n; };\nstruct b { struct a inner; struct pipe_resource *r; };".to_string()]);
+        assert!(!names_keys(&Kind::Nested("a".to_string()), &header, &[]));
+        assert!(names_keys(&Kind::Nested("b".to_string()), &header, &[]));
+    }
 }

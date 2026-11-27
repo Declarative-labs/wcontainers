@@ -215,6 +215,8 @@ int wc_caller_caps(uintptr_t address)
     return status;
 }
 
+/* CAPS FILLED */
+
 /* Two screens served at once: the second destroyed, the first still serves a context (each screen's key is its own).
  * 0 when it does; both screens are destroyed. */
 int wc_caller_two_screens(uintptr_t first, uintptr_t second)

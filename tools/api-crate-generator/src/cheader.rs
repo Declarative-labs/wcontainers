@@ -188,12 +188,13 @@ fn function_pointer(text: &str) -> Option<CFunction> {
     let end = text.rfind(')')?;
     let mut ret = declaration(&format!("{} return", text[..star].trim()));
     ret.name = "return".to_string();
-    let params = split_parameters(&text[open + 1..end])
-        .iter()
-        .map(|p| declaration(p))
-        .filter(|p| !(p.base == "void" && p.pointers == 0 && p.name.is_empty()))
-        .collect();
+    let params = split_parameters(&text[open + 1..end]).iter().map(|p| declaration(p)).filter(|p| !names_no_parameter(p)).collect();
     Some(CFunction { name, ret, params })
+}
+
+/// Whether a parameter list's entry is C's `(void)`, which names no parameter: `void` alone, no star, no name.
+fn names_no_parameter(param: &CParam) -> bool {
+    param.base == "void" && param.pointers == 0 && param.name.is_empty()
 }
 
 /// A parameter list split at its top-level commas.
@@ -222,9 +223,10 @@ fn split_parameters(text: &str) -> Vec<String> {
 /// `const struct nir_shader *const sources[WC_STAGES]` to its parts.
 fn declaration(text: &str) -> CParam {
     let text = text.trim();
+    // A colon in a declaration of the subset read is a bit-field's: its width after it.
     let (text, bits) = match text.rsplit_once(':') {
-        Some((before, width)) if !width.trim().is_empty() && width.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !before.contains('(') => (before.trim(), Some(width.trim().to_string())),
-        _ => (text, None),
+        Some((before, width)) => (before.trim(), Some(width.trim().to_string())),
+        None => (text, None),
     };
     let (text, array) = match text.split_once('[') {
         Some((before, after)) => (before.trim(), Some(after.trim_end_matches(']').trim().to_string())),
@@ -259,8 +261,8 @@ pub fn read(texts: &[String]) -> Header {
                 break;
             }
             let end = rest.find(';').unwrap_or(rest.len());
-            let open = rest.find('{').filter(|&open| open < end);
-            let Some(open) = open else {
+            // A brace before the statement's end opens a body.
+            let Some(open) = rest[..end].find('{') else {
                 let statement = &rest[..end];
                 rest = rest.get(end + 1..).unwrap_or("");
                 if let Some(name) = statement.trim().strip_prefix("struct ")
@@ -280,11 +282,7 @@ pub fn read(texts: &[String]) -> Header {
                     let mut ret = declaration(&statement[..paren]);
                     let name = std::mem::take(&mut ret.name);
                     ret.name = "return".to_string();
-                    let params = statement[paren + 1..close]
-                        .split(',')
-                        .map(declaration)
-                        .filter(|p| !(p.base == "void" && p.pointers == 0 && p.name.is_empty()))
-                        .collect();
+                    let params = statement[paren + 1..close].split(',').map(declaration).filter(|p| !names_no_parameter(p)).collect();
                     header.functions.push(CFunction { name, ret, params });
                 }
                 continue;
@@ -507,7 +505,7 @@ fn row(function: &CFunction, param: &CParam, header: &Header) -> Option<&'static
         ("char", 1, true, true) => "texts by stage, each zero-ended or none: [Option<&CStr>; N]",
         ("uint32_t", 1, false, true) => "words read during the call, with the count beside them: &[u32]",
         ("uint32_t", 1, false, false) => "words written during the call, as many as the count beside them: &mut [u32]",
-        (structure, 1, false, true) if header.structures.contains_key(structure.trim_start_matches("struct ")) && param.array.is_none() => {
+        (structure, 1, false, true) if header.structures.contains_key(structure.trim_start_matches("struct ")) => {
             "plain data read during the call, with the count beside it: &[Mirror]"
         }
         (structure, 0, true, true) if header.structures.contains_key(structure.trim_start_matches("struct ")) => "plain data read during the call: [Mirror; N]",
@@ -653,5 +651,116 @@ mod continued {
         assert_eq!(header.define_texts.get("BOTH").map(String::as_str), Some("(A |     B)"));
         assert!(header.enumerators.iter().any(|(name, values)| name == "flags" && values.len() == 1));
         assert_eq!(header.field_families, vec![("s".to_string(), "func".to_string(), "PIPE_FUNC_".to_string())]);
+    }
+}
+
+#[cfg(test)]
+mod read_and_rows {
+    use super::{Header, field_families, read, row, several_names};
+
+    fn header(text: &str) -> Header {
+        read(&[text.to_string()])
+    }
+
+    /// Each conditional keeps the branch the preprocessor keeps where the headers are built: the first branch whose
+    /// condition holds, `#else` only when none did, `defined(_WIN32)` not, `__GNUC__` so.
+    #[test]
+    fn conditionals_keep_the_branch_taken() {
+        let read = header("#if 0\nint a(void);\n#elif 1\nint b(void);\n#elif 1\nint c(void);\n#else\nint d(void);\n#endif\n#if defined(_WIN32)\nint e(void);\n#endif\n#ifdef __GNUC__\nint f(void);\n#endif\n");
+        let names: Vec<&str> = read.functions.iter().map(|function| function.name.as_str()).collect();
+        assert_eq!(names, ["b", "f"]);
+    }
+
+    /// `(void)` names no parameter; a pointer to void and an unnamed parameter each are one; a parameter list inside a
+    /// parameter is split only at its own top-level commas.
+    #[test]
+    fn parameter_lists() {
+        let read = header("void f(void);\nvoid g(void *p);\nvoid k(int);\ntypedef void (*none)(void);\ntypedef void (*two)(void *, unsigned);\ntypedef void (*inner)(int (*each)(int, int), int);\n");
+        let counts: Vec<(&str, usize)> = read.functions.iter().map(|function| (function.name.as_str(), function.params.len())).collect();
+        assert_eq!(counts, [("f", 0), ("g", 1), ("k", 1)]);
+        let typed: Vec<(&str, usize)> = read.function_types.values().map(|function| (function.name.as_str(), function.params.len())).collect();
+        assert_eq!(typed, [("inner", 2), ("none", 0), ("two", 2)]);
+    }
+
+    /// A `typedef enum { ... } name;` is named by its typedef, an anonymous enumeration by its place.
+    #[test]
+    fn enumerations_are_named() {
+        let read = header("typedef enum { X_A, X_B = 4 } named_t;\nenum { Y };\n");
+        assert_eq!(read.enumerators[0], ("named_t".to_string(), vec![("X_A".to_string(), None), ("X_B".to_string(), Some("4".to_string()))]));
+        assert_eq!(read.enumerators[1].0, "anonymous 1");
+    }
+
+    /// A field's comment naming its values counts only inside the named structure around it: not in an anonymous
+    /// union's own name, not after a structure declared without a body, not once that structure has closed.
+    #[test]
+    fn field_values_inside_their_structure() {
+        let text = "struct fwd;\nunion\n{\n   unsigned a:1;   /**< PIPE_A_x */\n};\nstruct s\n{\n   union {\n      unsigned f:2;   /**< PIPE_FUNC_x */\n   };\n   unsigned g:3;   /**< PIPE_TEX_x */\n};\nunsigned h;   /* PIPE_OUT_x */\n";
+        let expected = [("s", "f", "PIPE_FUNC_"), ("s", "g", "PIPE_TEX_")].map(|(s, f, p)| (s.to_string(), f.to_string(), p.to_string()));
+        assert_eq!(field_families(text), expected);
+    }
+
+    /// An anonymous body's fields are its holder's; a named one is a structure of its own for each name it declares.
+    #[test]
+    fn nested_bodies() {
+        let read = header("struct s { union { int a; int b; }; struct { int c; } inner, other; int d; };");
+        let names: Vec<&str> = read.structures["s"].iter().map(|field| field.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "inner", "other", "d"]);
+        assert_eq!(read.structures["s"][2].base, "struct s.inner");
+        for nested in ["s.inner", "s.other"] {
+            let fields: Vec<&str> = read.structures[nested].iter().map(|field| field.name.as_str()).collect();
+            assert_eq!(fields, ["c"], "{nested}");
+        }
+    }
+
+    /// The census counts the names each declaration of several names had dropped before: all but its last.
+    #[test]
+    fn several_names_are_counted() {
+        let read = header("struct s { float a, b, c; int d, e; };");
+        assert_eq!(several_names(&read).lines().next(), Some("SEVERAL NAMES: 2 declarations, 3 fields the reader dropped before (all but the last of each)"));
+    }
+
+    /// Every row of the Mesa compiler's mapping rule, each by a parameter of its form, and the forms no row takes.
+    #[test]
+    fn rows_and_forms_no_row_takes() {
+        let read = header(
+            "struct wc_a;\nstruct plain { int x; };\nenum wc_e { WC_E_ONE };\nstruct plain_freed { int y; };\nvoid plain_freed_free(struct plain_freed *p);\nconst struct wc_a *ret_const(void);\nvoid other(struct wc_a *other);\nvoid words(uint32_t *words, uint32_t count);\nvoid by_value(long l, struct unknown u, enum unknown e, struct plain p, enum wc_e v);\nvoid reads(const struct unknown *u, const struct unknown us[2], const struct plain *ps, uint32_t n, const struct plain fixed[2]);\nvoid writes(struct plain *out, struct unknown *u, struct plain_freed *f);\n",
+        );
+        let rows: Vec<String> = read
+            .functions
+            .iter()
+            .flat_map(|function| {
+                std::iter::once(&function.ret)
+                    .chain(&function.params)
+                    .map(|param| format!("{}.{} {}", function.name, param.name, row(function, param, &read).map_or("none", |row| row.split(':').next().unwrap_or(row))))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let expected = [
+            "plain_freed_free.return nothing",
+            "plain_freed_free.p the bridge's memory given back",
+            "ret_const.return none",
+            "other.return nothing",
+            "other.other none",
+            "words.return nothing",
+            "words.words words written during the call, as many as the count beside them",
+            "words.count number or bool by value",
+            "by_value.return nothing",
+            "by_value.l none",
+            "by_value.u none",
+            "by_value.e none",
+            "by_value.p plain data by value",
+            "by_value.v a declared value",
+            "reads.return nothing",
+            "reads.u none",
+            "reads.us none",
+            "reads.ps plain data read during the call, with the count beside it",
+            "reads.n number or bool by value",
+            "reads.fixed plain data read during the call",
+            "writes.return nothing",
+            "writes.out plain data written during the call, as many as the capacity beside it",
+            "writes.u none",
+            "writes.f the bridge's memory, copied out whole into owned Rust values, then given back once",
+        ];
+        assert_eq!(rows, expected);
     }
 }

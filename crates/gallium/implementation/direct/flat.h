@@ -888,12 +888,10 @@ void wc_flat_pipe_blit_info_from(const struct pipe_blit_info *in, struct wc_flat
 struct pipe_box;
 void wc_flat_pipe_box_from(const struct pipe_box *in, struct wc_flat_pipe_box *out);
 struct pipe_caps;
-void wc_flat_pipe_caps_from(const struct pipe_caps *in, struct wc_flat_pipe_caps *out);
 void wc_flat_pipe_caps_to(const struct wc_flat_pipe_caps *in, struct pipe_caps *out);
 struct pipe_clip_state;
 void wc_flat_pipe_clip_state_from(const struct pipe_clip_state *in, struct wc_flat_pipe_clip_state *out);
 struct pipe_compute_caps;
-void wc_flat_pipe_compute_caps_from(const struct pipe_compute_caps *in, struct wc_flat_pipe_compute_caps *out);
 void wc_flat_pipe_compute_caps_to(const struct wc_flat_pipe_compute_caps *in, struct pipe_compute_caps *out);
 struct pipe_compute_state;
 void wc_flat_pipe_compute_state_from(const struct pipe_compute_state *in, struct wc_flat_pipe_compute_state *out);
@@ -914,7 +912,6 @@ void wc_flat_pipe_grid_info_from(const struct pipe_grid_info *in, struct wc_flat
 struct pipe_image_view;
 void wc_flat_pipe_image_view_from(const struct pipe_image_view *in, struct wc_flat_pipe_image_view *out);
 struct pipe_mesh_caps;
-void wc_flat_pipe_mesh_caps_from(const struct pipe_mesh_caps *in, struct wc_flat_pipe_mesh_caps *out);
 struct pipe_poly_stipple;
 void wc_flat_pipe_poly_stipple_from(const struct pipe_poly_stipple *in, struct wc_flat_pipe_poly_stipple *out);
 struct pipe_rasterizer_state;
@@ -934,7 +931,6 @@ void wc_flat_pipe_scissor_state_from(const struct pipe_scissor_state *in, struct
 struct pipe_shader_buffer;
 void wc_flat_pipe_shader_buffer_from(const struct pipe_shader_buffer *in, struct wc_flat_pipe_shader_buffer *out);
 struct pipe_shader_caps;
-void wc_flat_pipe_shader_caps_from(const struct pipe_shader_caps *in, struct wc_flat_pipe_shader_caps *out);
 void wc_flat_pipe_shader_caps_to(const struct wc_flat_pipe_shader_caps *in, struct pipe_shader_caps *out);
 struct pipe_shader_state;
 void wc_flat_pipe_shader_state_from(const struct pipe_shader_state *in, struct wc_flat_pipe_shader_state *out);

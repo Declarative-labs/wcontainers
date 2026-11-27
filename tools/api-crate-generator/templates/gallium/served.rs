@@ -14,6 +14,7 @@ unsafe extern "C" {
     fn wc_caller_case(address: usize, which: i32) -> i32;
     fn wc_caller_caps(address: usize) -> i32;
     fn wc_caller_two_screens(first: usize, second: usize) -> i32;
+    fn wc_caller_caps_filled(address: usize, seed: i32) -> i32;
 }
 
 /// The environment variable naming the one case a child process runs.
@@ -139,6 +140,40 @@ fn caps_are_mesas_defaults() {
     let status = unsafe { wc_caller_caps(address) };
     println!("CAPS status {status}");
     assert_eq!(status, 0, "the screen's caps differ from Mesa's u_init_pipe_screen_caps first at byte {}", status - 2);
+}
+
+// CAPS CHECKS
+
+/// Every field of every capability the implementation sets reaches Mesa's screen: a recording implementation that sets
+/// each field to a value of its own (two seeds, so that every flag takes both values) is served, and caller.c holds the
+/// screen's shader_caps of each stage, its caps and its compute_caps to those values, field by field. The two caps Mesa
+/// computes from the stages' reach the implementation as Mesa computes them (u_screen.c:209 to 221): the fragment
+/// stage's max_const_buffer0_size, and hardware selection only where the geometry stage has both indirect addressing
+/// and storage buffers.
+#[test]
+fn every_cap_reaches_mesas_screen() {
+    use wcontainers_gallium::values::MesaShaderStage;
+    use wcontainers_gallium_recording::{CAPS_SEEDS, filled_shader_caps};
+    let stage = |stage: MesaShaderStage| usize::try_from(stage.0).unwrap_or(usize::MAX);
+    for seed in 0..CAPS_SEEDS {
+        let recording = Recording::filling_caps(seed);
+        let log = Arc::clone(&recording.log);
+        let address = wcontainers_gallium_direct::serve::serve(recording).expect("the screen is served");
+        #[expect(unsafe_code, reason = "caller.c: wc_caller_caps_filled takes the address serve returned (serve.c's live struct pipe_screen) and a seed, reads its capabilities and destroys it")]
+        // SAFETY: the address is the screen serve made just now, not yet destroyed; the call destroys it last.
+        let status = unsafe { wc_caller_caps_filled(address, i32::try_from(seed).unwrap_or(i32::MAX)) };
+        let check = usize::try_from(status).ok().and_then(|number| number.checked_sub(1)).and_then(|at| CAPS_CHECKS.get(at));
+        assert_eq!(status, 0, "seed {seed}: Mesa's screen differs first at check {status}: {check:?}");
+        let fragment = filled_shader_caps(seed, stage(MesaShaderStage::MESA_SHADER_FRAGMENT));
+        let geometry = filled_shader_caps(seed, stage(MesaShaderStage::MESA_SHADER_GEOMETRY));
+        let calls = log.calls();
+        let received = calls.iter().find(|call| call.starts_with("caps caps ")).expect("the caps asked");
+        let fields: Vec<&str> = received.split(", ").map(|field| field.trim_end_matches(" }")).collect();
+        let constant = format!("max_constant_buffer_size: {}", fragment.max_const_buffer0_size);
+        let select = format!("hardware_gl_select: {}", geometry.indirect_temp_addr && geometry.max_shader_buffers != 0);
+        assert!(fields.contains(&constant.as_str()), "seed {seed}: the caps received without {constant}: {received}");
+        assert!(fields.contains(&select.as_str()), "seed {seed}: the caps received without {select}: {received}");
+    }
 }
 
 /// Two screens served at once are kept apart: the second's destroy ends the second, and the first still serves a

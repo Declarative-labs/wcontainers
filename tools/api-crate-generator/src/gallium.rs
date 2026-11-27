@@ -236,15 +236,7 @@ pub fn check(in_scope: &str, header: &cheader::Header) -> Result<String, String>
             None => problems.push(format!("no structure {} read", entry.structure)),
         }
     }
-    for entry in PLAN {
-        for role in entry.roles {
-            if let Role::SameAs(other) = role
-                && !planned.iter().any(|(structure, pointer)| format!("{structure}.{pointer}") == *other)
-            {
-                problems.push(format!("{}.{} is the same as {other}, which is not planned", entry.structure, entry.pointer));
-            }
-        }
-    }
+    // That each SameAs names a planned pointer, and each role a kind, is a fact of the plan alone: its tests hold it.
     let kinds: BTreeSet<&str> = KINDS.iter().map(|(kind, _)| *kind).collect();
     let mut made: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut ended: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -435,7 +427,7 @@ fn plain_structures(header: &cheader::Header) -> BTreeMap<String, (usize, usize,
                 continue;
             }
             let mut handles = Vec::new();
-            collect_handles(header, name, "", 0, &mut handles);
+            collect_handles(header, name, "", &[], &mut handles);
             let fields = header.structures.get(name).map_or(0, Vec::len);
             let bits = header.structures.get(name).map_or(0, |fields| fields.iter().filter(|field| field.bits.is_some()).count());
             out.insert(name.to_string(), (fields, bits, handles));
@@ -448,23 +440,130 @@ fn plain_structures(header: &cheader::Header) -> BTreeMap<String, (usize, usize,
 fn names_objects(header: &cheader::Header, base: &str) -> bool {
     let name = base.trim_start_matches("struct ").trim_start_matches("union ");
     let mut handles = Vec::new();
-    collect_handles(header, name, "", 0, &mut handles);
+    collect_handles(header, name, "", &[], &mut handles);
     !handles.is_empty()
 }
 
-/// The fields of a structure, and of those it holds by value, that hold a handle of one of the kinds.
-fn collect_handles(header: &cheader::Header, name: &str, path: &str, depth: usize, out: &mut Vec<String>) {
+/// The fields of a structure, and of those it holds by value, that hold a handle of one of the kinds (`inside`: the
+/// structures around it, each entered once, so that a header whose structure holds itself ends).
+fn collect_handles(header: &cheader::Header, name: &str, path: &str, inside: &[&str], out: &mut Vec<String>) {
     let Some(fields) = header.structures.get(name) else { return };
+    let inside = [inside, &[name]].concat();
     for field in fields {
         let base = field.base.trim_start_matches("const ").trim();
         let at = if path.is_empty() { field.name.clone() } else { format!("{path}.{}", field.name) };
         if field.pointers >= 1 && HANDLES.contains(&base) {
             out.push(format!("{at}:{base}"));
         } else if field.pointers == 0
-            && depth < 4
             && let Some(inner) = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union "))
+            && !inside.contains(&inner)
         {
-            collect_handles(header, inner, &at, depth + 1, out);
+            collect_handles(header, inner, &at, &inside, out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Entry, PLAN, Role, check, collect_handles, row};
+    use crate::cheader::{CFunction, CParam, Header, read};
+
+    /// Each SameAs names a pointer the plan holds.
+    #[test]
+    fn every_same_as_names_a_planned_pointer() {
+        for entry in PLAN {
+            for role in entry.roles {
+                if let Role::SameAs(other) = role {
+                    assert!(PLAN.iter().any(|planned| format!("{}.{}", planned.structure, planned.pointer) == *other), "{}.{}: {other}", entry.structure, entry.pointer);
+                }
+            }
+        }
+    }
+
+    /// A header holding every planned pointer of its structure but the ones `without` names (structure.pointer, or a
+    /// structure alone), each with no parameters, and the in-scope list naming every planned pointer.
+    fn planned_header(without: &[&str]) -> (String, Header) {
+        let mut header = Header::default();
+        let mut in_scope = String::new();
+        for entry in PLAN {
+            let place = match entry.structure {
+                "pipe_screen" => "screen",
+                "pipe_context" => "context",
+                _ => "vtbl",
+            };
+            in_scope.push_str(&format!("{place} {}\n", entry.pointer));
+            let callbacks = header.callbacks.entry(entry.structure.to_string()).or_default();
+            if !without.contains(&format!("{}.{}", entry.structure, entry.pointer).as_str()) {
+                callbacks.push(CFunction { name: entry.pointer.to_string(), ret: CParam::default(), params: Vec::new() });
+            }
+        }
+        for structure in without {
+            header.callbacks.remove(*structure);
+        }
+        (in_scope, header)
+    }
+
+    fn problems(in_scope: &str, header: &Header) -> Vec<String> {
+        let failed = check(in_scope, header).expect_err("functions of no parameters, each unmapped, fail the check");
+        failed.split_once("PROBLEMS").map(|(_, list)| list.lines().skip(1).map(|line| line.trim().to_string()).filter(|line| !line.starts_with("unmapped:")).collect()).unwrap_or_default()
+    }
+
+    /// The check of the plan against the header and the in-scope list: a pointer missing from its structure, a
+    /// structure not read, a pointer in scope and not planned, and one planned and not in scope are each a problem; a
+    /// header holding every pointer has none of them.
+    #[test]
+    fn the_plan_is_checked_against_the_header() {
+        let (in_scope, header) = planned_header(&[]);
+        assert_eq!(problems(&in_scope, &header), Vec::<String>::new());
+        let (in_scope, header) = planned_header(&["pipe_context.blit"]);
+        assert_eq!(problems(&in_scope, &header), ["not in the header: pipe_context.blit"]);
+        let (in_scope, header) = planned_header(&["u_transfer_vtbl"]);
+        assert_eq!(problems(&in_scope, &header), ["no structure u_transfer_vtbl read"; 5]);
+        let (in_scope, header) = planned_header(&[]);
+        let changed = in_scope.replace("context blit\n", "context bogus\n");
+        assert_eq!(problems(&changed, &header), ["in scope, not planned: pipe_context.bogus", "planned, not in scope: pipe_context.blit"]);
+    }
+
+    fn param(name: &str, base: &str, pointers: usize) -> CParam {
+        CParam { name: name.to_string(), base: base.to_string(), pointers, array: None, bits: None }
+    }
+
+    const READS_NOTHING: Entry = Entry { structure: "pipe_context", pointer: "reads_nothing", roles: &[Role::Reads(&[])], caller: "" };
+    const READS_RESOURCE: Entry = Entry { structure: "pipe_context", pointer: "reads_resource", roles: &[Role::Reads(&["Resource"])], caller: "" };
+
+    /// A pointer the same as another takes that pointer's rows (its exceptions among them), and the forms no row takes
+    /// are unmapped.
+    #[test]
+    fn rows_of_the_forms_no_row_takes() {
+        let header = Header::default();
+        let same = Entry { structure: "u_transfer_vtbl", pointer: "same", roles: &[Role::SameAs("pipe_screen.context_create")], caller: "" };
+        assert_eq!(row(&same, &param("priv", "void", 1), false, &header), Some("the frontend's own value: carried as a number, never read (st_manager.c:1023 passes its own pointer)"));
+        let none: [(&Entry, CParam, bool); 10] = [
+            (&READS_RESOURCE, param("x", "void", 0), false),
+            (&READS_RESOURCE, param("screen", "struct pipe_screen", 1), false),
+            (&READS_NOTHING, param("p", "void", 1), false),
+            (&READS_RESOURCE, param("numbers", "unsigned", 1), false),
+            (&READS_RESOURCE, param("state", "struct pipe_shader_state", 1), false),
+            (&READS_RESOURCE, param("other", "struct other", 0), false),
+            (&READS_RESOURCE, param("text", "const char", 1), false),
+            (&READS_RESOURCE, param("return", "char", 1), false),
+            (&READS_RESOURCE, param("floats", "const float", 1), false),
+            (&READS_RESOURCE, param("plain", "const struct other", 1), false),
+        ];
+        for (entry, param, first) in none {
+            assert_eq!(row(entry, &param, first, &header), None, "{} {}*{}", param.name, param.base, param.pointers);
+        }
+        assert_eq!(row(&READS_RESOURCE, &param("written", "float", 1), false, &header), Some("plain data out: written from the owned value returned"));
+        assert_eq!(row(&READS_RESOURCE, &param("object", "void", 1), false, &header), Some("an object of the pointer's kind: by value where it gives it back, Option<&> where it binds"));
+    }
+
+    /// The handles a structure names through the structures it holds by value; a structure holding itself (a header
+    /// outside C) is entered once.
+    #[test]
+    fn handles_through_structures_held() {
+        let header = read(&["struct a { struct pipe_resource *r; struct b inner; struct a again; };\nstruct b { struct pipe_query *q; };".to_string()]);
+        let mut handles = Vec::new();
+        collect_handles(&header, "a", "", &[], &mut handles);
+        assert_eq!(handles, ["r:struct pipe_resource", "inner.q:struct pipe_query"]);
     }
 }

@@ -167,8 +167,8 @@ impl wcontainers_egl::Egl for Library {
     fn choose_config(&self, dpy: &Display, attrib_list: &[i32], configs: &mut [Option<Config>]) -> Option<i32> {
         let _gate = self.reading();
         let Some(entry) = self.entries().choose_config else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
         let Some(attrib_list) = runtime::attribute_list(attrib_list, FORCED_EGL_CHOOSE_CONFIG) else { runtime::refuse(constants::BAD_ATTRIBUTE); return Default::default(); };
         let mut configs_room = vec![core::ptr::null_mut::<c_void>(); configs.len()];
         let Some(config_size) = runtime::counted::<i32>(configs.len(), 1) else { runtime::refuse(constants::BAD_PARAMETER); return Default::default(); };
@@ -184,10 +184,10 @@ impl wcontainers_egl::Egl for Library {
     fn create_context(&self, dpy: &Display, config: &Config, share_context: Option<&Context>, attrib_list: &[i32]) -> Option<Self::Context> {
         let _gate = self.reading();
         let Some(entry) = self.entries().create_context else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
-        let handle = config;
-        let Some(config) = self.config_address(handle, dpy) else { runtime::refuse(constants::BAD_CONFIG); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let config_handle = config;
+        let Some(config) = self.config_address(config_handle, dpy) else { runtime::refuse(constants::BAD_CONFIG); return Default::default(); };
         let share_context = match share_context { None => core::ptr::null_mut(), Some(handle) => match self.held_address(&handle.held, dpy) { Some(address) => address, None => { runtime::refuse(constants::BAD_CONTEXT); return Default::default(); } } };
         let Some(attrib_list) = runtime::attribute_list(attrib_list, FORCED_EGL_CREATE_CONTEXT) else { runtime::refuse(constants::BAD_ATTRIBUTE); return Default::default(); };
         #[expect(unsafe_code, reason = "egl.xml: eglCreateContext takes the C types the field declares; dpy is a Display of this library; config is a Config of this library; share_context is a Context of this library or none; attrib_list ends at a key EGL_NONE")]
@@ -199,10 +199,10 @@ impl wcontainers_egl::Egl for Library {
     fn create_pbuffer_surface(&self, dpy: &Display, config: &Config, attrib_list: &[i32]) -> Option<Self::Surface> {
         let _gate = self.reading();
         let Some(entry) = self.entries().create_pbuffer_surface else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
-        let handle = config;
-        let Some(config) = self.config_address(handle, dpy) else { runtime::refuse(constants::BAD_CONFIG); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let config_handle = config;
+        let Some(config) = self.config_address(config_handle, dpy) else { runtime::refuse(constants::BAD_CONFIG); return Default::default(); };
         let Some(attrib_list) = runtime::attribute_list(attrib_list, FORCED_EGL_CREATE_PBUFFER_SURFACE) else { runtime::refuse(constants::BAD_ATTRIBUTE); return Default::default(); };
         #[expect(unsafe_code, reason = "egl.xml: eglCreatePbufferSurface takes the C types the field declares; dpy is a Display of this library; config is a Config of this library; attrib_list ends at a key EGL_NONE")]
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
@@ -213,38 +213,38 @@ impl wcontainers_egl::Egl for Library {
     fn destroy_context(&self, dpy: &Display, ctx: &Context) -> bool {
         let _gate = self.writing();
         let Some(entry) = self.entries().destroy_context else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
-        let handle = ctx;
-        let Some(ctx) = self.held_address(&handle.held, dpy) else { runtime::refuse(constants::BAD_CONTEXT); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let ctx_handle = ctx;
+        let Some(ctx) = self.held_address(&ctx_handle.held, dpy) else { runtime::refuse(constants::BAD_CONTEXT); return Default::default(); };
         #[expect(unsafe_code, reason = "egl.xml: eglDestroyContext takes the C types the field declares; dpy is a Display of this library; ctx is a Context of this library")]
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
         let result = unsafe { entry(dpy, ctx) };
-        if result != 0 { handle.held.end(); }
+        if result != 0 { ctx_handle.held.end(); }
         result != 0
     }
 
     fn destroy_surface(&self, dpy: &Display, surface: &Surface) -> bool {
         let _gate = self.writing();
         let Some(entry) = self.entries().destroy_surface else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
-        let handle = surface;
-        let Some(surface) = self.held_address(&handle.held, dpy) else { runtime::refuse(constants::BAD_SURFACE); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let surface_handle = surface;
+        let Some(surface) = self.held_address(&surface_handle.held, dpy) else { runtime::refuse(constants::BAD_SURFACE); return Default::default(); };
         #[expect(unsafe_code, reason = "egl.xml: eglDestroySurface takes the C types the field declares; dpy is a Display of this library; surface is a Surface of this library")]
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
         let result = unsafe { entry(dpy, surface) };
-        if result != 0 { handle.held.end(); }
+        if result != 0 { surface_handle.held.end(); }
         result != 0
     }
 
     fn get_config_attrib(&self, dpy: &Display, config: &Config, attribute: i32) -> Option<i32> {
         let _gate = self.reading();
         let Some(entry) = self.entries().get_config_attrib else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
-        let handle = config;
-        let Some(config) = self.config_address(handle, dpy) else { runtime::refuse(constants::BAD_CONFIG); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let config_handle = config;
+        let Some(config) = self.config_address(config_handle, dpy) else { runtime::refuse(constants::BAD_CONFIG); return Default::default(); };
         let mut value: i32 = Default::default();
         #[expect(unsafe_code, reason = "egl.xml: eglGetConfigAttrib takes the C types the field declares; dpy is a Display of this library; config is a Config of this library; value is one i32 of ours")]
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
@@ -274,8 +274,8 @@ impl wcontainers_egl::Egl for Library {
     fn initialize(&self, dpy: &Display) -> Option<(i32, i32)> {
         let _gate = self.reading();
         let Some(entry) = self.entries().initialize else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
         let mut major: i32 = Default::default();
         let mut minor: i32 = Default::default();
         #[expect(unsafe_code, reason = "egl.xml: eglInitialize takes the C types the field declares; dpy is a Display of this library; major is one i32 of ours; minor is one i32 of ours")]
@@ -287,8 +287,8 @@ impl wcontainers_egl::Egl for Library {
     fn make_current(&self, dpy: &Display, draw: Option<&Surface>, read: Option<&Surface>, ctx: Option<&Context>) -> bool {
         let _gate = self.reading();
         let Some(entry) = self.entries().make_current else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
         let draw = match draw { None => core::ptr::null_mut(), Some(handle) => match self.held_address(&handle.held, dpy) { Some(address) => address, None => { runtime::refuse(constants::BAD_SURFACE); return Default::default(); } } };
         let read = match read { None => core::ptr::null_mut(), Some(handle) => match self.held_address(&handle.held, dpy) { Some(address) => address, None => { runtime::refuse(constants::BAD_SURFACE); return Default::default(); } } };
         let ctx = match ctx { None => core::ptr::null_mut(), Some(handle) => match self.held_address(&handle.held, dpy) { Some(address) => address, None => { runtime::refuse(constants::BAD_CONTEXT); return Default::default(); } } };
@@ -311,10 +311,10 @@ impl wcontainers_egl::Egl for Library {
     fn query_surface(&self, dpy: &Display, surface: &Surface, attribute: i32) -> Option<i32> {
         let _gate = self.reading();
         let Some(entry) = self.entries().query_surface else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
-        let handle = surface;
-        let Some(surface) = self.held_address(&handle.held, dpy) else { runtime::refuse(constants::BAD_SURFACE); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let surface_handle = surface;
+        let Some(surface) = self.held_address(&surface_handle.held, dpy) else { runtime::refuse(constants::BAD_SURFACE); return Default::default(); };
         let mut value: i32 = Default::default();
         #[expect(unsafe_code, reason = "egl.xml: eglQuerySurface takes the C types the field declares; dpy is a Display of this library; surface is a Surface of this library; value is one i32 of ours")]
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
@@ -325,10 +325,10 @@ impl wcontainers_egl::Egl for Library {
     fn swap_buffers(&self, dpy: &Display, surface: &Surface) -> bool {
         let _gate = self.reading();
         let Some(entry) = self.entries().swap_buffers else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
-        let handle = surface;
-        let Some(surface) = self.held_address(&handle.held, dpy) else { runtime::refuse(constants::BAD_SURFACE); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let surface_handle = surface;
+        let Some(surface) = self.held_address(&surface_handle.held, dpy) else { runtime::refuse(constants::BAD_SURFACE); return Default::default(); };
         #[expect(unsafe_code, reason = "egl.xml: eglSwapBuffers takes the C types the field declares; dpy is a Display of this library; surface is a Surface of this library")]
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
         let result = unsafe { entry(dpy, surface) };
@@ -338,8 +338,8 @@ impl wcontainers_egl::Egl for Library {
     fn swap_interval(&self, dpy: &Display, interval: i32) -> bool {
         let _gate = self.reading();
         let Some(entry) = self.entries().swap_interval else { runtime::refuse(constants::BAD_ACCESS); return Default::default(); };
-        let handle = dpy;
-        let Some(dpy) = self.display_address(handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
+        let dpy_handle = dpy;
+        let Some(dpy) = self.display_address(dpy_handle) else { runtime::refuse(constants::BAD_DISPLAY); return Default::default(); };
         #[expect(unsafe_code, reason = "egl.xml: eglSwapInterval takes the C types the field declares; dpy is a Display of this library")]
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
         let result = unsafe { entry(dpy, interval) };

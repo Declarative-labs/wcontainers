@@ -11,7 +11,7 @@
 use std::fmt::Write as _;
 
 use crate::cheader::Header;
-use crate::gallium::{PLAN, Role};
+use crate::gallium::PLAN;
 use crate::gallium_glue::{c_flat, rust_flat};
 
 /// How the slice's pointers are served.
@@ -167,12 +167,7 @@ const CAPS_C: &str = "    for (int32_t stage = 0; stage < MESA_SHADER_MESH_STAGE
 
 pub fn generate(header: &Header) -> Result<(String, String, String), String> {
     let bound = |name: &str| header.known_numbers.get(name).copied().ok_or_else(|| format!("no value for {name}"));
-    for (structure, pointer, _) in SLICE {
-        let planned = PLAN.iter().find(|entry| entry.structure == *structure && entry.pointer == *pointer).ok_or_else(|| format!("{structure}.{pointer}: not planned"))?;
-        if planned.roles.iter().any(|role| matches!(role, Role::MesaFills(_) | Role::SameAs(_))) {
-            return Err(format!("{structure}.{pointer}: not the implementation's"));
-        }
-    }
+    // That each pointer of the slice is planned and the implementation's is a fact of the two tables: a test holds it.
     let samplers = bound("PIPE_MAX_SAMPLERS")?;
     let attributes = bound("PIPE_MAX_ATTRIBS")?;
     // Rust.
@@ -225,4 +220,21 @@ pub fn generate(header: &Header) -> Result<(String, String, String), String> {
     }
     let _ = writeln!(c, "static void wc_context_pointers(struct pipe_context *pipe)\n{{\n{context_pointers}}}\n\nuintptr_t wc_screen_create(uintptr_t key, const struct wc_table *table)\n{{\n    struct wc_screen *s = calloc(1, sizeof *s);\n    if (!s || !table)\n        return 0;\n    s->key = key;\n    s->table = table;\n    struct pipe_screen *screen = &s->base;\n{screen_pointers}{CAPS_C}    return (uintptr_t)screen;\n}}\n\n/* The table's size, which the Rust side checks against its own. */\nsize_t wc_table_size(void)\n{{\n    return sizeof(struct wc_table);\n}}");
     Ok((rust_file, c, format!("GALLIUM SERVED: {} pointers of the slice (of {} planned)\n", SLICE.len(), PLAN.len())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SLICE;
+    use crate::gallium::{PLAN, Role};
+
+    /// Every pointer the slice serves is planned, and is the implementation's (not Mesa's own function, not the same as
+    /// another pointer).
+    #[test]
+    fn the_slice_is_planned_and_the_implementations() {
+        for (structure, pointer, _) in SLICE {
+            let planned = PLAN.iter().find(|entry| entry.structure == *structure && entry.pointer == *pointer);
+            let planned = planned.unwrap_or_else(|| panic!("{structure}.{pointer}: not planned"));
+            assert!(!planned.roles.iter().any(|role| matches!(role, Role::MesaFills(_) | Role::SameAs(_))), "{structure}.{pointer}");
+        }
+    }
 }

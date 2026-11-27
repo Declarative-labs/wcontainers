@@ -32,6 +32,8 @@ fn main() {
     println!("{CHECK_CFG}");
     println!("{RERUN_IF_ENV_CHANGED}{MESA_VARIABLE}");
     let Some(build) = env::var_os(MESA_VARIABLE).map(PathBuf::from) else {
+        // Said, not silent: without Mesa the glue's C, the layout comparison and the hostile caller are not built.
+        println!("cargo:warning={MESA_VARIABLE} names no Mesa build: the glue's C, tests/layouts.rs and tests/served.rs are not built");
         return;
     };
     println!("{RERUN_IF_CHANGED}{FLAT_SOURCE}");

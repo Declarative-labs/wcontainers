@@ -523,7 +523,8 @@ fn write_structures(header: &Header, comments: &BTreeMap<String, String>, interf
             // A shader by stage held whole (not one a stage) is a type parameter, made by a function the caller gives:
             // its stage is the caller's.
             let staged: Vec<String> = handles(&name, header).into_iter().filter(|handle| by_stage(handle)).collect();
-            if !staged.is_empty() && fields.iter().any(|(_, kind)| matches!(kind, FieldKind::Structure(inner) if handles(inner, header).iter().any(|handle| by_stage(handle)))) {
+            // (A structure held holding a shader by stage makes `staged` hold it too.)
+            if fields.iter().any(|(_, kind)| matches!(kind, FieldKind::Structure(inner) if handles(inner, header).iter().any(|handle| by_stage(handle)))) {
                 return Err(format!("{name}: a structure holding shaders by stage inside another"));
             }
             let generics = if staged.is_empty() { String::new() } else { format!("<{}>", staged.iter().map(|handle| type_name(handle)).collect::<Vec<_>>().join(", ")) };
@@ -658,12 +659,28 @@ struct Param {
     fact: Option<String>,
 }
 
-/// What a function returns, read from its C return and its out parameter.
+/// A function's out parameter: the bridge's memory, copied out whole into owned values, then given back once.
 struct Out {
+    /// The owned type the method returns it as.
     ty: String,
-    after: Vec<String>,
+    /// The bridge's function that gives it back (`<structure>_free`).
+    free: String,
     /// The structure copied out.
     structure: String,
+}
+
+/// The method's return, from the C function's (as `return_of` reads it) and its out parameter's owned type: the copy,
+/// an option of it for a bool return, and Mesa's info log for wc_glsl_to_nir's failure. A number returned beside an out
+/// parameter has no rule.
+fn method_return(function: &str, ret: Option<&str>, out: Option<&str>) -> Result<String, String> {
+    Ok(match (ret, out) {
+        (_, Some(out)) if function == "wc_glsl_to_nir" => format!("Result<{out}, Vec<u8>>"),
+        (Some("bool"), Some(out)) => format!("Option<{out}>"),
+        (None, Some(out)) => out.to_string(),
+        (Some(ret), None) => ret.to_string(),
+        (None, None) => String::new(),
+        (Some(ret), Some(out)) => return Err(format!("{function}: returns {ret} with {out}")),
+    })
 }
 
 /// Whether a name is an array length anywhere in the header.
@@ -722,9 +739,13 @@ fn parameters(function: &CFunction, header: &Header) -> Result<Parameters, Strin
             }
             "number or bool by value" => {
                 let ty = c_scalar(base).ok_or_else(|| format!("{}({}): {base}", function.name, param.name))?;
-                if let Some(slice) = counted_by(at).filter(|_| ty == "usize" || ty == "u32") {
-                    // The count beside a slice (`count`, `capacity`, `buffers`).
-                    let ty_name = if ty == "usize" { "usize" } else { "u32" };
+                if let Some(slice) = counted_by(at) {
+                    // The count beside a slice (`count`, `capacity`, `buffers`): its length, of the count's own type.
+                    let ty_name = match ty {
+                        "usize" => "usize",
+                        "u32" => "u32",
+                        other => return Err(format!("{}({}): a count of {other} beside a slice", function.name, param.name)),
+                    };
                     Param {
                         signature: None,
                         before: if ty_name == "u32" {
@@ -844,7 +865,7 @@ fn parameters(function: &CFunction, header: &Header) -> Result<Parameters, Strin
                     Some(element) => format!("Vec<{element}>"),
                     None => owned_structure(structure, header, "Self::"),
                 };
-                out = Some(Out { ty: owned, after: vec![String::new(), free], structure: structure.to_string() });
+                out = Some(Out { ty: owned, free, structure: structure.to_string() });
                 Param {
                     signature: None,
                     before: vec![format!("let mut {name} = {}Mirror::default();", type_name(structure))],
@@ -880,7 +901,7 @@ fn return_of(function: &CFunction, header: &Header) -> Result<(String, Option<St
         // Mesa's options for a Gallium screen: declared, not offered.
         ("struct nir_shader_compiler_options", 1) => (" -> *const c_void".to_string(), None),
         ("bool", 0) => (" -> u8".to_string(), Some("bool".to_string())),
-        (enumeration, 0) if enumeration.starts_with("enum ") => (" -> u32".to_string(), Some("u32".to_string())),
+        // A number, a declared value (`enum`) among them, as `number` maps it.
         (number_type, 0) => {
             let ty = c_scalar(number_type).ok_or_else(|| format!("{}: returns {number_type}", function.name))?;
             (format!(" -> {ty}"), Some(ty.to_string()))
@@ -915,7 +936,8 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
     }
     for (enumeration, values) in &header.enumerations {
         for (at, value) in values.iter().enumerate() {
-            if value.contains('(') || value.contains(' ') {
+            // An enumerator list a macro writes (`WC_ALU_OPS(WC_ENUM_ENTRY) WC_ALU_UNSUPPORTED`) names no one value.
+            if value.contains('(') {
                 continue;
             }
             let _ = writeln!(constants, "/// `{value}` of `enum {enumeration}`.\npub const {}: u32 = {at};", value.trim_start_matches("WC_"));
@@ -1014,16 +1036,11 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
         let mut method_text = String::new();
         let mut glue_text = String::new();
         let signature_params: Vec<String> = params.iter().filter_map(|p| p.signature.clone()).collect();
-        let method_ret = match (&ret, &out_param) {
-            (_, Some(out)) if function.name == "wc_glsl_to_nir" => format!("Result<{}, Vec<u8>>", out.ty),
-            (Some(r), Some(out)) if r == "u32" => format!("Result<{}, u32>", out.ty),
-            (Some(r), Some(out)) if r == "bool" && out.ty.starts_with("Option<") => out.ty.clone(),
-            (Some(r), Some(out)) if r == "bool" => format!("Option<{}>", out.ty),
-            (None, Some(out)) => out.ty.clone(),
-            (Some(r), None) => r.clone(),
-            (None, None) => String::new(),
-            (Some(r), Some(out)) => return Err(format!("{}: returns {r} with {}", function.name, out.ty)),
-        };
+        let method_ret = method_return(&function.name, ret.as_deref(), out_param.as_ref().map(|out| out.ty.as_str()))?;
+        // Slices written beside a plain return: no rule (the written copies would stand after the return).
+        if ret.is_some() && out_param.is_none() && !written.is_empty() {
+            return Err(format!("{}: a return beside slices written", function.name));
+        }
         let arrow = if method_ret.is_empty() { String::new() } else { format!(" -> {method_ret}") };
         let method = METHOD.to_string();
         let receiver = std::iter::once("&self".to_string()).chain(signature_params.iter().cloned()).collect::<Vec<_>>().join(", ");
@@ -1051,7 +1068,7 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
             }
         }
         let arguments: Vec<String> = params.iter().map(|p| p.argument.clone()).collect();
-        let plain_return = matches!((&ret, &out_param), (Some(_), None)) && function.ret.pointers == 0 && written.is_empty();
+        let plain_return = matches!((&ret, &out_param), (Some(_), None)) && function.ret.pointers == 0;
         let tail_only = plain_return && c_ret != " -> u8";
         let binding = if c_ret.is_empty() || tail_only { "" } else { "let result = " };
         let _ = writeln!(glue_text, "        #[expect(unsafe_code, reason = \"{}\")]", reason.replace('"', "'"));
@@ -1072,12 +1089,9 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
                 let handle = header.handle(&function.ret.base).map(handle_type).unwrap_or_default();
                 let _ = writeln!(glue_text, "        {handle}::owning(result)");
             }
-            (Some(_), None, _) if !tail_only && !(plain_return && c_ret == " -> u8") => {
-                let _ = writeln!(glue_text, "        result");
-            }
-            (_, Some(out), _) if out.after.len() == 2 && out.after[0].is_empty() => {
+            (_, Some(out), _) => {
                 // Copied out whole, then given back once.
-                let free = &out.after[1];
+                let free = &out.free;
                 let mirror_name = params.iter().find(|p| p.argument.starts_with("&raw mut ")).map(|p| p.argument.trim_start_matches("&raw mut ").to_string()).unwrap_or_default();
                 let makers: Vec<String> = handles(out.structure.as_str(), &header).iter().filter(|handle| by_stage(handle)).map(|handle| format!("{}::owning", handle_type(handle))).collect();
                 let _ = writeln!(glue_text, "        let copied = {mirror_name}.owned({});", makers.join(", "));
@@ -1086,24 +1100,19 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
                 let _ = writeln!(glue_text, "        unsafe {{ {free}(&raw mut {mirror_name}) }};");
                 marks += 1;
                 let tail = match ret.as_deref() {
-                    _ if function.name == "wc_glsl_to_nir" => "if result { Ok(copied) } else { Err(copied.log.unwrap_or_default()) }".to_string(),
-                    Some("u32") => "if result == 0 { Ok(copied) } else { Err(result) }".to_string(),
-                    Some("bool") => "result.then_some(copied)".to_string(),
-                    _ => "copied".to_string(),
+                    _ if function.name == "wc_glsl_to_nir" => "if result { Ok(copied) } else { Err(copied.log.unwrap_or_default()) }",
+                    Some("bool") => "result.then_some(copied)",
+                    _ => "copied",
                 };
                 let _ = writeln!(glue_text, "        {tail}");
-            }
-            (_, Some(out), _) => {
-                for line in out.after.iter().filter(|line| !line.is_empty()) {
-                    let _ = writeln!(glue_text, "        {line}");
-                }
             }
             _ => {}
         }
         let _ = writeln!(glue_text, "    }}\n");
         // Once, or once a stage for a function of a shader by stage.
         let bare = |text: &str| text.replace(METHOD, "").replace(STAGE_DOC, "");
-        let staged = bare(&method_text).contains(STAGE_MARK) || bare(&glue_text).contains(STAGE_MARK);
+        // The glue's signature is the method's, so it holds every type the method names.
+        let staged = bare(&glue_text).contains(STAGE_MARK);
         let instances: Vec<(String, String, String)> = if staged {
             offered_stages(&function.name, &header)?
                 .into_iter()
@@ -1173,4 +1182,78 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
     write(direct.join("implementation.rs"), &direct_text)?;
     write(direct.join("Cargo.toml"), include_str!("../templates/mesa-compiler/direct.toml"))?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FieldKind, convert, fields, handles, method_return, return_of, uses_as_length};
+    use crate::cheader::{Header, read};
+
+    fn header(text: &str) -> Header {
+        read(&[text.to_string()])
+    }
+
+    /// A pointer field is an array only with its count after it.
+    #[test]
+    fn a_pointer_needs_its_count() {
+        let read = header("struct s { const uint32_t *words; uint32_t other; };\nstruct t { const uint32_t *words; uint32_t word_count; };");
+        assert_eq!(fields("s", &read).map(|_| ()), Err("s.words: a pointer with no count after it".to_string()));
+        let kept = fields("t", &read).expect("t's fields");
+        assert_eq!(kept.len(), 1);
+        assert!(matches!(&kept[0].1, FieldKind::Array { count, .. } if count == "word_count"));
+    }
+
+    /// The shaders a structure holds, through the structures it holds, each once, in the order met.
+    #[test]
+    fn handles_through_structures() {
+        let read = header("struct wc_a;\nstruct wc_b;\nstruct inner { struct wc_b *b; };\nstruct outer { struct inner i; struct inner j; struct wc_a *k; };");
+        assert_eq!(handles("outer", &read), ["wc_b", "wc_a"]);
+    }
+
+    /// An array of sizes is converted element by element, each to u64; one of other numbers is copied whole.
+    #[test]
+    fn arrays_of_sizes() {
+        let sizes = FieldKind::Array { element: Box::new(FieldKind::Number { mirror: "usize", owned: "u64" }), count: "n".to_string() };
+        assert_eq!(convert(&sizes, "self.x"), "array(self.x, self.n).iter_mut().map(|element| u64::try_from(*element).unwrap_or(u64::MAX)).collect()");
+        let words = FieldKind::Array { element: Box::new(FieldKind::Number { mirror: "u32", owned: "u32" }), count: "n".to_string() };
+        assert_eq!(convert(&words, "self.x"), "array(self.x, self.n)");
+    }
+
+    /// A name is an array length where a structure's field or a function's parameter is declared with it.
+    #[test]
+    fn array_lengths_anywhere() {
+        let read = header("struct s { int a[IN_STRUCTURE]; };\nvoid f(const struct s xs[IN_FUNCTION]);");
+        assert!(uses_as_length(&read, "IN_STRUCTURE"));
+        assert!(uses_as_length(&read, "IN_FUNCTION"));
+        assert!(!uses_as_length(&read, "NOWHERE"));
+    }
+
+    /// A function's return: a shader of the chain as an option of its type, a declared value and a number each as its
+    /// number; a pointer to anything else has no rule.
+    #[test]
+    fn returns() {
+        let read = header("struct wc_a;\nenum wc_e { WC_E_ONE };\nstruct wc_a *made(void);\nenum wc_e value(void);\nint32_t number(void);\nuint32_t *words(void);");
+        let returned: Vec<Result<(String, Option<String>), String>> = read.functions.iter().map(|function| return_of(function, &read)).collect();
+        assert_eq!(
+            returned,
+            [
+                Ok((" -> *mut c_void".to_string(), Some("Option<Self::A>".to_string()))),
+                Ok((" -> u32".to_string(), Some("u32".to_string()))),
+                Ok((" -> i32".to_string(), Some("i32".to_string()))),
+                Err("words: returns uint32_t with 1 pointers".to_string()),
+            ]
+        );
+    }
+
+    /// The method's return beside an out parameter: Mesa's log for wc_glsl_to_nir, an option for a bool, the copy
+    /// alone; a number beside one has no rule.
+    #[test]
+    fn returns_beside_an_out_parameter() {
+        assert_eq!(method_return("wc_glsl_to_nir", Some("bool"), Some("Made")), Ok("Result<Made, Vec<u8>>".to_string()));
+        assert_eq!(method_return("f", Some("bool"), Some("Made")), Ok("Option<Made>".to_string()));
+        assert_eq!(method_return("f", None, Some("Made")), Ok("Made".to_string()));
+        assert_eq!(method_return("f", Some("u32"), None), Ok("u32".to_string()));
+        assert_eq!(method_return("f", None, None), Ok(String::new()));
+        assert_eq!(method_return("f", Some("u32"), Some("Made")), Err("f: returns u32 with Made".to_string()));
+    }
 }

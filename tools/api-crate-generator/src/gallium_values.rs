@@ -11,6 +11,9 @@ use std::fmt::Write as _;
 
 use crate::cheader::Header;
 
+/// How many defines deep a define's value is followed (a define naming a define naming ...), so that a cycle ends.
+const DEFINES_DEEP: usize = 17;
+
 /// Enumerations kept besides those named `pipe_*`.
 const ALSO: &[&str] = &["mesa_shader_stage", "mesa_prim"];
 
@@ -167,17 +170,16 @@ pub fn collect(header: &Header) -> Result<Values, String> {
     let mut known: BTreeMap<String, i64> = BTreeMap::new();
     let mut failures = Vec::new();
     let define = |name: &str, known: &BTreeMap<String, i64>| -> Option<i64> {
-        fn resolve(name: &str, header: &Header, known: &BTreeMap<String, i64>, depth: usize) -> Option<i64> {
+        // `levels`: how many defines deep the names may still be followed (a define naming itself ends).
+        fn resolve(name: &str, header: &Header, known: &BTreeMap<String, i64>, levels: usize) -> Option<i64> {
             if let Some(value) = known.get(name) {
                 return Some(*value);
             }
             let text = header.define_texts.get(name)?;
-            if depth > 16 {
-                return None;
-            }
-            evaluate(text, &|inner| resolve(inner, header, known, depth + 1))
+            let deeper = levels.checked_sub(1)?;
+            evaluate(text, &|inner| resolve(inner, header, known, deeper))
         }
-        resolve(name, header, known, 0)
+        resolve(name, header, known, DEFINES_DEEP)
     };
     let mut enumerations = Vec::new();
     let mut loose = Vec::new();
@@ -299,5 +301,60 @@ mod tests {
         assert_eq!(evaluate("~0 & 0xff", &names), Some(255));
         assert_eq!(evaluate("1 + 2 * 3", &names), Some(7));
         assert_eq!(evaluate("sizeof(int)", &names), None);
+    }
+}
+
+#[cfg(test)]
+mod operators_and_limits {
+    use super::{Enumeration, Values, collect, evaluate, rust, rust_list};
+    use crate::cheader::read;
+
+    fn none(_: &str) -> Option<i64> {
+        None
+    }
+
+    /// Each operator of the subset, left to right at its level; a lone `<` is outside it.
+    #[test]
+    fn each_operator() {
+        assert_eq!(evaluate("10 - 3 - 2", &none), Some(5));
+        assert_eq!(evaluate("64 >> 2 >> 1", &none), Some(8));
+        assert_eq!(evaluate("6 ^ 3", &none), Some(5));
+        assert_eq!(evaluate("3 | 1", &none), Some(3));
+        assert_eq!(evaluate("6 & 3", &none), Some(2));
+        assert_eq!(evaluate("1 < 2", &none), None);
+    }
+
+    /// A define naming a define is followed 16 deep (17 defines), no deeper, and a define naming itself ends.
+    #[test]
+    fn defines_followed_and_cycles_ended() {
+        let chain = |length: usize| (0..length).map(|at| if at + 1 == length { format!("#define D{at} 5\n") } else { format!("#define D{at} (D{})\n", at + 1) }).collect::<String>();
+        let known = |text: String| collect(&read(&[text])).expect("collected").known;
+        assert_eq!(known(chain(17)).get("D0"), Some(&5));
+        assert_eq!(known(chain(18)).get("D0"), None);
+        let cycle = known("#define CYCLE_A (CYCLE_B)\n#define CYCLE_B (CYCLE_A)\n".to_string());
+        assert_eq!(cycle.get("CYCLE_A"), None);
+    }
+
+    /// An enumerator outside the subset fails a kept enumeration (`pipe_*`) and an anonymous one's `PIPE_*`, and is
+    /// passed over in any other.
+    #[test]
+    fn failures_only_where_kept() {
+        let fails = |text: &str| collect(&read(&[text.to_string()])).is_err();
+        assert!(fails("enum pipe_x { PIPE_X_A = sizeof(int) };"));
+        assert!(fails("enum { PIPE_Y = sizeof(int) };"));
+        assert!(!fails("enum other { OTHER_A = sizeof(int) };"));
+        assert!(!fails("enum { Z = sizeof(int) };"));
+    }
+
+    /// A loose value past u32 is a u64, u32::MAX itself a u32; its conversion in flat.rs follows.
+    #[test]
+    fn widths_of_loose_values() {
+        let values = Values { enumerations: Vec::<Enumeration>::new(), loose: vec![("PIPE_MOST".to_string(), i64::from(u32::MAX)), ("PIPE_PAST".to_string(), i64::from(u32::MAX) + 1)], known: Default::default() };
+        let text = rust(&values, "");
+        assert!(text.contains("pub const PIPE_MOST: u32 = 4294967295;"), "{text}");
+        assert!(text.contains("pub const PIPE_PAST: u64 = 4294967296;"), "{text}");
+        let list = rust_list(&values);
+        assert!(list.contains("(\"PIPE_MOST\", i64::from(wcontainers_gallium::values::PIPE_MOST)),"), "{list}");
+        assert!(list.contains("(\"PIPE_PAST\", i64::try_from(wcontainers_gallium::values::PIPE_PAST).unwrap_or(i64::MAX)),"), "{list}");
     }
 }

@@ -2222,7 +2222,7 @@ pub trait GalliumContext: Sized {
     fn buffer_map(&self, resource: &Arc<<Self::Screen as Gallium>::Resource>, level: u32, usage: values::MapFlags, arg4: &PipeBox) -> Option<Mapped<<Self::Screen as Gallium>::Mapping>>;
 
     /// Mesa's `pipe_context.buffer_subdata`, called first at mesa/main/bufferobj.c:116.
-    fn buffer_subdata(&self, arg1: &Arc<<Self::Screen as Gallium>::Resource>, usage: values::MapFlags, offset: u32, size: u32, data: &[u8]);
+    fn buffer_subdata(&self, arg1: &Arc<<Self::Screen as Gallium>::Resource>, usage: values::MapFlags, offset: u32, data: &[u8]);
 
     /// Mesa's `pipe_context.buffer_unmap`, called first at gallium/auxiliary/util/u_inlines.h:565.
     fn buffer_unmap(&self, transfer: <Self::Screen as Gallium>::Mapping, written: &[u8]);

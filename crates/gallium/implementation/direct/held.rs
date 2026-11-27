@@ -132,3 +132,61 @@ pub fn each<T, U, const N: usize>(array: &[T; N], make: impl FnMut(&T) -> Option
     let made: Option<Vec<U>> = array.iter().map(make).collect();
     made?.try_into().ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use wcontainers_gallium_recording::{Log, Object, Recording, RecordingContext};
+
+    use super::{Held, Keys, ObjectKind};
+
+    /// Keys list every object and range named, and none for key or address zero.
+    #[test]
+    fn keys_list_what_is_named() {
+        let mut keys = Keys::default();
+        keys.object(ObjectKind::Resource, 0);
+        keys.object(ObjectKind::SamplerView, 7);
+        keys.memory(0, 1, 2);
+        keys.memory(9, 3, 4);
+        assert_eq!(keys.objects, [(ObjectKind::SamplerView, 7)]);
+        assert_eq!(keys.memory, [(9, 3, 4)]);
+    }
+
+    fn object(kind: &'static str, number: usize) -> Arc<Object> {
+        Arc::new(Object { kind, number })
+    }
+
+    /// Each kind's object by its key: none for key zero, the object held under the key, and a refusal for a key not
+    /// held; client memory by its range: none for address zero, the bytes copied for the range, and a refusal for a
+    /// range not held (its address alone held, another offset or length).
+    #[test]
+    fn held_by_key() {
+        let log = Arc::new(Log::default());
+        let held = Held::<Recording> {
+            resources: vec![(5, object("Resource", 1)), (6, object("Resource", 2))],
+            stream_output_targets: vec![(5, object("StreamOutputTarget", 3)), (6, object("StreamOutputTarget", 4))],
+            sampler_views: vec![(5, object("SamplerView", 5)), (6, object("SamplerView", 6))],
+            contexts: vec![(5, Arc::new(RecordingContext { log: Arc::clone(&log) })), (6, Arc::new(RecordingContext { log: Arc::new(Log::default()) }))],
+            memory: vec![((9, 0, 2), vec![1, 2]), ((9, 2, 3), vec![7, 8, 9])],
+            index_bytes: 0,
+        };
+        let numbers = |found: Option<Option<&Arc<Object>>>| found.map(|object| object.map(|object| (object.kind, object.number)));
+        assert_eq!(numbers(held.resource(0)), Some(None));
+        assert_eq!(numbers(held.resource(6)), Some(Some(("Resource", 2))));
+        assert_eq!(numbers(held.resource(7)), None);
+        assert_eq!(numbers(held.stream_output_target(0)), Some(None));
+        assert_eq!(numbers(held.stream_output_target(6)), Some(Some(("StreamOutputTarget", 4))));
+        assert_eq!(numbers(held.stream_output_target(7)), None);
+        assert_eq!(numbers(held.sampler_view(0)), Some(None));
+        assert_eq!(numbers(held.sampler_view(6)), Some(Some(("SamplerView", 6))));
+        assert_eq!(numbers(held.sampler_view(7)), None);
+        assert!(matches!(held.context(0), Some(None)));
+        assert!(matches!(held.context(5), Some(Some(context)) if Arc::ptr_eq(&context.log, &log)));
+        assert!(held.context(7).is_none());
+        assert_eq!(held.memory(0, 2, 3), Some(None));
+        assert_eq!(held.memory(9, 2, 3), Some(Some(&[7_u8, 8, 9][..])));
+        assert_eq!(held.memory(9, 0, 3), None);
+        assert_eq!(held.memory(8, 2, 3), None);
+    }
+}

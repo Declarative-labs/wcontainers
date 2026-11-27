@@ -90,9 +90,7 @@ fn value_text(set: &Set, value: &str, suffix: Option<&str>) -> Option<(&'static 
     if let Some(inner) = value.strip_prefix("EGL_CAST(EGLint,").and_then(|v| v.strip_suffix(')')) {
         return Some(("i32", inner.to_string()));
     }
-    if value.starts_with("EGL_CAST") || value.starts_with('(') {
-        return None;
-    }
+    // Any other cast or expression (`EGL_CAST(EGLDisplay,0)`, `((EGLint)-1)`) is no number: passed over below.
     let number = if let Some(hex) = value.strip_prefix("0x") {
         u64::from_str_radix(hex, 16).ok()?
     } else if let Some(negative) = value.strip_prefix('-') {
@@ -362,7 +360,7 @@ const MOST_ARGUMENTS: usize = 7;
 /// The value a refused call returns: every return type of the traits has one.
 const REFUSED: &str = "return Default::default()";
 
-fn gl_body(set: &Set, method: &Method) -> Body {
+fn gl_body(set: &Set, method: &Method) -> Result<Body, String> {
     let command = &method.command;
     let mut body = Body { before: Vec::new(), arguments: Vec::new(), after: Vec::new(), outs: Vec::new(), facts: Vec::new() };
     let refuse = |error: &str| format!("{{ self.refuse(constants::{error}); {REFUSED}; }}");
@@ -486,21 +484,17 @@ fn gl_body(set: &Set, method: &Method) -> Body {
                 body.facts.push(format!("{name}, when there, holds at least {size_name} bytes"));
                 format!("{name}.map_or(core::ptr::null(), |bytes| bytes.as_ptr().cast())")
             }
+            // EGL's forms: classify.rs gives an OpenGL ES command none.
             Part::Handle { optional: true, .. } | Part::AttributeList | Part::HandlesOut { .. } | Part::WrittenOf | Part::NullOnly => {
-                unreachable_form(index)
+                return Err(format!("{}: an EGL form at parameter {index}", command.name));
             }
         };
         body.arguments.push(argument);
     }
-    body
+    Ok(body)
 }
 
-/// An EGL form in an OpenGL ES command: classify.rs gives none, and the generator stops before writing one.
-fn unreachable_form(index: usize) -> String {
-    format!("compile_error!(\"an EGL form at parameter {index}\")")
-}
-
-fn egl_body(method: &Method) -> Body {
+fn egl_body(method: &Method) -> Result<Body, String> {
     let command = &method.command;
     let mut body = Body { before: Vec::new(), arguments: Vec::new(), after: Vec::new(), outs: Vec::new(), facts: Vec::new() };
     let refuse = |error: &str| format!("{{ runtime::refuse(constants::{error}); {REFUSED}; }}");
@@ -508,15 +502,13 @@ fn egl_body(method: &Method) -> Body {
     for (part, param) in method.parts.iter().zip(&command.params) {
         let name = param_name(param);
         let argument = match part {
-            Part::Value(s) => match s.rust {
-                "bool" => format!("{}::from({name})", s.c),
-                _ => name.clone(),
-            },
+            // EGL's plain values are its integers, passed as they are.
+            Part::Value(_) => name.clone(),
             Part::Handle { kind, optional } => {
-                let check = match *kind {
-                    "Display" => "self.display_address(handle)".to_string(),
-                    "Config" => format!("self.config_address(handle, {})", display.clone().unwrap_or_default()),
-                    _ => format!("self.held_address(&handle.held, {})", display.clone().unwrap_or_default()),
+                let check = |handle: &str| match *kind {
+                    "Display" => format!("self.display_address({handle})"),
+                    "Config" => format!("self.config_address({handle}, {})", display.clone().unwrap_or_default()),
+                    _ => format!("self.held_address(&{handle}.held, {})", display.clone().unwrap_or_default()),
                 };
                 let error = match *kind {
                     "Display" => "BAD_DISPLAY",
@@ -526,15 +518,16 @@ fn egl_body(method: &Method) -> Body {
                 };
                 if *optional {
                     body.before.push(format!(
-                        "let {name} = match {name} {{ None => core::ptr::null_mut(), Some(handle) => match {check} {{ Some(address) => address, None => {} }} }};",
+                        "let {name} = match {name} {{ None => core::ptr::null_mut(), Some(handle) => match {} {{ Some(address) => address, None => {} }} }};",
+                        check("handle"),
                         refuse(error)
                     ));
                 } else {
-                    body.before.push(format!("let handle = {name};"));
-                    body.before.push(format!("let Some({name}) = {check} else {};", refuse(error)));
+                    body.before.push(format!("let {name}_handle = {name};"));
+                    body.before.push(format!("let Some({name}) = {} else {};", check(&format!("{name}_handle")), refuse(error)));
                     // Only the handle the call destroys ends: the display it is passed with lives on.
                     if command.name.starts_with("eglDestroy") && !matches!(*kind, "Display" | "Config") {
-                        body.after.push("if result != 0 { handle.held.end(); }".to_string());
+                        body.after.push(format!("if result != 0 {{ {name}_handle.held.end(); }}"));
                     }
                 }
                 body.facts.push(format!("{name} is a {kind} of this library{}", if *optional { " or none" } else { "" }));
@@ -577,18 +570,18 @@ fn egl_body(method: &Method) -> Body {
                 body.facts.push(format!("{name} is EGL_DEFAULT_DISPLAY"));
                 "core::ptr::null_mut()".to_string()
             }
-            _ => unreachable_form(0),
+            // OpenGL ES's forms: classify.rs gives an EGL command none.
+            other => return Err(format!("{}: {other:?} has no EGL glue", command.name)),
         };
         body.arguments.push(argument);
     }
-    body
+    Ok(body)
 }
 
 fn result_text(method: &Method, body: &Body, egl: bool) -> String {
     let display = method.command.params.iter().position(|p| p.ptype == "EGLDisplay").map(|at| param_name(&method.command.params[at]));
     let base = match &method.ret {
         Return::Unit | Return::Success => None,
-        Return::Value(s) if s.rust == "bool" => Some("result != 0".to_string()),
         Return::Value(_) => Some("result".to_string()),
         Return::Text => Some("runtime::copied_text(result)".to_string()),
         Return::Handle(kind) if egl => Some(match *kind {
@@ -613,9 +606,9 @@ fn reason(set: &Set, method: &Method, body: &Body) -> String {
     format!("{}: {} takes the C types the field declares; {what}", if set.api == "egl" { "egl.xml" } else { "gl.xml" }, method.command.name)
 }
 
-fn method_text(set: &Set, method: &Method) -> String {
+fn method_text(set: &Set, method: &Method) -> Result<String, String> {
     let egl = set.api == "egl";
-    let body = if egl { egl_body(method) } else { gl_body(set, method) };
+    let body = if egl { egl_body(method)? } else { gl_body(set, method)? };
     let field = method_name(set, &method.command.name);
     let mut text = String::new();
     let _ = writeln!(text, "    {} {{", signature(set, method, false));
@@ -657,7 +650,7 @@ fn method_text(set: &Set, method: &Method) -> String {
         let _ = writeln!(text, "        {result}");
     }
     text.push_str("    }\n");
-    text
+    Ok(text)
 }
 
 fn entries_text(set: &Set, classified: &Classified, registry: &Registry) -> Result<String, String> {
@@ -696,13 +689,12 @@ fn entries_text(set: &Set, classified: &Classified, registry: &Registry) -> Resu
 fn inside_type(command: &super::registry::Command) -> Result<String, String> {
     let param = |p: &Param| -> Result<String, String> {
         if p.pointers == 0 {
-            return super::classify_scalar(&p.ptype).map(|s| s.c.to_string()).or_else(|| (p.ptype == "EGLDisplay").then(|| "*mut c_void".to_string())).ok_or_else(|| format!("{}: {}", command.name, p.ptype));
+            return super::classify_scalar(&p.ptype).map(|s| s.c.to_string()).ok_or_else(|| format!("{}: {}", command.name, p.ptype));
         }
         Ok(if p.is_const { "*const u8".to_string() } else { "*mut c_void".to_string() })
     };
     let params: Result<Vec<String>, String> = command.params.iter().map(param).collect();
     let ret = match (command.ret.pointers, command.ret.ptype.as_str()) {
-        (0, "void") => String::new(),
         (1, "void") | (0, "EGLContext") | (0, "__eglMustCastToProperFunctionPointerType") => " -> *mut c_void".to_string(),
         (0, ptype) => format!(" -> {}", super::classify_scalar(ptype).map(|s| s.c).ok_or_else(|| format!("{}: returns {ptype}", command.name))?),
         _ => return Err(format!("{}: return", command.name)),
@@ -752,7 +744,7 @@ fn write_calls(set: &Set, classified: &Classified, registry: &Registry) -> Resul
     };
     let _ = writeln!(text, "impl {interface}::{} for {implementor} {{\n{kinds}", set.top);
     for method in &classified.methods {
-        text.push_str(&method_text(set, method));
+        text.push_str(&method_text(set, method)?);
         text.push('\n');
     }
     for composed in set.composed {
@@ -787,6 +779,8 @@ fn suite_call(set: &Set, method: &Method) -> String {
         let name = param_name(param);
         let seed = format!("seed.wrapping_add({index})");
         let argument = match part {
+            // A wait of no time: a picked timeout could wait for ever on a fence whose commands are never flushed.
+            Part::Value(_) if method.command.name == "glClientWaitSync" && param.name == "timeout" => "0".to_string(),
             Part::Value(s) => sample(s, &seed),
             Part::Handle { .. } => "fence".to_string(),
             Part::SliceIn { elem, .. } | Part::BoundedIn { elem, .. } => {
@@ -835,7 +829,6 @@ fn zero(elem: &Scalar) -> &'static str {
     match elem.rust {
         "bool" => "false",
         "f32" => "0.0_f32",
-        "f64" => "0.0_f64",
         "i64" => "0_i64",
         "u64" => "0_u64",
         "u32" => "0_u32",
@@ -852,12 +845,9 @@ fn kinds_of(classified: &Classified) -> BTreeSet<&'static str> {
         .flat_map(|m| {
             m.parts
                 .iter()
+                // (A kind a method makes is one some method takes too.)
                 .filter_map(|p| match p {
                     Part::Handle { kind, .. } | Part::HandlesOut { kind, .. } => Some(*kind),
-                    _ => None,
-                })
-                .chain(match m.ret {
-                    Return::Handle(kind) => Some(kind),
                     _ => None,
                 })
         })
@@ -899,16 +889,10 @@ fn write_counted(set: &Set, classified: &Classified, name: &str) -> String {
 
 fn write_suite(set: &Set, classified: &Classified, egl: Option<(&Set, &Classified)>, template: &str) -> String {
     let mut calls = String::new();
-    let skipped = ["glClientWaitSync", "glFinish"];
-    let mut called = 0;
     for (index, method) in classified.methods.iter().enumerate() {
-        if skipped.contains(&method.command.name.as_str()) {
-            continue;
-        }
         let _ = write!(calls, "        {index} => ");
         let text = suite_call(set, method);
         let _ = writeln!(calls, "{{\n{text}        }}");
-        called += 1;
     }
     // Each extension's command, called with the context naming none of its extensions, must answer None.
     let mut gated = String::new();
@@ -926,7 +910,6 @@ fn write_suite(set: &Set, classified: &Classified, egl: Option<(&Set, &Classifie
         );
     }
     let count = classified.methods.len();
-    let not_fuzzed: Vec<String> = classified.methods.iter().enumerate().filter(|(_, m)| skipped.contains(&m.command.name.as_str())).map(|(at, _)| at.to_string()).collect();
     let mut text = header(set);
     text.push_str(template);
     text.push_str(&write_counted(set, classified, "CountedGl"));
@@ -934,14 +917,14 @@ fn write_suite(set: &Set, classified: &Classified, egl: Option<(&Set, &Classifie
         text.push_str(&write_counted(egl_set, egl_classified, "CountedEgl"));
         let _ = writeln!(text, "\n/// The EGL methods of the trait (the counting wrapper's places).\npub const EGL_TRAIT_METHODS: usize = {};", egl_classified.methods.len());
     }
-    let _ = writeln!(text, "\n/// The places of the methods `call_one` never calls (glClientWaitSync and glFinish).\npub const NOT_FUZZED: [usize; {}] = [{}];", not_fuzzed.len(), not_fuzzed.join(", "));
+    let _ = writeln!(text, "\n/// The places of the methods `call_one` never calls: none (glClientWaitSync waits no time).\npub const NOT_FUZZED: [usize; 0] = [];");
     let _ = writeln!(
         text,
         "\n/// Calls each extension's command; one answering while the context names none of its extensions fails.\nfn extension_calls<G: OpenGlEs>(gl: &G, named: &dyn Fn(&[&str]) -> bool) {{\n    let seed = 0_usize;\n{gated}}}"
     );
     let _ = writeln!(
         text,
-        "\n/// The number of the trait's methods `call_one` calls ({called} of {count}: glClientWaitSync and glFinish are called by the\n/// scenarios, never with a picked timeout, which could wait for ever).\npub const METHODS: usize = {count};\n\n/// Calls the trait's method numbered `which`, with arguments picked by `seed`.\nfn call_one<G: OpenGlEs>(gl: &G, fence: &G::Fence, which: usize, seed: usize) {{\n    match which {{\n{calls}        _ => {{}}\n    }}\n}}"
+        "\n/// The number of the trait's methods, each of which `call_one` calls (glClientWaitSync with a timeout of 0: a picked one\n/// could wait for ever).\npub const METHODS: usize = {count};\n\n/// Calls the trait's method numbered `which`, with arguments picked by `seed`.\nfn call_one<G: OpenGlEs>(gl: &G, fence: &G::Fence, which: usize, seed: usize) {{\n    match which {{\n{calls}        _ => {{}}\n    }}\n}}"
     );
     text
 }
@@ -971,9 +954,10 @@ pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], egl:
         write(direct.join("calls.rs"), &write_calls(set, classified, registry)?)?;
         write(direct.join("Cargo.toml"), direct_manifest)?;
         if set.api == "gles2" {
-            let fakes = out.join("fakes").join(set.folder);
-            std::fs::create_dir_all(&fakes).map_err(|e| e.to_string())?;
-            write(fakes.join("fake_egl.c"), &write_fake(set, classified, templates.fake))?;
+            // The stand-in library fuzz-khronos.sh fuzzes the glue over (it reads and writes the most each command may).
+            let fake = direct.join("fake");
+            std::fs::create_dir_all(&fake).map_err(|e| e.to_string())?;
+            write(fake.join("fake_egl.c"), &write_fake(set, classified, templates.fake))?;
             let tests = direct.join("tests");
             std::fs::create_dir_all(&tests).map_err(|e| e.to_string())?;
             write(tests.join("conformance.rs"), &format!("{}{}", header(set), templates.gl_direct_test))?;
@@ -1035,11 +1019,7 @@ fn c_of(rust: &str) -> String {
             "u32" => "uint32_t",
             "i32" => "int32_t",
             "u8" => "uint8_t",
-            "i8" => "int8_t",
-            "i16" => "int16_t",
-            "u16" => "uint16_t",
             "f32" => "float",
-            "f64" => "double",
             "i64" => "int64_t",
             "u64" => "uint64_t",
             "isize" => "intptr_t",
@@ -1148,4 +1128,23 @@ fn write_fake(set: &Set, classified: &Classified, template: &str) -> String {
         entries.join("\n")
     );
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::sets::{EGL, OPENGL_ES};
+    use super::value_text;
+
+    /// A value keeps the width its number needs: EGL's past i32 a u32, GL's `ull` a u64; a cast to EGLint is its
+    /// number, any other cast or expression none.
+    #[test]
+    fn values_keep_their_width() {
+        assert_eq!(value_text(&EGL, "0x7fffffff", None), Some(("i32", "0x7fffffff".to_string())));
+        assert_eq!(value_text(&EGL, "0x80000000", None), Some(("u32", "0x80000000".to_string())));
+        assert_eq!(value_text(&EGL, "EGL_CAST(EGLint,-1)", None), Some(("i32", "-1".to_string())));
+        assert_eq!(value_text(&EGL, "EGL_CAST(EGLDisplay,0)", None), None);
+        assert_eq!(value_text(&EGL, "((EGLint)-1)", None), None);
+        assert_eq!(value_text(&OPENGL_ES, "0xFFFFFFFFFFFFFFFF", Some("ull")), Some(("u64", "0xffffffffffffffff".to_string())));
+        assert_eq!(value_text(&OPENGL_ES, "0x8000", None), Some(("u32", "0x8000".to_string())));
+    }
 }

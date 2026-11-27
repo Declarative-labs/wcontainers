@@ -125,17 +125,19 @@ fn nullable(pointer: &str, param: &str) -> bool {
     NULLABLE.iter().any(|(p, name, _)| *p == pointer && *name == param)
 }
 
-/// Whether a parameter is a count of a list given later in the same call.
+/// Whether a parameter is a count of a list given later in the same call (the parameter itself, a number, is no list).
 fn is_count(function: &CFunction, at: usize) -> bool {
     let param = &function.params[at];
     (param.name.starts_with("num_") || param.name == "count" || param.name == "nboxes")
-        && function.params[at + 1..].iter().any(|later| later.pointers >= 1 && !later.base.contains("unsigned"))
+        && function.params[at..].iter().any(|later| later.pointers >= 1 && !later.base.contains("unsigned"))
 }
 
-/// Whether a parameter is the count of the list just before it (draw_vbo's `draws, num_draws`).
+/// Whether a parameter is the count of the list just before it (draw_vbo's `draws, num_draws`); never the first, the
+/// object the pointer is called on.
 fn counts_the_list_before(function: &CFunction, at: usize) -> bool {
     let param = &function.params[at];
-    param.pointers == 0 && param.name.starts_with("num_") && at > 0 && function.params[at - 1].pointers == 1 && !function.params[at - 1].base.starts_with("const unsigned")
+    let before = &function.params[at - 1];
+    param.pointers == 0 && param.name.starts_with("num_") && before.pointers == 1 && !before.base.starts_with("const unsigned")
 }
 
 /// The number type of a C scalar.
@@ -144,11 +146,9 @@ pub(crate) fn number(base: &str) -> Option<&'static str> {
         "unsigned" | "uint32_t" | "uint" | "unsigned int" => "u32",
         "int" | "int32_t" => "i32",
         "uint8_t" | "unsigned char" => "u8",
-        "int8_t" => "i8",
         "uint16_t" | "unsigned short" => "u16",
         "int16_t" | "short" => "i16",
         "uint64_t" | "uintptr_t" | "size_t" => "u64",
-        "int64_t" => "i64",
         "float" => "f32",
         "double" => "f64",
         "bool" => "bool",
@@ -184,8 +184,15 @@ pub(crate) fn field_name(c: &str) -> String {
 }
 
 /// The kinds a structure's handles name, in the order met (its type parameters).
-pub(crate) fn kinds_named(name: &str, header: &Header, out: &mut Vec<&'static str>, depth: usize) {
+pub(crate) fn kinds_named(name: &str, header: &Header, out: &mut Vec<&'static str>) {
+    kinds_named_inside(name, header, out, &[]);
+}
+
+/// The kinds of `kinds_named`, `inside` the structures around it, each entered once (so that a header whose structure
+/// holds itself ends).
+fn kinds_named_inside(name: &str, header: &Header, out: &mut Vec<&'static str>, inside: &[&str]) {
     let Some(fields) = header.structures.get(name) else { return };
+    let inside = [inside, &[name]].concat();
     for field in fields {
         if left_out(name, &field.name).is_some() {
             continue;
@@ -199,10 +206,10 @@ pub(crate) fn kinds_named(name: &str, header: &Header, out: &mut Vec<&'static st
                 out.push(kind);
             }
         } else if field.pointers == 0
-            && depth < 6
             && let Some(inner) = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union "))
+            && !inside.contains(&inner)
         {
-            kinds_named(inner, header, out, depth + 1);
+            kinds_named_inside(inner, header, out, &inside);
         }
     }
 }
@@ -215,7 +222,7 @@ pub(crate) fn left_out(structure: &str, field: &str) -> Option<&'static str> {
 /// another structure).
 fn owned(name: &str, header: &Header, prefix: &str) -> String {
     let mut kinds = Vec::new();
-    kinds_named(name, header, &mut kinds, 0);
+    kinds_named(name, header, &mut kinds);
     if kinds.is_empty() {
         type_name(name)
     } else {
@@ -262,7 +269,7 @@ impl Structures<'_> {
                 } else if let Some(ty) = number(base) {
                     ty.to_string()
                 } else if let Some(inner) = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union ")) {
-                    if inner == "pipe_color_union" || (self.header.unions.iter().any(|union| union == inner) && !inner.contains('.')) {
+                    if inner == "pipe_color_union" {
                         // A union of four-byte values (pipe_color_union): its words.
                         "[u32; 4]".to_string()
                     } else {
@@ -311,7 +318,7 @@ impl Structures<'_> {
             return;
         };
         let mut kinds = Vec::new();
-        kinds_named(name, self.header, &mut kinds, 0);
+        kinds_named(name, self.header, &mut kinds);
         let generics = if kinds.is_empty() { String::new() } else { format!("<'a, {}>", kinds.join(", ")) };
         let union = self.header.unions.iter().any(|union| union == name);
         let mut body = String::new();
@@ -368,19 +375,21 @@ impl Structures<'_> {
 
 /// For the hostile C caller (caller.c) and its test (tests/served.rs): C assignments that set every field of Mesa's
 /// structure `name` the trait carries, through `path` (`blend.`), to a value of its own (each value its counter's next,
-/// within the field's width: a bit-field of one bit is 1), and the Debug text of the owned structure the trait must
-/// receive for it. The fields left out are left zero by the caller's memset.
-pub fn filled(header: &Header, name: &str, path: &str, counter: &mut u64) -> Result<(String, String), String> {
+/// within the field's width: a bit-field of one bit is 1), the Debug text of the owned structure the trait must
+/// receive for it, and the owned structure as a Rust expression (in a crate that names the trait's types). The fields
+/// left out are left zero by the caller's memset.
+pub fn filled(header: &Header, name: &str, path: &str, counter: &mut u64) -> Result<(String, String, String), String> {
     let mut structures = Structures { header, written: BTreeSet::new(), text: String::new(), unmapped: Vec::new(), defines: header.defines.clone() };
     let mut assignments = String::new();
-    let debug = structures.filled(name, path, counter, &mut assignments)?;
-    Ok((assignments, debug))
+    let (debug, rust) = structures.filled(name, path, counter, &mut assignments)?;
+    Ok((assignments, debug, rust))
 }
 
 impl Structures<'_> {
-    fn filled(&mut self, name: &str, path: &str, counter: &mut u64, assignments: &mut String) -> Result<String, String> {
+    fn filled(&mut self, name: &str, path: &str, counter: &mut u64, assignments: &mut String) -> Result<(String, String), String> {
         let fields = self.header.structures.get(name).cloned().ok_or_else(|| format!("{name}: no structure read"))?;
         let mut parts = Vec::new();
+        let mut rust_parts = Vec::new();
         for field in &fields {
             if left_out(name, &field.name).is_some() {
                 continue;
@@ -398,23 +407,27 @@ impl Structures<'_> {
                 Some(bits) => Some(self.length(bits.trim()).and_then(|width| u32::try_from(width).ok()).ok_or_else(|| format!("{name}.{}: width {bits}", field.name))?),
                 None => None,
             };
-            let debug = self.filled_value(name, &field.name, &format!("{path}{}", field.name), &lengths, &element, nested.as_deref(), width, counter, assignments)?;
+            let (debug, rust) = self.filled_value(name, &field.name, &format!("{path}{}", field.name), &lengths, &element, nested.as_deref(), width, counter, assignments)?;
             parts.push(format!("{}: {debug}", field_name(&field.name)));
+            rust_parts.push(format!("{}: {rust}", field_name(&field.name)));
         }
-        Ok(format!("{} {{ {} }}", type_name(name), parts.join(", ")))
+        Ok((format!("{} {{ {} }}", type_name(name), parts.join(", ")), format!("{} {{ {} }}", type_name(name), rust_parts.join(", "))))
     }
 
-    /// One field (an element of it where `lengths` remain): the C assignments and the Debug text.
+    /// One field (an element of it where `lengths` remain): the C assignments, the Debug text and the Rust expression.
     #[expect(clippy::too_many_arguments, reason = "the field, where it is, its shape and the counter")]
-    fn filled_value(&mut self, structure: &str, field: &str, place: &str, lengths: &[usize], element: &str, nested: Option<&str>, width: Option<u32>, counter: &mut u64, assignments: &mut String) -> Result<String, String> {
+    fn filled_value(&mut self, structure: &str, field: &str, place: &str, lengths: &[usize], element: &str, nested: Option<&str>, width: Option<u32>, counter: &mut u64, assignments: &mut String) -> Result<(String, String), String> {
         if let Some((first, rest)) = lengths.split_first() {
             let mut items = Vec::new();
+            let mut rust_items = Vec::new();
             for at in 0..*first {
-                items.push(self.filled_value(structure, field, &format!("{place}[{at}]"), rest, element, nested, width, counter, assignments)?);
+                let (debug, rust) = self.filled_value(structure, field, &format!("{place}[{at}]"), rest, element, nested, width, counter, assignments)?;
+                items.push(debug);
+                rust_items.push(rust);
             }
-            return Ok(format!("[{}]", items.join(", ")));
+            return Ok((format!("[{}]", items.join(", ")), format!("[{}]", rust_items.join(", "))));
         }
-        if nested.is_some_and(|inner| inner == "pipe_color_union" || (self.header.unions.iter().any(|union| union == inner) && !inner.contains('.'))) {
+        if nested == Some("pipe_color_union") {
             // A union of four words (pipe_color_union): its words.
             let mut words = Vec::new();
             for at in 0..4 {
@@ -422,7 +435,8 @@ impl Structures<'_> {
                 let _ = writeln!(assignments, "    {place}.ui[{at}] = {}u;", 1000 + *counter);
                 words.push((1000 + *counter).to_string());
             }
-            return Ok(format!("[{}]", words.join(", ")));
+            let words = format!("[{}]", words.join(", "));
+            return Ok((words.clone(), words));
         }
         if let Some(inner) = nested {
             return self.filled(inner, &format!("{place}."), counter, assignments);
@@ -433,23 +447,23 @@ impl Structures<'_> {
             _ => 1000 + *counter,
         };
         let numeric = element.trim();
-        let (c, debug) = match numeric {
-            "f32" | "f64" => (format!("{value}.25f"), format!("{value}.25")),
+        let (c, debug, rust) = match numeric {
+            "f32" | "f64" => (format!("{value}.25f"), format!("{value}.25"), format!("{value}.25")),
             // Flags change every second field, so that both values cross the glue (the two vertex elements, six fields
             // apart, take one each).
-            "bool" if *counter % 4 < 2 => ("0".to_string(), "false".to_string()),
-            "bool" => ("1".to_string(), "true".to_string()),
+            "bool" if *counter % 4 < 2 => ("0".to_string(), "false".to_string(), "false".to_string()),
+            "bool" => ("1".to_string(), "true".to_string(), "true".to_string()),
             "u8" | "i8" if width.is_none() => {
-                let small = 1 + *counter % 100;
-                (small.to_string(), small.to_string())
+                let small = (1 + *counter % 100).to_string();
+                (small.clone(), small.clone(), small)
             }
-            "u8" | "i8" => (value.to_string(), value.to_string()),
-            values if values.starts_with("values::") => (value.to_string(), format!("{}({value})", values.trim_start_matches("values::"))),
-            "u32" | "i32" | "u16" | "i16" | "u64" | "i64" => (value.to_string(), value.to_string()),
+            "u8" | "i8" => (value.to_string(), value.to_string(), value.to_string()),
+            values if values.starts_with("values::") => (value.to_string(), format!("{}({value})", values.trim_start_matches("values::")), format!("{values}({value})")),
+            "u32" | "i32" | "u16" | "i16" | "u64" | "i64" => (value.to_string(), value.to_string(), value.to_string()),
             other => return Err(format!("{structure}.{field}: no value for a field of {other}")),
         };
         let _ = writeln!(assignments, "    {place} = {c};");
-        Ok(debug)
+        Ok((debug, rust))
     }
 }
 
@@ -534,7 +548,7 @@ fn handle_type(kind: &str, screen: bool) -> String {
 /// The handles' type parameters of an owned structure in a method.
 fn owned_in_method(name: &str, header: &Header, screen: bool) -> String {
     let mut kinds = Vec::new();
-    kinds_named(name, header, &mut kinds, 0);
+    kinds_named(name, header, &mut kinds);
     if kinds.is_empty() {
         type_name(name)
     } else {
@@ -551,7 +565,6 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
     let made_kind = || {
         entry.roles.iter().find_map(|role| match role {
             Role::Makes(kinds) => Some(kind.unwrap_or(kinds[0])),
-            Role::TurnsOrGivesBack(_, to, _) => Some(*to),
             _ => None,
         })
     };
@@ -566,7 +579,14 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
         .enumerate()
         .map(|(at, param)| if param.name.is_empty() { format!("arg{at}") } else { field_name(&param.name) })
         .collect();
+    // Bytes read (`const void *`) are a slice whose length is the `size` parameter, wherever it stands: no parameter
+    // of their own.
     let mut skip = BTreeSet::new();
+    if function.params.iter().any(|param| param.pointers == 1 && param.base.starts_with("const ") && declared_type(&param.base) == "void")
+        && let Some(size) = function.params.iter().position(|param| param.name == "size")
+    {
+        skip.insert(size);
+    }
     for (at, param) in function.params.iter().enumerate() {
         let base = param.base.trim_start_matches("const ").trim();
         let is_const = param.base.starts_with("const ");
@@ -582,7 +602,8 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
             (b, 0) if header.value_type(b).is_some() => format!("{name}: {}", header.value_type(b).map(|(ty, _)| ty).unwrap_or_default()),
             (b, 0) if number(b).is_some() => {
                 // A count is its list's length, unless the list may be NULL (then None unbinds that many slots).
-                let list_nullable = function.params[at + 1..].iter().any(|later| later.pointers >= 1 && nullable(entry.pointer, &later.name));
+                // The count itself, a number, is no list.
+                let list_nullable = function.params[at..].iter().any(|later| later.pointers >= 1 && nullable(entry.pointer, &later.name));
                 if (is_count(function, at) && !list_nullable) || counts_the_list_before(function, at) {
                     continue;
                 }
@@ -591,12 +612,7 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
             ("void", 1) if !is_const && (entry.pointer == "context_create" || entry.pointer == "flush_frontbuffer") => {
                 format!("{name}: u64")
             }
-            ("void", 1) if is_const => {
-                if let Some(size) = function.params.iter().position(|p| p.name == "size") {
-                    skip.insert(size);
-                }
-                format!("{name}: &[u8]")
-            }
+            ("void", 1) if is_const => format!("{name}: &[u8]"),
             ("void", 1) => {
                 // An object of the pointer's kind: given back by value, bound as an option.
                 let role_kind = entry.roles.iter().find_map(|role| match role {
@@ -815,7 +831,7 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
     let crate_folder = out.join("crates").join("gallium");
     std::fs::create_dir_all(&crate_folder).map_err(|error| error.to_string())?;
     let glue_report = crate::gallium_glue::generate(&header, &structures.written, &values, &crate_folder)?;
-    let recording_report = crate::gallium_recording::generate(&written, &crate_folder)?;
+    let recording_report = crate::gallium_recording::generate(&written, &header, &crate_folder)?;
     std::fs::write(crate_folder.join("interface.rs"), &interface).map_err(|error| error.to_string())?;
     std::fs::write(crate_folder.join("values.rs"), crate::gallium_values::rust(&values, HEADER)).map_err(|error| error.to_string())?;
     std::fs::write(
@@ -831,4 +847,104 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
         FIELDS_LEFT_OUT.len(),
         values.enumerations.len()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::{Structures, filled, number, signature, zero_of};
+    use crate::cheader::{Header, read};
+    use crate::gallium::{Entry, Role};
+
+    fn structures(header: &Header) -> Structures<'_> {
+        Structures { header, written: BTreeSet::new(), text: String::new(), unmapped: Vec::new(), defines: header.defines.clone() }
+    }
+
+    /// The method of pipe_context's pointer `pointer`, declared `declaration` (a member of the structure), with `roles`.
+    fn signed(pointer: &'static str, roles: &'static [Role], declaration: &str) -> Result<(Vec<String>, String), String> {
+        let header = read(&[format!("struct pipe_context {{ {declaration}; }};")]);
+        let function = header.callbacks["pipe_context"][0].clone();
+        let entry = Entry { structure: "pipe_context", pointer, roles, caller: "" };
+        let mut structures = structures(&header);
+        signature(&entry, &function, None, &header, &mut structures)
+    }
+
+    fn params(list: &[&str]) -> Vec<String> {
+        list.iter().map(|param| (*param).to_string()).collect()
+    }
+
+    const READS: &[Role] = &[Role::Reads(&[])];
+
+    /// Each form of a parameter the rule maps, by its own declaration, and the forms it does not map refused.
+    #[test]
+    fn signatures_of_each_form() {
+        let ok = |pointer, roles, declaration: &str, expected: &[&str], ret: &str| {
+            assert_eq!(signed(pointer, roles, declaration), Ok((params(expected), ret.to_string())), "{declaration}");
+        };
+        let refused = |pointer, roles, declaration: &str, said: &str| {
+            let failed = signed(pointer, roles, declaration).expect_err(declaration);
+            assert!(failed.contains(said), "{declaration}: {failed}");
+        };
+        ok("f", &[Role::Reads(&["StreamOutputTarget"])], "void (*f)(struct pipe_context *ctx, struct pipe_stream_output_target *t)", &["t: &Arc<<Self::Screen as Gallium>::StreamOutputTarget>"], "");
+        ok("f", &[Role::Reads(&["SamplerView"])], "void (*f)(struct pipe_context *ctx, struct pipe_sampler_view *v)", &["v: &Arc<<Self::Screen as Gallium>::SamplerView>"], "");
+        ok("f", READS, "void (*f)(struct pipe_context *ctx, unsigned sample_count, unsigned index, float *out_value)", &["sample_count: u32", "index: u32"], "[f32; 2]");
+        ok("f", READS, "void (*f)(struct pipe_context *ctx, unsigned size, const void *data)", &["data: &[u8]"], "");
+        ok("f", READS, "void (*f)(struct pipe_context *ctx, unsigned size, const struct pipe_y *y)", &["size: u32", "y: &Y"], "");
+        ok("f", READS, "void (*f)(struct pipe_context *ctx, unsigned x, const struct pipe_y *ys)", &["x: u32", "ys: &Y"], "");
+        ok("f", READS, "void (*f)(struct pipe_context *ctx, unsigned num_ys, const struct pipe_y *ys)", &["ys: &[Y]"], "");
+        ok("f", READS, "void (*f)(struct pipe_context *ctx, const unsigned *offsets, unsigned num_targets)", &["offsets: &[u32]", "num_targets: u32"], "");
+        let binds: &'static [Role] = &[Role::Binds("SamplerView")];
+        ok("f", binds, "void (*f)(struct pipe_context *ctx, unsigned start, unsigned num_views, struct pipe_sampler_view **views)", &["start: u32", "views: &[Option<&Arc<<Self::Screen as Gallium>::SamplerView>>]"], "");
+        ok(
+            "set_sampler_views",
+            binds,
+            "void (*set_sampler_views)(struct pipe_context *ctx, unsigned start, unsigned num_views, struct pipe_sampler_view **views)",
+            &["start: u32", "num_views: u32", "views: Option<&[Option<&Arc<<Self::Screen as Gallium>::SamplerView>>]>"],
+            "",
+        );
+        refused("f", &[Role::TurnsOrGivesBack("Query", "ActiveQuery", "")], "struct pipe_query *(*f)(struct pipe_context *ctx, struct pipe_query *q)", "returns an object of no kind");
+        refused("f", READS, "void (*f)(struct pipe_context *ctx, unsigned *numbers)", "no rule");
+        refused("f", READS, "void (*f)(struct pipe_context *ctx, const struct other *o)", "no rule");
+        refused("f", READS, "void (*f)(struct pipe_context *ctx, struct other o)", "no rule");
+    }
+
+    /// The numbers of C's scalar types, a declared value's among them.
+    #[test]
+    fn numbers_of_declared_values() {
+        for declared in ["enum pipe_format", "mesa_shader_stage", "gl_shader_stage"] {
+            assert_eq!(number(declared), Some("u32"), "{declared}");
+        }
+        assert_eq!(number("struct pipe_box"), None);
+    }
+
+    /// The zero of a declared value's type is that type holding 0.
+    #[test]
+    fn zero_of_a_declared_value() {
+        assert_eq!(zero_of("values::Format"), "values::Format(0)");
+        assert_eq!(zero_of("[values::Format; 2]"), "[values::Format(0); 2]");
+    }
+
+    /// A default of pipe_caps the structure does not carry is reported, one it carries is not.
+    #[test]
+    fn caps_defaults_name_carried_fields() {
+        let header = Header::default();
+        let mut structures = structures(&header);
+        structures.write_defaults("pipe_caps", "Mesa's", &[("graphics".to_string(), "bool".to_string())]);
+        assert!(structures.unmapped.contains(&"pipe_caps: the default of accelerated, which the structure does not carry".to_string()), "{:?}", structures.unmapped);
+        assert!(!structures.unmapped.iter().any(|problem| problem.contains("of graphics,")));
+        assert!(structures.text.contains("            graphics: true,\n"), "{}", structures.text);
+    }
+
+    /// The caller's filling: a bit-field of 32 bits takes the counter's value whole, a narrower one a value within it;
+    /// flags change every second field, so that both values cross.
+    #[test]
+    fn filled_values_fit_their_fields() {
+        let header = read(&["struct s { unsigned a:32; unsigned b:3; bool c; bool d; bool e; bool f; };".to_string()]);
+        let mut counter = 0;
+        let (assignments, debug, rust) = filled(&header, "s", "x->", &mut counter).expect("filled");
+        assert_eq!(assignments, "    x->a = 1001;\n    x->b = 3;\n    x->c = 1;\n    x->d = 0;\n    x->e = 0;\n    x->f = 1;\n");
+        assert_eq!(debug, "S { a: 1001, b: 3, c: true, d: false, e: false, f: true }");
+        assert_eq!(rust, debug);
+    }
 }

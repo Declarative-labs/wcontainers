@@ -1,0 +1,361 @@
+CENSUS Windows.Win32.Graphics.Direct3D11: interfaces 92 methods 521 records {"Delegate": 2, "Enum": 105, "Struct": 189, "Union": 1} constants 504 functions by library {"d3d11.dll": 2, "d3dcompiler_47.dll": 1, "d3dcsx.dll": 9}
+CENSUS Windows.Win32.Graphics.Dxgi: interfaces 47 methods 191 records {"Enum": 35, "Struct": 31} constants 41 functions by library {"dxgi.dll": 6}
+CENSUS Windows.Win32.Graphics.Dxgi.Common: interfaces 0 methods 0 records {"Enum": 6, "Struct": 9} constants 9 functions by library {}
+CENSUS Windows.Win32.Graphics.Direct3D: interfaces 3 methods 6 records {"Delegate": 1, "Enum": 26, "Struct": 3} constants 57 functions by library {}
+CENSUS Windows.Win32.Graphics.Direct3D12: interfaces 101 methods 389 records {"Delegate": 8, "Enum": 169, "Struct": 280} constants 476 functions by library {"d3d12.dll": 8}
+CENSUS Windows.Win32.Graphics.Direct3D10: interfaces 55 methods 341 records {"Delegate": 2, "Enum": 41, "Struct": 79} constants 301 functions by library {"d3d10.dll": 27, "d3d10_1.dll": 2}
+CENSUS parameter attributes of every method: {"AssociatedEnum": 7, "ComOutPtr": 141, "Const": 551, "MemorySize": 79, "NativeArrayInfo": 297, "RetVal": 11}
+INTERFACE Windows.Win32.Graphics.Direct3D.ID3DBlob : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D.ID3DDestructionNotifier : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D.ID3DInclude : None methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Asynchronous : Some("ID3D10DeviceChild") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10BlendState : Some("ID3D10DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10BlendState1 : Some("ID3D10BlendState") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Buffer : Some("ID3D10Resource") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Counter : Some("ID3D10Asynchronous") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Debug : Some("IUnknown") methods 7
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10DepthStencilState : Some("ID3D10DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10DepthStencilView : Some("ID3D10View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Device : Some("IUnknown") methods 95
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Device1 : Some("ID3D10Device") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10DeviceChild : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Effect : Some("IUnknown") methods 13
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectBlendVariable : Some("ID3D10EffectVariable") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectConstantBuffer : Some("ID3D10EffectVariable") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectDepthStencilVariable : Some("ID3D10EffectVariable") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectDepthStencilViewVariable : Some("ID3D10EffectVariable") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectMatrixVariable : Some("ID3D10EffectVariable") methods 8
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectPass : None methods 9
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectPool : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectRasterizerVariable : Some("ID3D10EffectVariable") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectRenderTargetViewVariable : Some("ID3D10EffectVariable") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectSamplerVariable : Some("ID3D10EffectVariable") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectScalarVariable : Some("ID3D10EffectVariable") methods 12
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectShaderResourceVariable : Some("ID3D10EffectVariable") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectShaderVariable : Some("ID3D10EffectVariable") methods 6
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectStringVariable : Some("ID3D10EffectVariable") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectTechnique : None methods 7
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectType : None methods 7
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectVariable : None methods 25
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10EffectVectorVariable : Some("ID3D10EffectVariable") methods 12
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10GeometryShader : Some("ID3D10DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10InfoQueue : Some("IUnknown") methods 35
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10InputLayout : Some("ID3D10DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Multithread : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10PixelShader : Some("ID3D10DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Predicate : Some("ID3D10Query") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Query : Some("ID3D10Asynchronous") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10RasterizerState : Some("ID3D10DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10RenderTargetView : Some("ID3D10View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Resource : Some("ID3D10DeviceChild") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10SamplerState : Some("ID3D10DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10ShaderReflection : Some("IUnknown") methods 6
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10ShaderReflection1 : Some("IUnknown") methods 15
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10ShaderReflectionConstantBuffer : None methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10ShaderReflectionType : None methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10ShaderReflectionVariable : None methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10ShaderResourceView : Some("ID3D10View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10ShaderResourceView1 : Some("ID3D10ShaderResourceView") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10StateBlock : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10SwitchToRef : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Texture1D : Some("ID3D10Resource") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Texture2D : Some("ID3D10Resource") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10Texture3D : Some("ID3D10Resource") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10VertexShader : Some("ID3D10DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D10.ID3D10View : Some("ID3D10DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Asynchronous : Some("ID3D11DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11AuthenticatedChannel : Some("ID3D11DeviceChild") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11BlendState : Some("ID3D11DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11BlendState1 : Some("ID3D11BlendState") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Buffer : Some("ID3D11Resource") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ClassInstance : Some("ID3D11DeviceChild") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ClassLinkage : Some("ID3D11DeviceChild") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11CommandList : Some("ID3D11DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ComputeShader : Some("ID3D11DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Counter : Some("ID3D11Asynchronous") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11CryptoSession : Some("ID3D11DeviceChild") methods 5
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Debug : Some("IUnknown") methods 9
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11DepthStencilState : Some("ID3D11DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11DepthStencilView : Some("ID3D11View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Device : Some("IUnknown") methods 40
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Device1 : Some("ID3D11Device") methods 7
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Device2 : Some("ID3D11Device1") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Device3 : Some("ID3D11Device2") methods 11
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Device4 : Some("ID3D11Device3") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Device5 : Some("ID3D11Device4") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11DeviceChild : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11DeviceContext : Some("ID3D11DeviceChild") methods 108
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11DeviceContext1 : Some("ID3D11DeviceContext") methods 19
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11DeviceContext2 : Some("ID3D11DeviceContext1") methods 10
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11DeviceContext3 : Some("ID3D11DeviceContext2") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11DeviceContext4 : Some("ID3D11DeviceContext3") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11DomainShader : Some("ID3D11DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Fence : Some("ID3D11DeviceChild") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11FunctionLinkingGraph : Some("IUnknown") methods 8
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11FunctionParameterReflection : None methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11FunctionReflection : None methods 7
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11GeometryShader : Some("ID3D11DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11HullShader : Some("ID3D11DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11InfoQueue : Some("IUnknown") methods 35
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11InputLayout : Some("ID3D11DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11LibraryReflection : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Linker : Some("IUnknown") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11LinkingNode : Some("IUnknown") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Module : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ModuleInstance : Some("IUnknown") methods 10
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Multithread : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11PixelShader : Some("ID3D11DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Predicate : Some("ID3D11Query") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Query : Some("ID3D11Asynchronous") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Query1 : Some("ID3D11Query") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11RasterizerState : Some("ID3D11DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11RasterizerState1 : Some("ID3D11RasterizerState") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11RasterizerState2 : Some("ID3D11RasterizerState1") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11RefDefaultTrackingOptions : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11RefTrackingOptions : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11RenderTargetView : Some("ID3D11View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11RenderTargetView1 : Some("ID3D11RenderTargetView") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Resource : Some("ID3D11DeviceChild") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11SamplerState : Some("ID3D11DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ShaderReflection : Some("IUnknown") methods 19
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ShaderReflectionConstantBuffer : None methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ShaderReflectionType : None methods 11
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ShaderReflectionVariable : None methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ShaderResourceView : Some("ID3D11View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ShaderResourceView1 : Some("ID3D11ShaderResourceView") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ShaderTrace : Some("IUnknown") methods 8
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11ShaderTraceFactory : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11SwitchToRef : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Texture1D : Some("ID3D11Resource") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Texture2D : Some("ID3D11Resource") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Texture2D1 : Some("ID3D11Texture2D") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Texture3D : Some("ID3D11Resource") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11Texture3D1 : Some("ID3D11Texture3D") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11TracingDevice : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11UnorderedAccessView : Some("ID3D11View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11UnorderedAccessView1 : Some("ID3D11UnorderedAccessView") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VertexShader : Some("ID3D11DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoContext : Some("ID3D11DeviceChild") methods 58
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoContext1 : Some("ID3D11VideoContext") methods 14
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoContext2 : Some("ID3D11VideoContext1") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoContext3 : Some("ID3D11VideoContext2") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoDecoder : Some("ID3D11DeviceChild") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoDecoderOutputView : Some("ID3D11View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoDevice : Some("IUnknown") methods 17
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoDevice1 : Some("ID3D11VideoDevice") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoDevice2 : Some("ID3D11VideoDevice1") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoProcessor : Some("ID3D11DeviceChild") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoProcessorEnumerator : Some("ID3D11DeviceChild") methods 6
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoProcessorEnumerator1 : Some("ID3D11VideoProcessorEnumerator") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoProcessorInputView : Some("ID3D11View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11VideoProcessorOutputView : Some("ID3D11View") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3D11View : Some("ID3D11DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3DDeviceContextState : Some("ID3D11DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3DUserDefinedAnnotation : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3DX11FFT : Some("IUnknown") methods 7
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3DX11Scan : Some("IUnknown") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D11.ID3DX11SegmentedScan : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12CommandAllocator : Some("ID3D12Pageable") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12CommandList : Some("ID3D12DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12CommandQueue : Some("ID3D12Pageable") methods 11
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12CommandSignature : Some("ID3D12Pageable") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Debug : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Debug1 : Some("IUnknown") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Debug2 : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Debug3 : Some("ID3D12Debug") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Debug4 : Some("ID3D12Debug3") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Debug5 : Some("ID3D12Debug4") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Debug6 : Some("ID3D12Debug5") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DebugCommandList : Some("IUnknown") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DebugCommandList1 : Some("IUnknown") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DebugCommandList2 : Some("ID3D12DebugCommandList") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DebugCommandList3 : Some("ID3D12DebugCommandList2") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DebugCommandQueue : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DebugCommandQueue1 : Some("ID3D12DebugCommandQueue") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DebugDevice : Some("IUnknown") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DebugDevice1 : Some("IUnknown") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DebugDevice2 : Some("ID3D12DebugDevice") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DescriptorHeap : Some("ID3D12Pageable") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device : Some("ID3D12Object") methods 37
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device1 : Some("ID3D12Device") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device10 : Some("ID3D12Device9") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device11 : Some("ID3D12Device10") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device12 : Some("ID3D12Device11") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device13 : Some("ID3D12Device12") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device14 : Some("ID3D12Device13") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device2 : Some("ID3D12Device1") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device3 : Some("ID3D12Device2") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device4 : Some("ID3D12Device3") methods 6
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device5 : Some("ID3D12Device4") methods 8
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device6 : Some("ID3D12Device5") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device7 : Some("ID3D12Device6") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device8 : Some("ID3D12Device7") methods 5
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Device9 : Some("ID3D12Device8") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceChild : Some("ID3D12Object") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceConfiguration : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceConfiguration1 : Some("ID3D12DeviceConfiguration") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceFactory : Some("IUnknown") methods 7
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceRemovedExtendedData : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceRemovedExtendedData1 : Some("ID3D12DeviceRemovedExtendedData") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceRemovedExtendedData2 : Some("ID3D12DeviceRemovedExtendedData1") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceRemovedExtendedDataSettings : Some("IUnknown") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceRemovedExtendedDataSettings1 : Some("ID3D12DeviceRemovedExtendedDataSettings") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12DeviceRemovedExtendedDataSettings2 : Some("ID3D12DeviceRemovedExtendedDataSettings1") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Fence : Some("ID3D12Pageable") methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Fence1 : Some("ID3D12Fence") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12FunctionParameterReflection : None methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12FunctionReflection : None methods 7
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GBVDiagnostics : Some("IUnknown") methods 6
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList : Some("ID3D12CommandList") methods 51
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList1 : Some("ID3D12GraphicsCommandList") methods 6
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList10 : Some("ID3D12GraphicsCommandList9") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList2 : Some("ID3D12GraphicsCommandList1") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList3 : Some("ID3D12GraphicsCommandList2") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList4 : Some("ID3D12GraphicsCommandList3") methods 9
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList5 : Some("ID3D12GraphicsCommandList4") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList6 : Some("ID3D12GraphicsCommandList5") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList7 : Some("ID3D12GraphicsCommandList6") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList8 : Some("ID3D12GraphicsCommandList7") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12GraphicsCommandList9 : Some("ID3D12GraphicsCommandList8") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Heap : Some("ID3D12Pageable") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Heap1 : Some("ID3D12Heap") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12InfoQueue : Some("IUnknown") methods 35
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12InfoQueue1 : Some("ID3D12InfoQueue") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12LibraryReflection : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12LifetimeOwner : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12LifetimeTracker : Some("ID3D12DeviceChild") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12ManualWriteTrackingResource : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12MetaCommand : Some("ID3D12Pageable") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Object : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Pageable : Some("ID3D12DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12PipelineLibrary : Some("ID3D12DeviceChild") methods 5
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12PipelineLibrary1 : Some("ID3D12PipelineLibrary") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12PipelineState : Some("ID3D12Pageable") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12ProtectedResourceSession : Some("ID3D12ProtectedSession") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12ProtectedResourceSession1 : Some("ID3D12ProtectedResourceSession") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12ProtectedSession : Some("ID3D12DeviceChild") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12QueryHeap : Some("ID3D12Pageable") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Resource : Some("ID3D12Pageable") methods 7
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Resource1 : Some("ID3D12Resource") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Resource2 : Some("ID3D12Resource1") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12RootSignature : Some("ID3D12DeviceChild") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12RootSignatureDeserializer : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12SDKConfiguration : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12SDKConfiguration1 : Some("ID3D12SDKConfiguration") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12ShaderCacheSession : Some("ID3D12DeviceChild") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12ShaderReflection : Some("IUnknown") methods 19
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12ShaderReflectionConstantBuffer : None methods 3
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12ShaderReflectionType : None methods 11
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12ShaderReflectionVariable : None methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12SharingContract : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12StateObject : Some("ID3D12Pageable") methods 0
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12StateObjectProperties : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12StateObjectProperties1 : Some("ID3D12StateObjectProperties") methods 1
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12SwapChainAssistant : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12Tools : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12VersionedRootSignatureDeserializer : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12VirtualizationGuestDevice : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Direct3D12.ID3D12WorkGraphProperties : Some("IUnknown") methods 13
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIAdapter : Some("IDXGIObject") methods 3
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIAdapter1 : Some("IDXGIAdapter") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIAdapter2 : Some("IDXGIAdapter1") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIAdapter3 : Some("IDXGIAdapter2") methods 6
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIAdapter4 : Some("IDXGIAdapter3") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDebug : Some("IUnknown") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDebug1 : Some("IDXGIDebug") methods 3
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDecodeSwapChain : Some("IUnknown") methods 9
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDevice : Some("IDXGIObject") methods 5
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDevice1 : Some("IDXGIDevice") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDevice2 : Some("IDXGIDevice1") methods 3
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDevice3 : Some("IDXGIDevice2") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDevice4 : Some("IDXGIDevice3") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDeviceSubObject : Some("IDXGIObject") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIDisplayControl : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIFactory : Some("IDXGIObject") methods 5
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIFactory1 : Some("IDXGIFactory") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIFactory2 : Some("IDXGIFactory1") methods 11
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIFactory3 : Some("IDXGIFactory2") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIFactory4 : Some("IDXGIFactory3") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIFactory5 : Some("IDXGIFactory4") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIFactory6 : Some("IDXGIFactory5") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIFactory7 : Some("IDXGIFactory6") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIFactoryMedia : Some("IUnknown") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIInfoQueue : Some("IUnknown") methods 37
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIKeyedMutex : Some("IDXGIDeviceSubObject") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIObject : Some("IUnknown") methods 4
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIOutput : Some("IDXGIObject") methods 12
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIOutput1 : Some("IDXGIOutput") methods 4
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIOutput2 : Some("IDXGIOutput1") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIOutput3 : Some("IDXGIOutput2") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIOutput4 : Some("IDXGIOutput3") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIOutput5 : Some("IDXGIOutput4") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIOutput6 : Some("IDXGIOutput5") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIOutputDuplication : Some("IDXGIObject") methods 8
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIResource : Some("IDXGIDeviceSubObject") methods 4
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGIResource1 : Some("IDXGIResource") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGISurface : Some("IDXGIDeviceSubObject") methods 3
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGISurface1 : Some("IDXGISurface") methods 2
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGISurface2 : Some("IDXGISurface1") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGISwapChain : Some("IDXGIDeviceSubObject") methods 10
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGISwapChain1 : Some("IDXGISwapChain") methods 11
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGISwapChain2 : Some("IDXGISwapChain1") methods 7
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGISwapChain3 : Some("IDXGISwapChain2") methods 4
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGISwapChain4 : Some("IDXGISwapChain3") methods 1
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGISwapChainMedia : Some("IUnknown") methods 3
+INTERFACE Windows.Win32.Graphics.Dxgi.IDXGraphicsAnalysis : Some("IUnknown") methods 2
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CompileEffectFromMemory Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CompileShader Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CreateBlob Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CreateDevice Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CreateDevice1 Some("d3d10_1.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CreateDeviceAndSwapChain Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CreateDeviceAndSwapChain1 Some("d3d10_1.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CreateEffectFromMemory Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CreateEffectPoolFromMemory Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10CreateStateBlock Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10DisassembleEffect Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10DisassembleShader Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10GetGeometryShaderProfile Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10GetInputAndOutputSignatureBlob Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10GetInputSignatureBlob Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10GetOutputSignatureBlob Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10GetPixelShaderProfile Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10GetShaderDebugInfo Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10GetVertexShaderProfile Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10PreprocessShader Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10ReflectShader Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10StateBlockMaskDifference Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10StateBlockMaskDisableAll Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10StateBlockMaskDisableCapture Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10StateBlockMaskEnableAll Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10StateBlockMaskEnableCapture Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10StateBlockMaskGetSetting Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10StateBlockMaskIntersect Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D10.D3D10StateBlockMaskUnion Some("d3d10.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3D11CreateDevice Some("d3d11.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3D11CreateDeviceAndSwapChain Some("d3d11.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DDisassemble11Trace Some("D3DCOMPILER_47.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DX11CreateFFT Some("d3dcsx.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DX11CreateFFT1DComplex Some("d3dcsx.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DX11CreateFFT1DReal Some("d3dcsx.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DX11CreateFFT2DComplex Some("d3dcsx.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DX11CreateFFT2DReal Some("d3dcsx.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DX11CreateFFT3DComplex Some("d3dcsx.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DX11CreateFFT3DReal Some("d3dcsx.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DX11CreateScan Some("d3dcsx.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D11.D3DX11CreateSegmentedScan Some("d3dcsx.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D12.D3D12CreateDevice Some("d3d12.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D12.D3D12CreateRootSignatureDeserializer Some("d3d12.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D12.D3D12CreateVersionedRootSignatureDeserializer Some("d3d12.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D12.D3D12EnableExperimentalFeatures Some("d3d12.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D12.D3D12GetDebugInterface Some("d3d12.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D12.D3D12GetInterface Some("d3d12.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D12.D3D12SerializeRootSignature Some("d3d12.dll")
+FUNCTION Windows.Win32.Graphics.Direct3D12.D3D12SerializeVersionedRootSignature Some("d3d12.dll")
+FUNCTION Windows.Win32.Graphics.Dxgi.CreateDXGIFactory Some("dxgi.dll")
+FUNCTION Windows.Win32.Graphics.Dxgi.CreateDXGIFactory1 Some("dxgi.dll")
+FUNCTION Windows.Win32.Graphics.Dxgi.CreateDXGIFactory2 Some("dxgi.dll")
+FUNCTION Windows.Win32.Graphics.Dxgi.DXGIDeclareAdapterRemovalSupport Some("dxgi.dll")
+FUNCTION Windows.Win32.Graphics.Dxgi.DXGIDisableVBlankVirtualization Some("dxgi.dll")
+FUNCTION Windows.Win32.Graphics.Dxgi.DXGIGetDebugInterface1 Some("dxgi.dll")
+CENSUS record attributes: {"Documentation": 869, "Flags": 86, "UnmanagedFunctionPointer": 13}
