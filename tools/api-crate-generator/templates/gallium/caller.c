@@ -83,8 +83,8 @@ static int states(struct pipe_context *ctx)
     void *samplers[2] = {ctx->create_sampler_state(ctx, &first), ctx->create_sampler_state(ctx, &second)};
     if (!samplers[0] || !samplers[1])
         return 13;
-    /* At slots 3 and 4 of the vertex stage, so the stage and the first slot are values of their own. */
-    ctx->bind_sampler_states(ctx, MESA_SHADER_VERTEX, 3, 2, samplers);
+    /* At slots 3 and 4 of the geometry stage, so the stage and the first slot are values of their own. */
+    ctx->bind_sampler_states(ctx, MESA_SHADER_GEOMETRY, 3, 2, samplers);
     ctx->delete_sampler_state(ctx, samplers[0]);
     ctx->delete_sampler_state(ctx, samplers[1]);
 

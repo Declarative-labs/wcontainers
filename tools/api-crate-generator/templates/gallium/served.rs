@@ -53,8 +53,32 @@ const EXPECTED: &[&[&str]] = &[
 /// How every case makes its context: caller.c's private pointer (0x5a5a) and PIPE_CONTEXT_ROBUST_BUFFER_ACCESS (1 << 2).
 const CONTEXT_CREATED: &str = "context_create priv_ 23130 flags 4";
 
-/// How the first case binds its two samplers: the vertex stage (MESA_SHADER_VERTEX, 0), from slot 3.
-const BOUND_SAMPLERS: &str = "bind_sampler_states shader MesaShaderStage(0) start_slot 3 samplers [Some(";
+/// The first case's whole log, as the implementation must receive it: each state as caller.c filled it (`FILLED`),
+/// each object the recording made (numbered in the order made) bound, unbound and given back, the samplers bound at the
+/// geometry stage (MESA_SHADER_GEOMETRY, 3) from slot 3.
+fn first_case() -> Vec<String> {
+    let object = |kind: &str, number: u32| format!("Object {{ kind: {kind:?}, number: {number} }}");
+    let mut log = vec![CONTEXT_CREATED.to_string()];
+    for (at, kind, call) in [(0, "Blend", "blend"), (1, "DepthStencilAlpha", "depth_stencil_alpha"), (2, "Rasterizer", "rasterizer")] {
+        log.push(FILLED[at].to_string());
+        log.push(format!("bind_{call}_state arg1 Some({})", object(kind, at.try_into().unwrap_or(0))));
+        if at == 0 {
+            log.push("bind_blend_state arg1 None".to_string());
+        }
+        log.push(format!("delete_{call}_state arg1 {}", object(kind, at.try_into().unwrap_or(0))));
+    }
+    log.push(FILLED[3].to_string());
+    log.push(FILLED[4].to_string());
+    log.push(format!("bind_sampler_states shader MesaShaderStage(3) start_slot 3 samplers [Some({}), Some({})]", object("Sampler", 3), object("Sampler", 4)));
+    log.push(format!("delete_sampler_state arg1 {}", object("Sampler", 3)));
+    log.push(format!("delete_sampler_state arg1 {}", object("Sampler", 4)));
+    log.push(FILLED[5].to_string());
+    log.push(format!("bind_vertex_elements_state arg1 Some({})", object("VertexElements", 5)));
+    log.push(format!("delete_vertex_elements_state arg1 {}", object("VertexElements", 5)));
+    log.push("destroy".to_string());
+    log.push("destroy".to_string());
+    log
+}
 
 /// One case on a new screen of the recording implementation: the case's status and the log.
 fn run(which: i32) -> (i32, Vec<String>) {
@@ -83,15 +107,10 @@ fn holds(which: i32) -> Result<(), String> {
         return Err(format!("case {which}: the context made as {:?}, expected {CONTEXT_CREATED}", calls.first()));
     }
     if which == 0 {
-        // Each state's call as received, in full and in order: every field of every state the value caller.c set.
-        let made: Vec<&String> = calls.iter().filter(|call| call.starts_with("create_")).collect();
-        if made.len() != FILLED.len() || made.iter().zip(FILLED).any(|(call, expected)| call.as_str() != *expected) {
-            let all = calls.join("\n");
-            return Err(format!("case 0: the states as received differ from the states caller.c made:\nreceived:\n{all}\nexpected:\n{}", FILLED.join("\n")));
-        }
-        let bound: Vec<&String> = calls.iter().filter(|call| call.starts_with("bind_sampler_states")).collect();
-        if bound.len() != 1 || !bound[0].starts_with(BOUND_SAMPLERS) || bound[0].matches("Some(").count() != 2 {
-            return Err(format!("case 0: the samplers bound as {bound:?}, expected two from {BOUND_SAMPLERS}"));
+        // The whole log, line by line: every argument of every call as caller.c made it.
+        let expected = first_case();
+        if calls != expected {
+            return Err(format!("case 0: the log differs from what caller.c made:\nreceived:\n{}\nexpected:\n{}", calls.join("\n"), expected.join("\n")));
         }
     }
     Ok(())
