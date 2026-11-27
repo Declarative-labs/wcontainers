@@ -7402,7 +7402,12 @@ pub fn the_largest_16_bit_index_without_restart_is_a_vertex<B: Gpu>(mut b: B) {
     const LAST: usize = 0xffff;
     // Vertex 0 at (-1, -1), 1 at (-1, 1), 2 at (1, 1), the last at (1, -1); the rest unused.
     let mut verts = vec![9.0f32; (LAST + 1) * 3];
-    for (vertex, (x, y)) in [(0, (-1.0, -1.0)), (1, (-1.0, 1.0)), (2, (1.0, 1.0)), (LAST, (1.0, -1.0))] {
+    for (vertex, (x, y)) in [
+        (0, (-1.0, -1.0)),
+        (1, (-1.0, 1.0)),
+        (2, (1.0, 1.0)),
+        (LAST, (1.0, -1.0)),
+    ] {
         verts[vertex * 3..vertex * 3 + 3].copy_from_slice(&[x, y, 0.2]);
     }
     let vb = vertex_buffer(&mut b, &verts);
@@ -7471,10 +7476,7 @@ pub fn a_24_bit_depth_copy_after_a_narrow_depth_range_copies_out_as_written<B: G
     {
         return;
     }
-    let vb = vertex_buffer(
-        &mut b,
-        &[-1.0, -1.0, 0.2, -1.0, 3.0, 0.2, 3.0, -1.0, 0.2],
-    );
+    let vb = vertex_buffer(&mut b, &[-1.0, -1.0, 0.2, -1.0, 3.0, 0.2, 3.0, -1.0, 0.2]);
     let p = program(&mut b, VALUES, "flat", "red");
     let bl = blend(&mut b, opaque());
     let ds = depth_test(&mut b, None, false);

@@ -1106,6 +1106,10 @@ fn the_comparison_pass_is_made_once_a_depth_format() {
     read(&mut b, &plain, 4);
     assert_eq!(b.counters().pipelines, before, "a format read before");
     read(&mut b, &stencilled, 4);
-    assert_eq!(b.counters().pipelines, before + 1, "the other 24-bit format");
+    assert_eq!(
+        b.counters().pipelines,
+        before + 1,
+        "the other 24-bit format"
+    );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

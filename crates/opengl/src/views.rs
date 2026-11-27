@@ -78,10 +78,13 @@ impl<B: Gpu> Drop for SamplerView<B> {
     /// The views and textures it made go when the device is next used; its resource goes with its
     /// last handle.
     fn drop(&mut self) {
-        let views = [self.view.as_ref().ok(), self.faces.as_ref().and_then(|f| f.as_ref().ok())]
-            .into_iter()
-            .flatten()
-            .chain(self.layers.iter().flatten());
+        let views = [
+            self.view.as_ref().ok(),
+            self.faces.as_ref().and_then(|f| f.as_ref().ok()),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(self.layers.iter().flatten());
         for made in views {
             retire(&self.retired, Object::TextureView(made.clone()));
         }
@@ -142,10 +145,7 @@ impl<B: Gpu> SamplerView<B> {
     /// view's range, or a twin's levels and layers, as they are now; nothing for another view.
     pub fn copy_texels(&self, backend: &mut B) -> Result<(), String> {
         if let Some(twin) = &self.twin {
-            let (source, desc) = self
-                .resource
-                .texture()
-                .ok_or("a twin of a buffer's view")?;
+            let (source, desc) = self.resource.texture().ok_or("a twin of a buffer's view")?;
             backend.record_slow_path(SlowPath::ReinterpretCopy);
             for level in 0..twin.levels {
                 let mip = twin.first_level + level;
@@ -447,8 +447,8 @@ fn texel_buffer<B: Gpu>(
     backend: &mut B,
     template: &SamplerViewTemplate,
 ) -> Result<(TexelCopy<B>, B::TextureView), &'static str> {
-    let format = crate::format::format(template.format.0)
-        .ok_or("a texel buffer format the device lacks")?;
+    let format =
+        crate::format::format(template.format.0).ok_or("a texel buffer format the device lacks")?;
     let (_, _, texel_bytes) = FORMAT_FACTS[format as usize].block;
     let range = template.u.buf;
     let length = range.size / texel_bytes;
