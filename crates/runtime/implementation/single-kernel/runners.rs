@@ -373,12 +373,14 @@ mod tests {
         RunsThenIdle,
         /// Runs until its execution is ended, then its host thread panics.
         RunsThenPanics,
+        /// Runs until its execution is ended, then returns `Finished` with the given end.
+        RunsThenFinishes(ProcessEnd),
         /// Returns `Idle` at once, with the given time to be run again at.
         Idles(Option<Duration>),
         /// Returns `Suspended` at once.
         Suspends,
-        /// Its host thread panics at once.
-        Panics,
+        /// Its host thread panics once the gate holds.
+        Panics(Gate),
     }
 
     /// The step that finishes at once.
@@ -433,7 +435,14 @@ mod tests {
                     self.board.change(|state| state.idled += 1);
                     StopReason::Suspended
                 }
-                Step::Panics => panic!("the runner's host thread dies at once"),
+                Step::RunsThenFinishes(end) => {
+                    self.run_until_ended();
+                    StopReason::Finished(end)
+                }
+                Step::Panics(gate) => {
+                    self.board.wait_until(gate);
+                    panic!("the runner's host thread dies")
+                }
             }
         }
     }
@@ -689,8 +698,8 @@ mod tests {
     fn a_finish_after_a_panic_ends_the_container_as_panicked() {
         let setup = setup(
             vec![
-                vec![Step::Panics],
-                vec![Step::Finishes(ProcessEnd::Exited { code: 0 }, Gate::Ended)],
+                vec![Step::Panics(Gate::Running(1))],
+                vec![Step::RunsThenFinishes(ProcessEnd::Exited { code: 0 })],
             ],
             LONG_POLL,
         );
@@ -701,8 +710,11 @@ mod tests {
     fn the_first_finish_stands() {
         let setup = setup(
             vec![
-                vec![Step::Finishes(ProcessEnd::Exited { code: 1 }, Gate::Now)],
-                vec![Step::Finishes(ProcessEnd::Exited { code: 2 }, Gate::Ended)],
+                vec![Step::Finishes(
+                    ProcessEnd::Exited { code: 1 },
+                    Gate::Running(1),
+                )],
+                vec![Step::RunsThenFinishes(ProcessEnd::Exited { code: 2 })],
             ],
             LONG_POLL,
         );
@@ -714,7 +726,7 @@ mod tests {
 
     #[test]
     fn a_container_that_panicked_is_not_run_again() {
-        let setup = setup(vec![vec![Step::Panics]], LONG_POLL);
+        let setup = setup(vec![vec![Step::Panics(Gate::Now)]], LONG_POLL);
         let (first, container) = run_bounded(setup.container).expect("the first run ends");
         assert_eq!(first, StopReason::Panicked);
         assert_eq!(stopped(container), Some(StopReason::Panicked));
