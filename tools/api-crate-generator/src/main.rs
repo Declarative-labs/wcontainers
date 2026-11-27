@@ -8,6 +8,7 @@
 mod api;
 mod complete;
 mod cheader;
+mod mesacompiler;
 mod emit;
 mod khronos;
 mod layout;
@@ -89,6 +90,20 @@ fn main() -> ExitCode {
         return match texts {
             Ok(texts) => {
                 print!("{}", cheader::census(&cheader::read(&texts)));
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("api-crate-generator: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    // The Mesa compiler's crates from the bridge's headers.
+    if let ("mesa-compiler", [flat, bridge, out]) = (command.as_str(), rest) {
+        let texts: Result<Vec<String>, String> = [flat, bridge].iter().map(|path| std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))).collect();
+        return match texts.and_then(|texts| mesacompiler::generate(&texts, std::path::Path::new(out))) {
+            Ok(report) => {
+                print!("{report}");
                 ExitCode::SUCCESS
             }
             Err(error) => {

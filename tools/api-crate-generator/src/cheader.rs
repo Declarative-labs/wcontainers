@@ -131,6 +131,11 @@ pub fn read(texts: &[String]) -> Header {
     header
 }
 
+/// One row of the Mesa compiler's mapping rule, for the crate writer.
+pub fn row_of(function: &CFunction, param: &CParam, header: &Header) -> Option<&'static str> {
+    row(function, param, header)
+}
+
 /// One row of the Mesa compiler's mapping rule.
 fn row(function: &CFunction, param: &CParam, header: &Header) -> Option<&'static str> {
     let base = param.base.trim_start_matches("const ").trim();

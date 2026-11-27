@@ -1,0 +1,20 @@
+[package]
+name = "wcontainers-mesa-compiler-direct"
+description = "Mesa's compiler through our C bridge, every bridge function a safe method of wcontainers-mesa-compiler's trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-mesa-compiler = { path = "../.." }
+
+# An outside API's direct crate: it denies unsafe code, so that each use is marked with the fact it rests on.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
