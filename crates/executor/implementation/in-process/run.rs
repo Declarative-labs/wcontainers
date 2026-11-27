@@ -152,16 +152,11 @@ impl InProcessThread {
                 write,
                 alignment,
             } => {
-                // A translated piece branches only to its own instructions, the slot table and the floor, all aligned:
-                // an alignment fault at the pc is never one, and is an access like any other.
-                Exit::Taken(if alignment && address == self.frame.registers.sp {
-                    Taken::StackAlignment
-                } else {
-                    Taken::Access {
-                        alignment,
-                        fault: address,
-                        write,
-                    }
+                // The stop crate tells an alignment fault through the stack pointer by the access's operand.
+                Exit::Taken(Taken::Access {
+                    alignment,
+                    fault: address,
+                    write,
                 })
             }
             RunEnd::Raised(_) => Exit::Taken(Taken::Other),

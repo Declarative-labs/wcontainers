@@ -501,6 +501,7 @@ impl<'run> Run<'run> {
             self.thread
                 .enter(way, &self.state, self.page.clone(), &self.float, piece.at);
             match self.run_piece(way, &piece, interruption) {
+                // A landing is no trap: an execution goes on from it, uncounted by the slicer.
                 Some(Trap::Landed) if !alone => {}
                 Some(trap) => return trap,
                 None => {}

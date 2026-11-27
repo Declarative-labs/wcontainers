@@ -910,19 +910,21 @@ fn an_execution_on_a_thread_that_already_runs_one_ends_in_an_serror() {
     assert!(handler.calls.is_empty());
 }
 
-/// `svc #0x1234`, `subs x0, x1, x1`, `dup v1.2d, x5`, `msr fpsr, x6`, `nop`, `mrs x0, cntvct_el0`
+/// `svc #0x1234`, `subs x0, x1, x1`, `dup v1.2d, x5`, `msr fpsr, x6`, `mrs x7, fpsr`, `nop`, `mrs x0, cntvct_el0`
 /// ([Arm ARM, C6.2 and C7.2](https://developer.arm.com/documentation/ddi0602/latest)).
 const SYSTEM_CALL_1234: u32 = 0xd402_4681;
 const IMMEDIATE: u16 = 0x1234;
 const SUBTRACT_FLAGS: u32 = 0xeb01_0020;
 const DUPLICATE_X5: u32 = 0x4e08_0ca1;
 const WRITE_FPSR: u32 = 0xd51b_4426;
+const READ_FPSR: u32 = 0xd53b_4427;
 const NOTHING_DONE: u32 = 0xd503_201f;
 const READ_COUNTER: u32 = 0xd53b_e040;
 /// The registers those read and write.
 const DUPLICATED: usize = 5;
 const DUPLICATED_INTO: usize = 1;
 const STATUS_FROM: usize = 6;
+const STATUS_INTO: usize = 7;
 /// FPSR's QC and IOC, which `msr fpsr` sets.
 const STATUS: u64 = 0x0800_0001;
 
@@ -941,13 +943,19 @@ fn a_system_call_that_ends_the_execution_ends_at_its_own_immediate() {
 }
 
 /// The flags, vector registers and FPSR the guest leaves are the execution's: `subs` of a register from itself sets Z
-/// and C, `dup` fills both halves, and `msr fpsr` sets what it is given.
+/// and C, `dup` fills both halves, `msr fpsr` sets what it is given and `mrs` reads it back.
 #[test]
 fn the_flags_vectors_and_float_status_the_guest_leaves_are_the_execution_s() {
     let mut executor = executor();
     let (memory, _table) = memory(
         &executor,
-        &[SUBTRACT_FLAGS, DUPLICATE_X5, WRITE_FPSR, SYSTEM_CALL],
+        &[
+            SUBTRACT_FLAGS,
+            DUPLICATE_X5,
+            WRITE_FPSR,
+            READ_FPSR,
+            SYSTEM_CALL,
+        ],
         0,
     );
     let mut start = before(17);
@@ -974,6 +982,31 @@ fn the_flags_vectors_and_float_status_the_guest_leaves_are_the_execution_s() {
     vectors[DUPLICATED_INTO] = duplicated << 64 | duplicated;
     assert_eq!(ended.vector_registers, vectors);
     assert_eq!(ended.floating_point_status, STATUS);
+    assert_eq!(ended.general_purpose_registers[STATUS_INTO], STATUS);
+}
+
+/// A load through a stack pointer into a page the guest may not touch is an abort at that address, not an alignment
+/// fault.
+#[test]
+fn a_load_through_the_stack_pointer_into_a_forbidden_page_is_an_abort_there() {
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &[LOAD_THROUGH_SP, SYSTEM_CALL], 0);
+    let stack = NOTHING + GUEST_PAGE / 2;
+    let start = Processor {
+        stack_pointer: stack,
+        ..before(22)
+    };
+    let mut handler = Handler::default();
+    let ended = execute(&mut executor, &memory, start, &mut handler);
+    assert_eq!(handler.faults, [(stack, Access::Read)]);
+    assert_eq!(
+        ended.exception,
+        Some(Exception::DataAbort {
+            status: FaultStatus::TranslationFaultLevel3,
+            access: AccessDirection::Read,
+            address: stack,
+        })
+    );
 }
 
 /// A guest that loops through two pieces, landing at every one, is interrupted each slice too: a landing is no trap.
