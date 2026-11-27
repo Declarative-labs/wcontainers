@@ -96,12 +96,14 @@ pub proof fn lemma_moves_build(slot: u64)
 }
 
 /// The window's base and the guest address as form I has them: slot 1 to 2047, at most 64 KiB reserved below the
-/// window, an address under 2^32 whose next is too; the instructions below the slot tables.
+/// window, an address under 2^32 whose next is too; the instructions below the slot tables and apart from the floor's
+/// page.
 pub open spec fn in_reach(a: Allowed, guest: int) -> bool {
     &&& a.base % 0x2_0000_0000 == 0 && 0x2_0000_0000 <= a.base && a.base < 2048 * 0x2_0000_0000
     &&& 0 <= a.below <= 0x1_0000
     &&& 0 <= guest && guest + 4 < 0x1_0000_0000
     &&& a.code >= 0 && a.code + a.length <= PROCESS_SLOTS
+    &&& (a.code + a.length <= FLOOR_PAGE || a.code >= FLOOR_PAGE + 4096)
 }
 
 /// The exit slot is in the slot table, below 2^48.

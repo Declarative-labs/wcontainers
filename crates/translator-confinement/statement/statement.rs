@@ -156,4 +156,6 @@ mod indexed;
 #[cfg(verus_keep_ghost)]
 mod stack;
 #[cfg(verus_keep_ghost)]
+mod branch;
+#[cfg(verus_keep_ghost)]
 mod plants;

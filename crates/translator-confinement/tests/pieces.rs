@@ -14,6 +14,7 @@ const COPY: &str = include_str!("../statement/copy.rs");
 const ACCESS: &str = include_str!("../statement/access.rs");
 const INDEXED: &str = include_str!("../statement/indexed.rs");
 const STACK: &str = include_str!("../statement/stack.rs");
+const BRANCH: &str = include_str!("../statement/branch.rs");
 
 /// The guest registers the translator names as they are: every one but the withheld.
 const DIRECT: [u32; 26] = [
@@ -136,6 +137,17 @@ fn guest_of(pin: &Pin) -> (u32, u16, u64, bool) {
             let (slot, guest, displaced) = at(1);
             return (stack_step(number(&a[0])), slot, guest, displaced);
         }
+        "exit_words_at" => {
+            let base = u64::try_from(number(&a[1])).expect("an address");
+            let slot = u16::try_from(base >> SLOT_BITS).expect("a slot");
+            let target = u64::try_from(number(&a[0])).expect("an address");
+            return (branch(target, GUEST), slot, GUEST, flag(&a[2]));
+        }
+        "system_call_at" => {
+            let (slot, guest, displaced) = at(0);
+            return (0xd400_0001, slot, guest, displaced);
+        }
+        "jump" => return (0xd61f_0000 | word(&a[0]) << 5, 3, GUEST, false),
         other => panic!("no translator call for pins of {other}"),
     };
     let (slot, guest, displaced) = at(3);
@@ -286,6 +298,51 @@ fn stepped(k: i64, slot: u64) -> Vec<u32> {
     [vec![stack_step(k), 0xb940_03ff], exit_words(slot)].concat()
 }
 
+/// `b target` from `guest` (Arm ARM, unconditional branch immediate).
+fn branch(target: u64, guest: u64) -> u32 {
+    0x1400_0000 | ((target.wrapping_sub(guest) / 4) as u32 & 0x3ff_ffff)
+}
+/// A floor call to call `code`'s entry (branch.rs `floor_call`).
+fn floor_call(code: u64) -> Vec<u32> {
+    let entry = (1u64 << 45) + (1 << 32) + 16 * code;
+    let half = |k: u32| (((entry >> (16 * k)) & 0xffff) as u32) << 5;
+    vec![
+        0xf900_2f9e,
+        0xd280_001e | half(0),
+        0xf280_001e | 1 << 21 | half(1),
+        0xf280_001e | 2 << 21 | half(2),
+        0xd63f_03c0,
+    ]
+}
+/// branch.rs `system_call` and `jump`.
+fn system_call(slot: u64) -> Vec<u32> {
+    [
+        vec![0x1400_0005],
+        exit_words(slot),
+        floor_call(2),
+        vec![0xf940_2f9e, 0x17ff_fff6],
+    ]
+    .concat()
+}
+fn jump(n: u32) -> Vec<u32> {
+    [
+        vec![
+            0x9100_0652,
+            0xd360_dc17 | n << 5,
+            0xb500_00d7,
+            0x8b20_4317 | n << 16,
+            0xd37e_aef7,
+            0xb342_0ef7,
+            0xd252_02f7,
+            0xd61f_02e0,
+            0x1400_0001,
+        ],
+        floor_call(7),
+        vec![0xf940_2f9e, 0x17ff_fffa],
+    ]
+    .concat()
+}
+
 /// The shape the proofs give a pin, from the functions above.
 fn shape_of(pin: &Pin) -> Vec<u32> {
     let a = &pin.arguments;
@@ -304,12 +361,22 @@ fn shape_of(pin: &Pin) -> Vec<u32> {
             exit,
         ),
         "stepped_at" => stepped(number(&a[0]), exit),
+        "exit_words_at" => exit_words(exit_slot(slot, number(&a[0]) as u64, displaced)),
+        "system_call_at" => system_call(exit),
+        "jump" => jump(word(&a[0])),
         other => panic!("no shape for pins of {other}"),
     }
 }
 
 fn all_pins() -> Vec<Pin> {
-    [pins(COPY), pins(ACCESS), pins(INDEXED), pins(STACK)].concat()
+    [
+        pins(COPY),
+        pins(ACCESS),
+        pins(INDEXED),
+        pins(STACK),
+        pins(BRANCH),
+    ]
+    .concat()
 }
 
 #[test]
@@ -325,6 +392,8 @@ fn every_pin_of_the_proofs_is_what_the_translator_emits() {
             &["indexed_access_at"; 6],
             &["copied_at"; 2],
             &["stepped_at"; 2],
+            &["exit_words_at"; 2],
+            &["system_call_at", "jump"],
         ]
         .concat()
     );
@@ -483,5 +552,36 @@ fn every_stack_step_a_probe_alone_keeps_in_reach_is_the_step_the_probe_and_the_e
             stepped(k, exit_slot(3, GUEST + 4, false)),
             "sub sp, sp, #{k}"
         );
+    }
+}
+
+#[test]
+fn branches_system_calls_and_jumps_are_the_proofs_pieces() {
+    for slot in [1, 3, 2047] {
+        for displaced in [false, true] {
+            // A branch back counts first (the progress count, x18). A branch to itself is linked inside the piece
+            // (`b .-4` back to the count), a piece not proven yet.
+            for by in [-0x40_0000i64, -4, 4, 8, 0x100_0000] {
+                let target = GUEST.wrapping_add_signed(by);
+                let count = if by < 0 { vec![0x9100_0652] } else { vec![] };
+                assert_eq!(
+                    translated(branch(target, GUEST), slot, GUEST, displaced),
+                    [count, exit_words(exit_slot(slot, target, displaced))].concat(),
+                    "b {by:+} slot {slot} displaced {displaced}"
+                );
+            }
+            assert_eq!(
+                translated(0xd400_0001, slot, GUEST, displaced),
+                system_call(exit_slot(slot, GUEST + 4, displaced)),
+                "svc slot {slot} displaced {displaced}"
+            );
+        }
+        for n in DIRECT {
+            assert_eq!(
+                translated(0xd61f_0000 | n << 5, slot, GUEST, false),
+                jump(n),
+                "br x{n} slot {slot}"
+            );
+        }
     }
 }

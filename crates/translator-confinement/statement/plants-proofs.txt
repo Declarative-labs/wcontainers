@@ -22,3 +22,11 @@ stack.rs @@ stack-without-below @@         a.below >= 1024 && !a.displaced,\n @@
 stack.rs @@ step-without-below @@         a.below >= k && !a.displaced,\n @@         a.below >= 0 && !a.displaced,\n
 stack.rs @@ stack-claims-false @@         a.length == 20,\n    ensures\n @@         a.length == 20,\n    ensures\n        false,\n
 stack.rs @@ step-claims-false @@         a.length == 24,\n    ensures\n @@         a.length == 24,\n    ensures\n        false,\n
+branch.rs @@ jump-without-cut @@ writes(step, UBFIZ_X23, 23, |m: Machine| (m.x[23] & 0xfff_ffff_ffffu64) << 2u64) @@ writes(step, UBFIZ_X23, 23, |m: Machine| m.x[23] << 2u64)
+branch.rs @@ jump-without-table @@ writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23] ^ 0x4000_0000_0000u64) @@ writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23])
+branch.rs @@ floor-call-past-frame @@ |m: Machine| (m.x[28] + 88) % two_to_64(), 8) @@ |m: Machine| (m.x[28] + 252) % two_to_64(), 8)
+branch.rs @@ floor-entry-unaligned @@     (FLOOR_PAGE as int + 16 * code) as u64\n @@     (FLOOR_PAGE as int + 16 * code + 8) as u64\n
+branch.rs @@ system-call-resumable @@         &&& (o == 0 || 20 <= o < 40)\n @@         &&& (o == 0 || 20 <= o < 48)\n
+branch.rs @@ jump-claims-false @@         a.length == 64,\n    ensures\n @@         a.length == 64,\n    ensures\n        false,\n
+branch.rs @@ branch-claims-false @@         a.length == 16,\n    ensures\n @@         a.length == 16,\n    ensures\n        false,\n
+branch.rs @@ backward-claims-false @@         a.length == 20,\n    ensures\n        is_confined(step, seq![COUNT_UP] @@         a.length == 20,\n    ensures\n        false,\n        is_confined(step, seq![COUNT_UP]
