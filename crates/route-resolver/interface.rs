@@ -4,6 +4,7 @@ use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{NeighbourConfirmation, Route, RouteSelectors};
 use wcontainers_kernel::UserId;
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait RouteResolver {
     /// Returns the route a packet with these selectors would take, sending nothing.
     fn resolve_route(

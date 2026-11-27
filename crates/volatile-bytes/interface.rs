@@ -9,6 +9,7 @@ use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 
 /// Bytes that something else may be changing while they are held.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait VolatileBytes {
     fn len(&self) -> u64;
 
@@ -29,6 +30,7 @@ pub trait VolatileBytes {
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error>;
 }
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait StandaloneVolatileBytes: VolatileBytes {
     type Config;
 

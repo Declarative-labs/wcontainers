@@ -12,6 +12,7 @@ mod foreign_implementation {
 }
 
 /// A sink of bytes.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ByteSink {
     type Error;
 

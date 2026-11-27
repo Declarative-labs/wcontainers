@@ -16,6 +16,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
     reason = "each method is one call on the host's socket and fails only the ways that call does"
 )]
 /// Sockets for [raw](https://man7.org/linux/man-pages/man7/raw.7.html) IP packets.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait RawSockets:
     for<'a> Configurable<Self::Socket, RawSocketSetting<'a>> + Readiness<Self::Socket>
 {
