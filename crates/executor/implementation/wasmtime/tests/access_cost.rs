@@ -124,7 +124,10 @@ fn fastest(case: &Case) -> Option<Duration> {
         case.data..case.data + PAGE_SIZE,
         Permissions::READ | Permissions::WRITE,
     ) {
-        eprintln!("ACCESS COST {}: the data page is refused: {error:?}", case.name);
+        eprintln!(
+            "ACCESS COST {}: the data page is refused: {error:?}",
+            case.name
+        );
         return None;
     }
     run(&mut executor, &memory, case.data, WARM_ROUNDS);
@@ -138,8 +141,10 @@ fn fastest(case: &Case) -> Option<Duration> {
         .expect("the data page");
     assert_eq!(data.read(&mut page), page.len(), "the data read");
     let total: u64 = page
-        .chunks_exact(size_of::<u64>())
-        .map(|word| u64::from_le_bytes(word.try_into().expect("a word")))
+        .as_chunks::<{ size_of::<u64>() }>()
+        .0
+        .iter()
+        .map(|word| u64::from_le_bytes(*word))
         .sum();
     let empty = u64::from(case.code.len() == 2);
     assert_eq!(

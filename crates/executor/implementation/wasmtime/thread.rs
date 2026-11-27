@@ -265,7 +265,12 @@ impl ThreadStore {
             usize::try_from(data.block).expect("a block offset"),
             &mut state,
         );
-        to_processor(&state, start, exception)
+        let mut processor = to_processor(&state, start, exception);
+        // The translated code keeps the place in the guest memory of the address an exclusive load reached.
+        if let ExclusiveMonitor::Exclusive { address } = &mut processor.exclusive_monitor {
+            *address = space.address_of_place(*address);
+        }
+        processor
     }
 
     /// Lets go of the space and of the interrupter after a run.
@@ -472,9 +477,9 @@ fn instantiate(
                     contract::PERMISSIONS => constant(Val::I32(
                         i32::try_from(PERMISSIONS_AT).expect("an offset in the state memory"),
                     )),
-                    contract::PERMISSION_PAGES => constant(Val::I64(
-                        (crate::space::GUEST_BYTES / PAGE_SIZE).cast_signed(),
-                    )),
+                    contract::PERMISSION_PAGES => {
+                        constant(Val::I64(crate::space::GUEST_PAGES.cast_signed()))
+                    }
                     _ => None,
                 };
                 let value = value.unwrap_or_else(|| panic!("no value for the import {name}"));

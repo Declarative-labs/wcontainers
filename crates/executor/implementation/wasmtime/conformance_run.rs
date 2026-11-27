@@ -79,12 +79,12 @@ fn find_shown_behavior(
     Some(shown.unwrap_or(first))
 }
 
-/// The lowest address past a space's 4 GiB of addresses.
+/// An address past those whose code the array of slots covers, though in the space: code runs only below 4 GiB.
 const PAST_THE_SPACE: u64 = 1 << u32::BITS;
 /// BRK #0, the word the state the executor refuses runs.
 const BREAKPOINT_WORD: u32 = 0xD420_0000;
 
-/// Lists the states the executor refuses: one whose instruction lies past the addresses a space has.
+/// Lists the states the executor refuses: one whose instruction lies past the addresses code may run from.
 fn list_unexecutable_states() -> Vec<ExecutionState<'static, Arm64<User>>> {
     let at = PAST_THE_SPACE + LOWEST_ADDRESS;
     vec![ExecutionState {

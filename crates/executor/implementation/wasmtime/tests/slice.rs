@@ -19,7 +19,7 @@ use wcontainers_processor_architecture_arm64::{Arm64, Exception, Instruction, Us
 struct Outcome {
     states: usize,
     executed: usize,
-    /// States reaching past the 4 GiB of addresses a space has, which the executor refuses.
+    /// States the executor refuses: code past the addresses it runs from, or memory in more windows than a space holds.
     refused: usize,
     /// States on which the executor did what no behavior still in play does.
     disagreeing: usize,

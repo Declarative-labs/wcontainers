@@ -16,6 +16,7 @@ use wcontainers_processor_architecture_arm64::{
 use wcontainers_volatile_bytes::VolatileBytes;
 use wcontainers_wasmtime::Wasmtime;
 
+use crate::space::SLOTS_COVER;
 use crate::thread::{Ending, Mode};
 use crate::{WasmtimeError, WasmtimeExecutor, WasmtimeMemory, WasmtimePageTable};
 
@@ -81,8 +82,13 @@ impl BehaviorSource for WasmtimeExecutor {
         memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), WasmtimeError> {
+        // A space holds only so many windows, so one a state gave windows past window 0 is made anew.
         let mut scratch = match self.scratch.take() {
-            Some(scratch) if scratch.steps < SCRATCH_STEPS => scratch,
+            Some(scratch)
+                if scratch.steps < SCRATCH_STEPS && scratch.memory.space.windows_given() == 1 =>
+            {
+                scratch
+            }
             old => {
                 if let Some(old) = old {
                     self.forget(&old.memory.space);
@@ -117,6 +123,10 @@ impl WasmtimeExecutor {
         memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), WasmtimeError> {
+        // Code runs only from addresses the array of slots covers.
+        if processor.program_counter >= SLOTS_COVER {
+            return Err(WasmtimeError::AddressOutsideSpace);
+        }
         let space = &scratch.memory;
         let mut assigned = Vec::new();
         let mut written = BTreeSet::new();

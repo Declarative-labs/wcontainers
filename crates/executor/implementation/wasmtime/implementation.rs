@@ -1,7 +1,7 @@
 //! The WebAssembly executor: the translator's output for ARM64, run by wasmtime behind the executor interface.
 //!
-//! A space is 4 GiB of guest addresses in a memory file, mapped once into a host memory that every thread's store takes
-//! as its guest memory. Each executor keeps one store for each space it ran on. Code is translated where a thread first
+//! A space is the 2^48 addresses of a 48-bit virtual address, whose windows of 4 GiB that hold anything are in a memory
+//! file, mapped once into a host memory that every thread's store takes as its guest memory. Each executor keeps one store for each space it ran on. Code is translated where a thread first
 //! reaches it, kept by its bytes for every executor of the process, and dropped when it is written over. The trap
 //! handler is asked from inside the hooks the translated code calls, while the guest's WebAssembly frames stay where
 //! they are.
@@ -69,7 +69,8 @@ impl Default for WasmtimeTranslatorConfig {
 pub enum WasmtimeError {
     #[error("the host refused the memory of a space: {0}")]
     HostRefused(String),
-    /// A state's memory or program counter lies outside the 4 GiB of addresses a space has.
+    /// A state's memory lies outside the addresses a space has, or in more windows than a space holds, or its program
+    /// counter past the addresses code runs from.
     #[error("the state reaches past the addresses of a space")]
     AddressOutsideSpace,
 }

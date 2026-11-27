@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use wasmtime::{Config, Engine, Instance, Module, Store};
-use wcontainers_arm64::{Arm64, KeptRegisters, Offer};
+use wcontainers_arm64::{Addresses, Arm64, KeptRegisters, Offer};
 use wcontainers_guest_cpu::Guest;
 use wcontainers_translator::contract;
 use wcontainers_translator::{LookAhead, Optimise, ProgressCount, translate};
@@ -26,9 +26,11 @@ pub(crate) struct Shared {
 }
 
 /// What every program on this executor is told: every access to a register EL1 keeps from EL0 traps, and the kernel
-/// answers it as Linux does, the counter from its own clock, which replay needs.
+/// answers it as Linux does, the counter from its own clock, which replay needs; and its data reaches the 2^48 bytes of
+/// a 48-bit virtual address through the space's windows.
 pub(crate) const OFFER: Offer = Offer {
     kept_registers: KeptRegisters::Trapped,
+    addresses: Addresses::Windows,
 };
 
 /// Tuning number: the translations kept for their code at most; all are let go when one more is made, as each compiled
