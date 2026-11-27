@@ -18,7 +18,7 @@ use crate::gallium::{COUNTED, Entry, PLAN, Role};
 const HEADER: &str = "// Written by tools/api-crate-generator from Mesa 26.3.1's Gallium headers (p_defines.h, p_state.h, p_screen.h, p_context.h, u_transfer_helper.h) and the plan in src/gallium.rs. Do not edit.\n";
 
 /// The C handle of each kind's objects, as Mesa passes it inside plain data.
-const HANDLE_KINDS: &[(&str, &str)] = &[
+pub(crate) const HANDLE_KINDS: &[(&str, &str)] = &[
     ("struct pipe_resource", "Resource"),
     ("struct pipe_stream_output_target", "StreamOutputTarget"),
     ("struct pipe_context", "Context"),
@@ -75,7 +75,7 @@ const CLIENT_MEMORY: &[(&str, &str, &str)] = &[
     ),
 ];
 
-fn client_memory(structure: &str, field: &str) -> Option<&'static str> {
+pub(crate) fn client_memory(structure: &str, field: &str) -> Option<&'static str> {
     CLIENT_MEMORY.iter().find(|(s, f, _)| *s == structure && *f == field).map(|(_, _, reason)| *reason)
 }
 
@@ -87,7 +87,7 @@ fn handle(kind: &str, ty: &str) -> String {
 
 /// A field's declared type: the header reader gives a second declarator of one declaration (`float min_lod, max_lod;`)
 /// the first's name with its type (`float min_lod,`), dropped here.
-fn declared_type(base: &str) -> String {
+pub(crate) fn declared_type(base: &str) -> String {
     let base = base.trim_start_matches("const ").trim();
     match base.rsplit_once(' ') {
         Some((ty, last)) if last.ends_with(',') => ty.to_string(),
@@ -124,7 +124,7 @@ fn counts_the_list_before(function: &CFunction, at: usize) -> bool {
 }
 
 /// The number type of a C scalar.
-fn number(base: &str) -> Option<&'static str> {
+pub(crate) fn number(base: &str) -> Option<&'static str> {
     Some(match base {
         "unsigned" | "uint32_t" | "uint" | "unsigned int" => "u32",
         "int" | "int32_t" => "i32",
@@ -143,7 +143,7 @@ fn number(base: &str) -> Option<&'static str> {
 }
 
 /// `pipe_draw_info.index` to `DrawInfoIndex`; a name Rust's prelude has (`pipe_box`) keeps the `Pipe`.
-fn type_name(c: &str) -> String {
+pub(crate) fn type_name(c: &str) -> String {
     let bare = c.trim_start_matches("struct ").trim_start_matches("union ").trim_start_matches("pipe_");
     let name: String = bare
         .split(['.', '_'])
@@ -164,12 +164,12 @@ fn type_name(c: &str) -> String {
 }
 
 /// A Rust keyword gets a trailing underscore.
-fn field_name(c: &str) -> String {
+pub(crate) fn field_name(c: &str) -> String {
     crate::names::escaped(c.to_string())
 }
 
 /// The kinds a structure's handles name, in the order met (its type parameters).
-fn kinds_named(name: &str, header: &Header, out: &mut Vec<&'static str>, depth: usize) {
+pub(crate) fn kinds_named(name: &str, header: &Header, out: &mut Vec<&'static str>, depth: usize) {
     let Some(fields) = header.structures.get(name) else { return };
     for field in fields {
         if left_out(name, &field.name).is_some() {
@@ -192,7 +192,7 @@ fn kinds_named(name: &str, header: &Header, out: &mut Vec<&'static str>, depth: 
     }
 }
 
-fn left_out(structure: &str, field: &str) -> Option<&'static str> {
+pub(crate) fn left_out(structure: &str, field: &str) -> Option<&'static str> {
     FIELDS_LEFT_OUT.iter().find(|(s, f, _)| *s == structure && *f == field).map(|(_, _, reason)| *reason)
 }
 
@@ -605,11 +605,12 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
     interface.push_str("}\n");
     let crate_folder = out.join("crates").join("gallium");
     std::fs::create_dir_all(&crate_folder).map_err(|error| error.to_string())?;
+    let glue_report = crate::gallium_glue::generate(&header, &structures.written, &crate_folder)?;
     std::fs::write(crate_folder.join("interface.rs"), &interface).map_err(|error| error.to_string())?;
     std::fs::write(
         crate_folder.join("Cargo.toml"),
         "[package]\nname = \"wcontainers-gallium\"\ndescription = \"Gallium, the driver interface Mesa's OpenGL calls, as safe traits.\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\nlicense.workspace = true\nrepository.workspace = true\npublish = false\n\n[lib]\npath = \"interface.rs\"\n\n[dependencies]\nwcontainers-mesa-compiler = { path = \"../mesa-compiler\" }\n\n[lints]\nworkspace = true\n",
     )
     .map_err(|error| error.to_string())?;
-    Ok(format!("GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields\n", structures.written.len(), kinds.len() + 1, FIELDS_LEFT_OUT.len()))
+    Ok(format!("GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields\n{glue_report}", structures.written.len(), kinds.len() + 1, FIELDS_LEFT_OUT.len()))
 }

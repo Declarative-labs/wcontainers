@@ -4484,6 +4484,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-gallium"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-mesa-compiler",
+]
+
+[[package]]
+name = "wcontainers-gallium-direct"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "serde",
+ "serde_json",
+ "wcontainers-gallium",
+]
+
+[[package]]
 name = "wcontainers-gpu"
 version = "0.1.0"
 dependencies = [
@@ -4883,6 +4900,7 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "wcontainers-opengl-es",
+ "wcontainers-opengl-es-conformance",
  "web-sys",
 ]
 
