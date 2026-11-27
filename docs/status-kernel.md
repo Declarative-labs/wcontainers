@@ -567,3 +567,128 @@ test modules reach 2,400 s (open). INFERRED: the SIGSEGV was the shared bss page
 run): magic_literal +65 and number_constant_without_link +6 (identification.rs's register fields),
 name_unanswered +8, summary_unanswered +1, the summary shape rules +34, grammar_unclear +1.
 Logs: SCRATCH/kernel-port/ks5/lint.
+
+## 2026-11-27 (afternoon): python's stall, the four LTP regressions, the presented chip, ptrace
+
+His main is still `ac696ea19` (MEASURED: FETCH_HEAD of his checkout an ancestor of the branch); every
+`crates/*/interface.rs` byte-identical to it but the three outside-API crates his main does not
+have (kvm, linux-socket-options, wasmtime: other tracks').
+
+### Commits
+- `ae1ee6d87` ID_AA64DFR0_EL1 reads 0x6 and ID_AA64MMFR0_EL1 0x0000_0111_FF00_0000, Linux's safe
+  values of the fields it hides (MEASURED on the ARM64 machine's Linux 7.0); AT_HWCAP, AT_HWCAP2 and
+  /proc/cpuinfo's `Features` are now derived from the same `Arm64Features` the trapped reads answer
+  from, as Linux derives them, with HWCAP_CPUID set (Linux sets it on every processor, as it answers
+  these reads). The abi's `HWCAP`/`HWCAP2` are no longer used by the kernel. AT_HWCAP is now 0x983
+  (was 0x183), cpuinfo says `fp asimd crc32 atomics cpuid`.
+- `b2c92eb35` harness test `identity`: guest/identity.c reads every register of the answered space
+  (op0 3, op1 0, CRn 0, CRm 0 to 7, every op2) and the two words; the test compares with the
+  reference: undefined in the same places; every hidden field equal; every visible field at most the
+  reference's (the reference chip has more features); our capability bits a subset of the
+  reference's, CPUID in both; MIDR and REVIDR left out (they name the chip). Before `ae1ee6d87` it
+  failed on DFR0 and MMFR0 (MEASURED); after, it passes.
+- `afe23989f` merge of `origin/executor-restart` db4051178 (the stand-in's shared-page fix 5bc2ee60f).
+
+### Python system test modules: where it stood, and the fix (the stand-in's file)
+- MEASURED (scratch probe, each module alone, seed 1, 2 saves, guest output echoed): ten modules end in
+  52 to 246 s; `test_mmap.MmapTests.test_find_does_not_access_beyond_buffer` did not end (stopped after
+  10 minutes; 7 GB resident). No guest thread waits: one thread runs 2,049 rounds of mmap PROT_NONE
+  guard plus mmap PROT_READ up to 6,144 pages, then munmap. perf (30 s on the running process): 62%
+  in unicorn's `phys_page_set_level`, from `Memory::remap` -> `restore_own_pages` -> `write_unicorn` ->
+  `uc_mem_write`, in two equal halves (25.8% and 24.9%): unicorn opens a region it may not write and
+  closes it again for each page written, and each rebuilds its whole memory map.
+- MEASURED (scratch patch, not committed: map the region writable, restore its pages, set its
+  permissions once): test_mmap alone 253 s, 53 tests, 0 failures; the whole system test modules
+  target with one seed passes in 1,920 s (2.72 million turns, 2 saves) at load about 100. The patch
+  is in SCRATCH/kernel-port/r32/remap-restore-once.patch. The stand-in track's 5bc2ee60f does the
+  same for every write into unicorn (remap's included); it is merged here.
+- The suite runs 3 seeds: at that speed python's target needs about 5,800 s, so this KS gave node
+  and python a bound of 7,200 s (the others 2,400 s).
+
+### LTP: the set of verdicts against ours-20260930-a9f8631e.tsv
+- MEASURED (diff of verdict sets, a9f8631e against the stand-in check's run at aabf8dc2e): lost
+  syscalls:clock_gettime04 (fail), mm:mtest05, mm:shm_test01, sched:hackbench01 (900 s); gained
+  ltp-aiodio.part2:ADSP037, ADSP038, ADSP073, ADSP074 (timeouts before, pass now). At this branch's
+  f02018c89 the four lost reproduce (job kernel-port-ltp4/20261127-123959-1096726).
+- Causes, MEASURED by perf of each test on our kernel (150 s each): mtest05 64% in unicorn's
+  `phys_page_set_level` from `copy_shared_in` -> `write_unicorn` (the per-turn copy of shared pages
+  into read-only regions, the same as node); shm_test01 47% `memcpy` in `copy_shared_out` ->
+  `uc_mem_read` (the per-turn copy out); hackbench01 15% in the shared-range tree lookups
+  (`find_shown`, `is_touched`). All three are the stand-in's per-turn shared-memory work.
+- clock_gettime04: `CLOCK_REALTIME(gettimeofday): Difference between successive readings greater
+  than 5 ms (3): 15`, twice, alone too. Both readings come from the host's wall clock
+  (time.rs `clock` and `gettimeofday` both call `realtime_nanoseconds`; LTP runs with the wall
+  clock), so 15 ms passed between two guest calls. The run took 33.5 s (1.2 s in a9f8631e): 40% of
+  its profile is the host kernel (the stand-in's turn handed to its own thread and back:
+  `SyncWaker::notify`, futex), 6% unicorn map rebuilds. INFERRED: a turn of the stand-in that rebuilds
+  unicorn's map (or a slow wake of its thread) gives the 15 ms gap. Owner of all four: the stand-in
+  track (memory.rs, engine thread); nothing in the kernel changed the readings.
+
+### The presented chip: one source (STOPPED, missing piece below)
+- READ: no call of the owner's interfaces gives the processor an executor presents. `Executor`,
+  `Execution`, `BehaviorSource` and `ProcessorArchitecture` carry no ID register value or feature;
+  the ID registers are `ReadTrapped` in the list (system_register.rs), so executing an `mrs` of one
+  on the executor only traps. `System::choose_processor_features(process, supported)` takes the
+  supported features as input; the kernel has nothing to fill `supported` from but its own
+  `identification::PRESENTED`. Probing instructions through `execute_single_instruction_in_place`
+  would infer some features from behavior, not read them, and not every field can be told (DGH,
+  RPRFM are hints).
+- Missing piece, as code, for the owner (crates/behavior-source/interface.rs):
+  `fn presented_features(&self) -> <Self::Architecture as ProcessorArchitecture>::Features;` with
+  `type Features: Copy;` on `ProcessorArchitecture` (Arm64Features for arm64), so the kernel passes
+  the executor's value to `choose_processor_features` and answers reads and AT_HWCAP from what
+  comes back.
+- Until then `PRESENTED` (fp, asimd, crc32, atomics; no LSE2, FP16, PMULL/AES, SSBS, DIT, MTE, RNG)
+  agrees with the WebAssembly executor's presented chip as the list describes it (READ:
+  PRESENTED_SYSTEM_REGISTERS on origin/arm64-instructions 233a8e39b), but is not taken from it.
+
+### ptrace (call 117): what KS needs
+- READ (reference logs, kernel/ltp/reference-1.tsv.logs): six LTP tests pass on the reference and
+  are broken here: ptrace01 (TRACEME, the child stops on a signal, PTRACE_CONT and PTRACE_KILL, with
+  and without a handler), ptrace02 (EPERM), ptrace03 (ATTACH to a traced process: EPERM; to one that
+  does not exist: ESRCH), ptrace05 (TRACEME, kill(.., sig) for each signal: a stop the tracer's
+  wait sees, SIGKILL kills), ptrace06 (PEEK/POKE TEXT, DATA and USER at 8 bad addresses each: EIO),
+  ptrace11 (ATTACH to pid 1 as root succeeds; the reference machine's Yama ptrace_scope is 1,
+  MEASURED, and pid 1 is an ancestor).
+- KS's bar names 30 LTP tests and the checker picks its own; any of the six differs. So KS needs
+  either these requests (TRACEME, ATTACH, CONT, KILL, DETACH, PEEK/POKE TEXT/DATA/USER) with the
+  signal-delivery stop reported to the tracer's wait4 and Linux's ptrace_may_access and Yama checks,
+  or ptrace written into the gap list. No interface change is needed (INFERRED: tracee memory goes
+  through the kernel's own page tables).
+
+### KS at `afe23989f` (MEASURED: fresh clone of the pushed tip from the remote, job kernel-port-ks6/20261127-134138-2200267, 13:41 to 16:14 UTC, load 46 to 193, three targets at a time, 4 test threads, 2,400 s per target, node and python 7,200 s)
+- ARM64: clippy `--all-targets --no-deps -D warnings` of the kernel and the harness 0; rustfmt
+  `--check` 0; kernel unit tests 35 passed; the kernel's conformance suite on the stand-in 22
+  passed. x86-64 (job kernel-port-ks6/20261127-163457-3109109, same clone): kernel clippy
+  `--all-targets --no-deps -D warnings` 0, unit tests 35 passed.
+- Harness: 115 targets (identity new): 91 pass, 24 fail, none reaches its bound. Tests 376 passed,
+  35 failed, 8 ignored. The 35 failing are exactly fails16's 35 (diff of names: none more, none
+  fewer), each in a finished target, causes as on the ARM64 machine's known list.
+- node 2 of 2 (135 s; the stand-in's 5bc2ee60f); python 3 of 3 in 5,623 s (system test modules
+  seeds 1 to 3, with 2 saves each); identity 1 of 1.
+- With the `runtime` feature (the WebAssembly executor): hello 1 of 1, counterclock 2 of 2, busybox
+  3 passed, 1 failed (`system`, on fails16), 1 ignored, as at the last KS.
+- The stand-in's own conformance (executor track's) reaches its 1,500 s bound, as before.
+- LTP 30 to the end: 30 of 30 verdicts match the committed reference.
+- LTP regressed and gained set (LTP_LIMIT 900, 8 jobs): clock_gettime04 pass (6.5 s; back with
+  5bc2ee60f), ADSP037, 038, 073, 074 pass; mtest05, shm_test01, hackbench01 still timeout;
+  ptrace05 broken (call 117). Profiles at this build (100 s each, MEASURED): mtest05 51% in unicorn's
+  `phys_page_set_level` from `Memory::remap` (unicorn's map and unmap at each guest mapping
+  change); shm_test01 34% `memcpy` in the per-turn `copy_shared_out`, `copy_shared_in` and
+  `SharedPages::read`; hackbench01 18% in the shared-range tree lookups (`find_shown`,
+  `is_touched`). For the stand-in track.
+- KS's bar holds by this run: clippy on both machines, the unit tests, exactly fails16's 35, 30 of 30
+  LTP verdicts. The breaks of the second check are the checker's to re-apply. Logs:
+  SCRATCH/kernel-port/r32/ks6/out (whole.log, ks6-out.tgz), r32/perf3.out, r32/perf3b.out,
+  r32/pyprobe1, r32/identity1.out.
+
+### Linter (MEASURED at the tree of `b2c92eb35`, no key): the kernel's own crates 31,527 (31,496)
+New rules of the linter's newer build fire on interface files and other crates (independent_trait,
+associated_type_unused, conformance_untested_method, trait_not_implemented +3); on this run's lines:
+magic_literal +4, number_constant_without_link +2, name_unanswered +3, summary shape +8,
+comment_too_long +1 (the summaries of the new items shortened after this count). Logs: r32/lint.
+
+### Next
+- KP2's leftovers: the harness's `Hooks` (37 uses, 5 test files implement it) and `DigestMemories`
+  traits; the abi's `Cpu`, `Host`, `Event`, `Next`, `Exit` are gone from both crates (git grep: 0).
+- KF as listed. The presented chip's source waits on the owner's call above.
