@@ -426,6 +426,8 @@ fn make_thread<S: crate::System, C: Executor + 'static>(
     }
     thread.rseq = None;
     thread.pidfd = None;
+    // A child is not traced unless its tracer asked for that (`ptrace_init_task`).
+    thread.trace = None;
     thread.opening = None;
     reset_on_fork(&mut thread.schedule);
     kernel.threads.insert(child, thread);
@@ -506,8 +508,34 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
             away.exit_signal,
         )
     });
-    if children.is_empty() && !away {
+    // The threads the caller's process traces, children or not, whatever their exit signal
+    // (`ptrace_do_wait`, `eligible_child`), each with its stop not yet reported.
+    let traced =
+        kernel.traced_for_wait(
+            tid,
+            options & __WNOTHREAD != 0,
+            |traced, process| match which {
+                Which::Any => true,
+                Which::Process(target) => traced == target,
+                Which::Group(0) => kernel.processes[&process].group == own_group,
+                Which::Group(group_wanted) => kernel.processes[&process].group == group_wanted,
+            },
+        );
+    if children.is_empty() && !away && traced.is_empty() {
         return Err(Errno::ECHILD);
+    }
+    // A stop for the caller's process is reported whatever the options ask for, as a trap
+    // (`wait_task_stopped` for ptrace).
+    if let Some(&(stopped, Some(signal))) = traced.iter().find(|(_, stop)| stop.is_some()) {
+        if options & WNOWAIT == 0 {
+            kernel.trace_stop_reported(stopped);
+        }
+        return Ok(Found::Child {
+            pid: stopped,
+            status: crate::wait::stopped(signal as i32),
+            code: CLD_TRAPPED,
+            value: signal as i32,
+        });
     }
     // `do_wait` looks at the caller's own children first, then each other thread's in turn.
     let threads = &kernel.processes[&pid].threads;
@@ -525,7 +553,7 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
     });
     let keep = options & WNOWAIT != 0;
     // `notask_error`: a child that has ended counts only for a wait that takes ends.
-    let mut waitable = away;
+    let mut waitable = away || !traced.is_empty();
     for child in children {
         let process = &kernel.processes[&child];
         if let Some(status) = process.ended {

@@ -118,6 +118,14 @@ enum Target {
     Process(Pid),
 }
 
+/// The thread a signal is sent to: the one named, or a process's first (Linux's target task).
+fn target_thread(target: Target) -> Tid {
+    match target {
+        Target::Thread(tid) => tid,
+        Target::Process(pid) => pid,
+    }
+}
+
 impl Kernel {
     fn handler(&self, pid: Pid, signal: u32) -> u64 {
         self.processes[&pid].actions.borrow()[signal as usize - 1].sa_handler_kernel
@@ -486,7 +494,8 @@ impl Kernel {
             self.continue_process(cx, pid);
         }
         let blocked = mask & bit(signal) != 0;
-        if !blocked && self.dropped(pid, signal) {
+        // A traced thread takes even a signal it ignores to its tracer (`sig_ignored`).
+        if !blocked && self.dropped(pid, signal) && !self.traced(target_thread(target)) {
             // A wait for this signal still sees it (`sigtimedwait` blocks what it waits for).
             return Ok(());
         }
@@ -615,9 +624,11 @@ impl Kernel {
         // One that dumps core is left to the thread that takes it, as Linux leaves it to
         // `get_signal`.
         let handler = self.handler(pid, signal);
+        // A traced thread's tracer sees the signal before it ends anything.
         let fatal = handler == SIG_DFL
             && default_action(signal) == Default::Terminate
-            && !self.dropped(pid, signal);
+            && !self.dropped(pid, signal)
+            && !self.traced(target_thread(target));
         if fatal || signal == SIGKILL {
             self.drop_pending(pid, bit(signal));
             self.die_when_met(pid, signal);
@@ -646,6 +657,7 @@ impl Kernel {
     /// at the end, then ends the process. None of them runs its program or a call again.
     fn die_when_met(&mut self, pid: Pid, signal: u32) {
         self.dying.insert(pid, signal);
+        self.leave_trace_stops(pid);
         self.processes.get_mut(&pid).expect("process").stopped = false;
         for tid in self.processes[&pid].threads.clone() {
             match self.threads[&tid].call.wait {
@@ -756,6 +768,13 @@ impl Kernel {
                     self.announce(cx, pid, |system, process| {
                         system.on_signal_delivering(process, crate::system::task_id(tid), &signal)
                     });
+                    // A traced thread stops for its tracer first, for any signal but SIGKILL
+                    // (`ptrace_signal`); what it acts on then is the tracer's choice.
+                    if queued.signal != SIGKILL && self.traced(tid) {
+                        self.thread_mut(tid).resume = resume;
+                        self.stop_for_tracer(cx, tid, &queued);
+                        return None;
+                    }
                     queued
                 }
             };

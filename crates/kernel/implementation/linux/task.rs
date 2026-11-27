@@ -722,6 +722,7 @@ impl Kernel {
                 if thread.call.wait.is_some()
                     || self.processes[&process].stopped
                     || self.dying.contains_key(&process)
+                    || self.trace_stopped(tid)
                 {
                     continue;
                 }
@@ -906,13 +907,13 @@ impl Kernel {
     }
 
     /// Puts a thread that is not the current one in line to run, with how it continues. A thread
-    /// of a stopped process waits aside until it is continued.
+    /// of a stopped process, or stopped for its tracer, waits aside until it is continued.
     pub(crate) fn make_runnable(&mut self, tid: Tid, resume: Resume) {
         let entry_now = self.entry_now;
         let thread = self.thread_mut(tid);
         thread.resume = resume;
         let pid = thread.process;
-        if self.processes[&pid].stopped || self.run_queue.contains(tid) {
+        if self.processes[&pid].stopped || self.run_queue.contains(tid) || self.trace_stopped(tid) {
             return;
         }
         let thread = self.threads.get_mut(&tid).expect("thread exists");
@@ -981,6 +982,7 @@ impl Kernel {
         if let Some(client) = &self.files.backend {
             client.drop_call(tid);
         }
+        self.tracer_ended(cx, tid);
         self.unschedule(tid);
         self.release_vfork(tid);
         syscall::sem::forget(self, tid);
@@ -1147,6 +1149,7 @@ impl Kernel {
                 client.drop_call(tid);
             }
             syscall::timer::thread_end(self, tid);
+            self.tracer_ended(cx, tid);
             self.unschedule(tid);
             self.release_vfork(tid);
             syscall::sem::forget(self, tid);

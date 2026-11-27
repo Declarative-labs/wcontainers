@@ -3112,3 +3112,32 @@ fn a_process_is_inspected_while_another_holds_its_memory_open() {
         ]
     );
 }
+
+/// Checks that the hooks tell when a child starts tracing its parent and when it lets it go.
+///
+/// The first process's yields tell whether its state is read.
+#[test]
+fn a_process_is_inspected_while_another_traces_it() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let hooks = Box::new(Inspections(seen.clone()));
+    let run = try_guest("tracedinspected", &[], Some(hooks), 1, None)
+        .expect("an outcome on our kernel");
+    assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
+    let first = driver::FIRST_PROCESS;
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            Inspection::Yield { inspected: false },
+            Inspection::Starting {
+                id: first,
+                inspected: true
+            },
+            Inspection::Yield { inspected: true },
+            Inspection::Ended {
+                id: first,
+                inspected: false
+            },
+            Inspection::Yield { inspected: false },
+        ]
+    );
+}

@@ -263,11 +263,14 @@ impl ProcessInfo<'_> {
         (self.process.parent != 0).then(|| task_id(self.process.parent))
     }
 
-    /// Whether another process holds this one's memory open through `/proc/<pid>/mem`, the one
-    /// way here to read a process's state that lasts beyond a call (`process_vm_readv` reads within
-    /// its call, and ptrace is not built).
+    /// Whether another process holds this one's memory open through `/proc/<pid>/mem` or traces
+    /// one of its threads, the ways here to read a process's state that last beyond a call
+    /// (`process_vm_readv` reads within its call).
     pub fn inspected(&self) -> bool {
         let (pid, memory) = (self.process.pid, self.process.memory);
+        if self.kernel.process_traced(pid) {
+            return true;
+        }
         let reads_this = |file: &crate::file::OpenFile| {
             file.memory == Some(memory)
                 && matches!(
@@ -582,11 +585,17 @@ impl Kernel {
 }
 
 impl Kernel {
-    /// The processes another process holds the memory of open through `/proc/<pid>/mem` now, and
-    /// whether any such file is open at all.
+    /// The processes another process holds the memory of open through `/proc/<pid>/mem` or traces
+    /// now, and whether any such file is open or any thread traced at all.
     fn inspected_now(&self) -> (BTreeSet<Pid>, bool) {
         let mut inspected = BTreeSet::new();
         let mut any = false;
+        for thread in self.threads.values() {
+            if thread.trace.is_some() {
+                any = true;
+                inspected.insert(thread.process);
+            }
+        }
         for thread in self.threads.values() {
             for (_, descriptor) in thread.files.borrow().iter() {
                 let file = descriptor.file.borrow();

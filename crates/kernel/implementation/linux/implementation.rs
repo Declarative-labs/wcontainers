@@ -45,6 +45,7 @@ mod syscall;
 mod sysctl;
 mod system;
 mod task;
+mod trace;
 mod tty;
 mod user;
 mod vdso;

@@ -25,6 +25,7 @@ pub(crate) mod mqueue;
 pub(crate) mod pidfd;
 pub(crate) mod pipe;
 mod process;
+mod ptrace;
 mod rseq;
 mod seccomp;
 pub(crate) mod sem;
@@ -326,6 +327,7 @@ built_calls! {
         (__NR_rt_sigprocmask, S(process::rt_sigprocmask)),
         (__NR_rt_sigpending, S(process::rt_sigpending)),
         (__NR_sigaltstack, S(process::sigaltstack)),
+        (__NR_ptrace, S(ptrace::ptrace)),
         (__NR_kill, S(signals::kill)),
         (__NR_tkill, S(signals::tkill)),
         (__NR_tgkill, S(signals::tgkill)),

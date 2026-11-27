@@ -431,6 +431,8 @@ pub(crate) struct Thread {
     /// The processors it may run on, as `sched_setaffinity` left them: a bit for each processor
     /// online, lowest first; none for every one.
     pub affinity: Option<Arc<[u8]>>,
+    /// The thread tracing it with `ptrace` and the stop it is in for that thread, if it is traced.
+    pub trace: Option<crate::trace::Trace>,
 }
 
 /// The timer slack a thread starts with (Linux's `init_task` value, which children inherit).
@@ -725,6 +727,7 @@ impl Thread {
             opening: None,
             pidfd: None,
             affinity: None,
+            trace: None,
         }
     }
 }

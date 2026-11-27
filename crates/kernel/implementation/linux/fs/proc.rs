@@ -1134,14 +1134,19 @@ pub(crate) fn fdinfo_allowed(view: &View<'_>, entry: &Entry, caller: Tid) -> Res
 }
 
 /// A thread's state (`get_task_state`): ended and not reaped (a process's first thread stays so
-/// while others go on), stopped (or taken off the kernel), parked (unkillably only for a `vfork`
-/// parent's wait), or running.
+/// while others go on), stopped for its tracer, stopped (or taken off the kernel), parked
+/// (unkillably only for a `vfork` parent's wait), or running.
 fn state(view: &View<'_>, process: &Process, tid: Tid) -> (char, &'static str) {
     let thread = view.threads.get(&tid);
     let wait = thread.and_then(|thread| thread.call.wait);
     let away = process.away.contains_key(&tid);
+    let trace_stopped = thread
+        .and_then(|thread| thread.trace.as_ref())
+        .is_some_and(|trace| trace.stop.is_some());
     if process.ended.is_some() || (thread.is_none() && !away) {
         ('Z', "zombie")
+    } else if trace_stopped {
+        ('t', "tracing stop")
     } else if process.stopped || away {
         ('T', "stopped")
     } else if matches!(wait, Some(Channel::Vfork(_))) {
@@ -2404,12 +2409,19 @@ fn process_file(
             let _ = write!(
                 out,
                 "State:\t{} ({})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\
-                 TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t",
+                 TracerPid:\t{}\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t",
                 state.0,
                 state.1,
                 process.pid,
                 tid,
                 process.parent,
+                // The thread tracing it, if any (`ptrace_parent`).
+                source
+                    .view
+                    .threads
+                    .get(&tid)
+                    .and_then(|thread| thread.trace.as_ref())
+                    .map_or(0, |trace| trace.tracer),
                 credentials.uid,
                 credentials.euid,
                 credentials.suid,
