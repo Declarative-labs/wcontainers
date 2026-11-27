@@ -17,8 +17,8 @@
 //! before a row that faults; they run with a breakpoint at the next instruction.
 //!
 //! The host process asks Linux for guest tile permission before it makes a machine, so that a state may hold XCR0
-//! with AMX's tiles, which the handler then restores and saves apart from the rest, writing IA32_XFD first and
-//! releasing the tiles after; the host sets XCR0 before a state whose XCR0 differs from the last. The host never
+//! with AMX's tiles, which the handler then restores and saves apart from the rest, writing IA32_XFD and IA32_XFD_ERR
+//! first and reading IA32_XFD_ERR back and releasing the tiles after; the host sets XCR0 before a state whose XCR0 differs from the last. The host never
 //! writes IA32_XFD itself: Linux restores a guest's TILEDATA under the XFD it is given, which faults in the host's
 //! kernel where TILEDATA is in use and XFD disables it.
 //!
@@ -939,7 +939,7 @@ impl SingleStepMachine {
         let (xcr0, xfd) = (processor.xcr0, processor.xfd);
         let stop = if self.breakpoints.is_some() { BREAKPOINTS } else { SINGLE_STEP };
         *processor = to_processor(&slot, stop).inspect_err(|_| self.renew_machine = true)?;
-        (processor.xcr0, processor.xfd) = (xcr0, xfd);
+        (processor.xcr0, processor.xfd, processor.xfd_err) = (xcr0, xfd, slot.feature_disable_error_after);
         if xcr0 & TILE_COMPONENTS != 0 {
             self.read_tiles(processor);
         }
@@ -1171,13 +1171,16 @@ fn to_slot(processor: &Processor, page_table: u64, tracking: TrackingSteps, step
         page_table,
         tile_request: processor.xcr0 & TILE_COMPONENTS,
         feature_disable: processor.xfd,
+        feature_disable_error: processor.xfd_err,
         vector: NOT_RUN,
         error_code: 0,
         fault_address: 0,
         debug_status: 0,
+        feature_disable_error_after: processor.xfd_err,
         before: registers,
         after: registers,
         tracking,
+        unused: [0; 6],
     }
 }
 
@@ -1267,8 +1270,8 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>], til
 ///
 /// # Errors
 ///
-/// When IA32_XFD sets a bit but TILEDATA's, or that one where XCR0 does not enable the tiles; when XCR0 does not
-/// enable the tiles and the state holds any; when XFD disables TILEDATA and it is in use; when TILECFG is one
+/// When IA32_XFD or IA32_XFD_ERR sets a bit but TILEDATA's, or that one where XCR0 does not enable the tiles; when
+/// XCR0 does not enable the tiles and the state holds any; when XFD disables TILEDATA and it is in use; when TILECFG is one
 /// LDTILECFG refuses, which XRSTOR loads as zeros; when TILEDATA is in use with no tiles configured, which XRSTOR
 /// leaves initial on this chip; or when XINUSE marks a tile component unused that is not initial.
 fn check_tiles_holdable(processor: &Processor) -> Result<(), Refusal> {
@@ -1277,6 +1280,9 @@ fn check_tiles_holdable(processor: &Processor) -> Result<(), Refusal> {
     let holds_data = !processor.tile_data.is_zero();
     if processor.xfd & !TILE_DATA_COMPONENT != 0 || (processor.xfd != 0 && !tiles) {
         return Err(Refusal::NotModeled("IA32_XFD other than none, or TILEDATA's where XCR0 enables the tiles"));
+    }
+    if processor.xfd_err & !TILE_DATA_COMPONENT != 0 || (processor.xfd_err != 0 && !tiles) {
+        return Err(Refusal::NotModeled("IA32_XFD_ERR other than none, or TILEDATA's where XCR0 enables the tiles"));
     }
     if !tiles && (configured || holds_data || processor.xinuse & TILE_COMPONENTS != 0) {
         return Err(Refusal::NotModeled("tile state where XCR0 does not enable the tiles"));
@@ -1467,6 +1473,7 @@ fn to_processor(slot: &Slot, stop: u64) -> Result<Processor, Refusal> {
         tile_configuration: [0; 64],
         tile_data: TileData::ZERO,
         xfd: 0,
+        xfd_err: 0,
         // The handler's own XRSTOR64 at ring 0 leaves no tracking a program's XSAVEOPT can use; the reading step gives
         // any other.
         xsave_tracking: None,

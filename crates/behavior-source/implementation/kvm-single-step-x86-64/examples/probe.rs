@@ -148,7 +148,7 @@ mod on_chip {
             .map(|(number, value)| format!("xmm{number} {value:032x}"))
             .collect();
         format!(
-            "{:x?} ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {} xinuse {:#x} pkru {:#x} tracking {:x?} xcr0 {:#x} xfd {:#x}",
+            "{:x?} ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {} xinuse {:#x} pkru {:#x} tracking {:x?} xcr0 {:#x} xfd {:#x} xfd_err {:#x}",
             processor.general_purpose_registers,
             processor.instruction_pointer,
             processor.flags,
@@ -162,6 +162,7 @@ mod on_chip {
             processor.xsave_tracking,
             processor.xcr0,
             processor.xfd,
+            processor.xfd_err,
         ) + &render_x87(&processor.x87)
     }
 

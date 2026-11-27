@@ -258,6 +258,7 @@ impl ProcessorArchitecture for X86_64 {
             && observed.tile_configuration == expectation.tile_configuration
             && observed.tile_data == expectation.tile_data
             && observed.xfd == expectation.xfd
+            && observed.xfd_err == expectation.xfd_err
             && (observed.flags.bits() ^ expectation.flags.bits()) & !expectation.nondeterministic_flags.bits() == 0
     }
 }
@@ -327,6 +328,9 @@ pub struct Processor {
     /// IA32_XFD, which a program cannot read: a set bit of a component XCR0 enables makes the forms that use it raise
     /// #NM, as Linux arms TILEDATA's for a thread that has not asked for the tiles.
     pub xfd: u64,
+    /// IA32_XFD_ERR, which a program cannot read either: an #NM that XFD raises loads it with the components the
+    /// instruction needed that XFD disables, for the kernel to read; nothing else changes it.
+    pub xfd_err: u64,
 }
 
 /// The PKRU Linux starts a program with.
@@ -409,6 +413,7 @@ pub struct ProcessorExpectation {
     pub tile_configuration: [u8; TILE_CONFIGURATION_BYTES],
     pub tile_data: TileData,
     pub xfd: u64,
+    pub xfd_err: u64,
     /// The flags the state before does not decide, as UMWAIT's and TPAUSE's CF, which are not compared.
     pub nondeterministic_flags: Flags,
 }
@@ -441,6 +446,7 @@ impl Processor {
             tile_configuration: self.tile_configuration,
             tile_data: self.tile_data.clone(),
             xfd: self.xfd,
+            xfd_err: self.xfd_err,
             nondeterministic_flags: Flags::empty(),
         }
     }
@@ -472,6 +478,7 @@ pub const ZERO_PROCESSOR: Processor = Processor {
     tile_configuration: [0; TILE_CONFIGURATION_BYTES],
     tile_data: TileData::ZERO,
     xfd: 0,
+    xfd_err: 0,
 };
 
 /// What the running program may do with a page; memory that was never given a permission is unmapped.

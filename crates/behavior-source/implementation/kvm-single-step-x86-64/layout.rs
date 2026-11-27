@@ -107,9 +107,10 @@ pub struct Slot {
     /// CR3 while the instruction runs.
     pub page_table: u64,
     /// AMX TILES: the components the handler restores from [`TILES_BEFORE`] and saves to [`TILES_AFTER`], none where
-    /// XCR0 does not enable the tiles; and the IA32_XFD it writes before it restores them.
+    /// XCR0 does not enable the tiles; and the IA32_XFD and IA32_XFD_ERR it writes before it restores them.
     pub tile_request: u64,
     pub feature_disable: u64,
+    pub feature_disable_error: u64,
     /// The vector the handler was entered by, [`NOT_RUN`] before.
     pub vector: u64,
     /// The error code the chip pushed, zero for a vector that has none.
@@ -118,9 +119,13 @@ pub struct Slot {
     pub fault_address: u64,
     /// DR6 after.
     pub debug_status: u64,
+    /// AMX TILES: IA32_XFD_ERR after, which the handler reads where the slot's tile request names components.
+    pub feature_disable_error_after: u64,
     pub tracking: TrackingSteps,
     pub before: Registers,
     pub after: Registers,
+    /// Keeps the slot a whole number of 64-byte lines, as its images align it, with no padding.
+    pub unused: [u64; 6],
 }
 
 /// XRSTOR TRACKING: what the handler runs at ring 3 around the instruction, in the same entry, to load the tracking

@@ -4,7 +4,8 @@
 //! A state whose XCR0 does not enable the tiles holds no tile state, and one whose XFD disables TILEDATA holds it in
 //! its initial configuration, as Linux keeps a thread's that has not asked for the tiles; so does one with no tiles
 //! configured, as no chip loads TILEDATA then. XINUSE marks TILECFG where tiles are configured and TILEDATA where it
-//! holds anything.
+//! holds anything. IA32_XFD_ERR is clear where XFD disables TILEDATA, so that its #NM shows the load, and holds
+//! TILEDATA's bit where the tiles are enabled.
 
 use alloc::borrow::Cow;
 use alloc::vec;
@@ -238,12 +239,12 @@ pub fn generate_states(set: ConfigurationSet) -> Vec<OperandValue> {
     values.into_iter().map(OperandValue::TileState).collect()
 }
 
-/// The tiles a form names: one each of the whole, the mixed and the invalid; for TDP the three that fit, one named
-/// twice, three that do not fit, one not valid, and one whose rows are not doublewords.
+/// The tiles a form names: one each of the whole, the mixed and the invalid; for TDP the three that fit, three that do
+/// not fit, one not valid, and one whose rows are not doublewords. No TDP names a tile twice: that encoding is not TDP's.
 pub fn generate_names(count: usize) -> Vec<OperandValue> {
     let names: &[[u8; 3]] = match count {
         1 => &[[0, 0, 0], [3, 0, 0], [4, 0, 0], [6, 0, 0], [7, 0, 0]],
-        _ => &[[0, 1, 2], [0, 0, 1], [5, 6, 7], [0, 3, 2], [4, 1, 2], [7, 1, 2]],
+        _ => &[[0, 1, 2], [5, 6, 7], [0, 3, 2], [4, 1, 2], [7, 1, 2]],
     };
     names.iter().copied().map(OperandValue::TileNames).collect()
 }
@@ -440,10 +441,7 @@ fn fits(form: &AmxForm, configuration: &[u8; TILE_CONFIGURATION_BYTES], names: [
         AmxOperation::LoadTile | AmxOperation::StoreTile => read_start_row(configuration) < shapes[0].rows,
         AmxOperation::DotBytes { .. } | AmxOperation::DotBfloat16 => {
             let [destination, first, second] = shapes;
-            names[0] != names[1]
-                && names[1] != names[2]
-                && names[0] != names[2]
-                && destination.row_bytes == second.row_bytes
+            destination.row_bytes == second.row_bytes
                 && destination.rows == first.rows
                 && first.row_bytes / 4 == second.rows
         }
@@ -494,8 +492,12 @@ pub fn build_state(form: &AmxForm, operands: &[(OperandType, OperandValue)]) -> 
         processor.tile_configuration = list_configurations()[state.configuration];
         if state.environment == Environment::DataDisabled {
             processor.xfd = TILE_DATA_COMPONENT;
-        } else if processor.tile_configuration[0] != 0 {
-            processor.tile_data = fill_tiles(contents);
+        } else {
+            // A stale IA32_XFD_ERR, so that a form shows it keeps it where XFD raises nothing.
+            processor.xfd_err = TILE_DATA_COMPONENT;
+            if processor.tile_configuration[0] != 0 {
+                processor.tile_data = fill_tiles(contents);
+            }
         }
     }
     if processor.tile_configuration[0] != 0 {

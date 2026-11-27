@@ -99,6 +99,7 @@ mod on_chip {
             tile_configuration: expected.tile_configuration,
             tile_data: expected.tile_data.clone(),
             xfd: expected.xfd,
+            xfd_err: expected.xfd_err,
         }
     }
 

@@ -210,6 +210,7 @@ fn simulate_processor(
                 processor.tile_configuration = changed.tile_configuration;
                 processor.tile_data = changed.tile_data.clone();
                 processor.xinuse = changed.xinuse;
+                processor.xfd_err = changed.xfd_err;
             }
             // A form that names an MMX register leaves the x87 state in MMX's use when it then faults.
             if matches!(behavior, PreciseInstruction::MmxConvert { .. }) {
