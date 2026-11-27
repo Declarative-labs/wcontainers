@@ -1,0 +1,8 @@
+# The plant list of the confinement statement: each line drops or weakens one clause of `confined_step` in statement.rs
+# (name @@ exact text @@ replacement). With any one applied, a refusal in plants.rs must fail to verify.
+drop-accesses @@ &&& forall|k: int| 0 <= k < s.accesses.len() ==> touches_allowed(a, #[trigger] s.accesses[k].0, s.accesses[k].1) @@ &&& true
+weaken-frame-end @@ ||| a.frame <= first && first + bytes <= a.frame + FRAME_BYTES as int @@ ||| a.frame <= first && first <= a.frame + FRAME_BYTES as int
+drop-system-call @@ &&& !s.system_call @@ &&& true
+drop-unlisted @@ &&& s.after.unlisted == before.unlisted @@ &&& true
+drop-frame @@ &&& s.after.x.len() == 31 && s.after.x[frame_register()] as int == a.frame @@ &&& s.after.x.len() == 31
+drop-next @@ &&& (s.after.ended || in_sequence(a, s.after.pc) || is_exit(a, s.after.pc)) @@ &&& true

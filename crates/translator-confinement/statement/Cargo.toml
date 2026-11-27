@@ -1,0 +1,25 @@
+# Verified in the `instruction-proof` tree, copied there as crates/translator-confinement-statement (its model is
+# there); not a member of this branch's workspace.
+[package]
+name = "wcontainers-translator-confinement-statement"
+description = "The native form's second proof statement: a run of the translator's instructions stays in its own memory and makes no system call."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "statement.rs"
+
+[dependencies]
+wcontainers-processor-architecture-arm64 = { path = "../processor-architecture/implementation/arm64" }
+# Verus's library, in which the statement is written; a plain build keeps none of it.
+vstd.workspace = true
+
+[package.metadata.verus]
+verify = true
+
+[lints]
+workspace = true
