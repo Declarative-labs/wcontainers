@@ -40,10 +40,10 @@ cp "$repository/rust-toolchain.toml" "$build/"
 {
     echo '[workspace]'
     echo 'resolver = "3"'
-    # A harness is written beside a slice's glue only, the C caller beside any glue: each glob is a member only when
-    # one is there.
+    # A harness is written beside a slice's glue only: its glob is a member only when one is there. The C caller is a
+    # workspace of its own (its manifest says so), built from its folder.
     members='"crates/*", "crates/*/conformance", "crates/*/implementation/*"'
-    for extra in harness c-caller; do
+    for extra in harness; do
         if compgen -G "$build/crates/*/implementation/*/$extra" > /dev/null; then members="$members, \"crates/*/implementation/*/$extra\""; fi
     done
     echo "members = [$members]"

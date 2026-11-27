@@ -602,7 +602,7 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
             let _ = writeln!(manifest, "{} = {{ path = \"../../../../{}\" }}", package(spec), spec.folder);
         }
     }
-    manifest.push_str("\n[build-dependencies]\ncc = \"1\"\n\n# Test scaffolding that calls C: it denies unsafe code and marks each use.\n[lints.rust]\nunsafe_code = \"deny\"\nunsafe_op_in_unsafe_fn = \"deny\"\n\n[lints.clippy]\ntype_complexity = \"allow\"\n");
+    manifest.push_str("\n[build-dependencies]\ncc = \"1\"\n\n# Test scaffolding that calls C: it denies unsafe code and marks each use.\n[lints.rust]\nunsafe_code = \"deny\"\nunsafe_op_in_unsafe_fn = \"deny\"\n\n[lints.clippy]\ntype_complexity = \"allow\"\n\n# A workspace of its own, inside the direct crate's folder: the repository's members are `crates/*/implementation/*`,\n# so the repository's cargo commands never build it; its tests run from this folder.\n[workspace]\n");
     std::fs::write(folder.join("Cargo.toml"), manifest).map_err(|error| error.to_string())?;
     let mut line = format!(
         "C CALLER: {} interfaces; {} cases and {} exports written ({called} entries and exports); {} cases no object the caller can hold answers, excluded by name (src/api.rs), every other case and export must be reached at run time or its test fails\n",
