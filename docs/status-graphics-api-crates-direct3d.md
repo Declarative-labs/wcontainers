@@ -132,7 +132,7 @@ holds the reference, so the trait's blob gives `Vec<u8>`; and an out-parameter t
 error blob), so the trait method returns `Result<Vec<u8>, (HResult, Vec<u8>)>` as the needs file asks. The calling glue
 would load d3dcompiler_47.dll as the others load theirs. Nothing of it is built in this run.
 
-## 5. D3: Direct3D 12's API crate, started (ae9cee9a6 generator, abbb499c9 front moved, a2f3a88d0 crates)
+## 5. D3: Direct3D 12's API crate, started (73f4fd2d6 generator, 891bc55ce front moved, a2f3a88d0 crates)
 
 - **One set for every Direct3D API.** `direct3d-glue` (src/api.rs) writes COM, d3dcommon, DXGI, Direct3D 11 and Direct3D
   12 in one generation, so one COM crate holds the plain data all of them name (a second generation for Direct3D 12 alone
