@@ -248,6 +248,11 @@ pub fn check(in_scope: &str, header: &cheader::Header) -> Result<String, String>
     for entry in PLAN {
         let _ = writeln!(report, "  {}.{} {:?} called at {}", entry.structure, entry.pointer, entry.roles, entry.caller);
     }
+    let _ = writeln!(report, "GALLIUM PLAIN DATA: each structure a planned pointer reads, its fields as read, the objects it names");
+    for (name, (fields, bits, handles)) in plain_structures(header) {
+        let union = if header.unions.contains(&name) { " (a union)" } else { "" };
+        let _ = writeln!(report, "  {name}{union}: {fields} fields ({bits} bit-fields), names objects at [{}]", handles.join(" "));
+    }
     let (rows, unmapped) = mapping(header);
     let _ = writeln!(report, "GALLIUM MAPPING: parameters and returns by row");
     for (row, count) in &rows {
@@ -296,7 +301,7 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
 ];
 
 /// One row of the Gallium mapping rule for a parameter (or the return) of a planned pointer.
-fn row(entry: &Entry, param: &cheader::CParam, first: bool) -> Option<&'static str> {
+fn row(entry: &Entry, param: &cheader::CParam, first: bool, header: &cheader::Header) -> Option<&'static str> {
     if let Some((_, _, row)) = EXCEPTIONS.iter().find(|(pointer, name, _)| *pointer == entry.pointer && *name == param.name) {
         return Some(row);
     }
@@ -320,12 +325,16 @@ fn row(entry: &Entry, param: &cheader::CParam, first: bool) -> Option<&'static s
         ("void", 2) | ("struct pipe_sampler_view" | "struct pipe_stream_output_target", 2) => "objects of a kind at slots, with their count",
         ("struct pipe_fence_handle", 2) => "a fence's place: the fence made by a flush, or the count's old and new fence",
         ("struct pipe_transfer", 2) => "a mapping out: returned with the mapped bytes",
-        ("struct pipe_resource", 1) if is_const => "plain data read during the call, copied into owned values",
+        // A handle's own structure passed as const is a template (resource_create's, create_sampler_view's).
+        ("struct pipe_resource" | "struct pipe_sampler_view", 1) if is_const => "a template naming objects, read during the call: each handle a reference of its kind, or none",
         (handle, 1) if HANDLES.contains(&handle) && !returned => "an object of the pointer's kinds: by reference, or by value where it gives it back",
         ("unsigned" | "bool" | "uint64_t" | "uint32_t" | "uint8_t" | "double" | "uint" | "int" | "uintptr_t", 0) => "number by value",
         ("unsigned", 1) if is_const => "numbers read during the call, the count beside them",
         (declared, 0) if declared.starts_with("enum ") || declared == "mesa_shader_stage" => "a declared value, checked",
         ("struct pipe_shader_state" | "struct pipe_compute_state", 1) if is_const => "a program: mesa-compiler's Received taken from it, the rest plain data",
+        (plain, 1) if is_const && (plain.starts_with("struct pipe_") || plain.starts_with("union pipe_")) && names_objects(header, plain) => {
+            "plain data naming objects, read during the call: each handle a reference of its kind, refused when it is none"
+        }
         (plain, 1) if is_const && (plain.starts_with("struct pipe_") || plain.starts_with("union pipe_")) => "plain data read during the call, copied into owned values",
         (plain, 0) if plain.starts_with("struct pipe_") => "plain data by value",
         ("char", 1) if is_const && returned => "text out: the driver's own text, copied",
@@ -341,11 +350,59 @@ fn mapping(header: &cheader::Header) -> (BTreeMap<&'static str, usize>, Vec<Stri
     for entry in PLAN {
         let Some(function) = header.callbacks.get(entry.structure).and_then(|callbacks| callbacks.iter().find(|function| function.name == entry.pointer)) else { continue };
         for (at, param) in std::iter::once(&function.ret).chain(&function.params).enumerate() {
-            match row(entry, param, at == 1) {
+            match row(entry, param, at == 1, header) {
                 Some(row) => *rows.entry(row).or_default() += 1,
                 None => unmapped.push(format!("{}.{} {}: {}{}", entry.structure, entry.pointer, param.name, param.base, "*".repeat(param.pointers))),
             }
         }
     }
     (rows, unmapped)
+}
+
+/// The structures a planned pointer reads as plain data, each with its field count as read and the fields (reached
+/// through structures held by value) that hold a handle of one of the kinds.
+fn plain_structures(header: &cheader::Header) -> BTreeMap<String, (usize, usize, Vec<String>)> {
+    let mut out = BTreeMap::new();
+    for entry in PLAN {
+        let Some(function) = header.callbacks.get(entry.structure).and_then(|callbacks| callbacks.iter().find(|function| function.name == entry.pointer)) else { continue };
+        for param in &function.params {
+            let base = param.base.trim_start_matches("const ").trim();
+            let Some(name) = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union ")) else { continue };
+            // A handle's own structure passed as const is a template (resource_create's, create_sampler_view's).
+            if (HANDLES.contains(&base) && !param.base.starts_with("const ")) || name == "pipe_screen" {
+                continue;
+            }
+            let mut handles = Vec::new();
+            collect_handles(header, name, "", 0, &mut handles);
+            let fields = header.structures.get(name).map_or(0, Vec::len);
+            let bits = header.structures.get(name).map_or(0, |fields| fields.iter().filter(|field| field.bits.is_some()).count());
+            out.insert(name.to_string(), (fields, bits, handles));
+        }
+    }
+    out
+}
+
+/// Whether a structure (or a structure it holds by value) holds a handle of one of the kinds.
+fn names_objects(header: &cheader::Header, base: &str) -> bool {
+    let name = base.trim_start_matches("struct ").trim_start_matches("union ");
+    let mut handles = Vec::new();
+    collect_handles(header, name, "", 0, &mut handles);
+    !handles.is_empty()
+}
+
+/// The fields of a structure, and of those it holds by value, that hold a handle of one of the kinds.
+fn collect_handles(header: &cheader::Header, name: &str, path: &str, depth: usize, out: &mut Vec<String>) {
+    let Some(fields) = header.structures.get(name) else { return };
+    for field in fields {
+        let base = field.base.trim_start_matches("const ").trim();
+        let at = if path.is_empty() { field.name.clone() } else { format!("{path}.{}", field.name) };
+        if field.pointers >= 1 && HANDLES.contains(&base) {
+            out.push(format!("{at}:{base}"));
+        } else if field.pointers == 0
+            && depth < 4
+            && let Some(inner) = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union "))
+        {
+            collect_handles(header, inner, &at, depth + 1, out);
+        }
+    }
 }

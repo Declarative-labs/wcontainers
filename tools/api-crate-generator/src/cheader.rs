@@ -16,6 +16,8 @@ pub struct CParam {
     pub pointers: usize,
     /// `[N]` after the name: the number or the define's name.
     pub array: Option<String>,
+    /// A bit-field's width (`bool primitive_restart:1`).
+    pub bits: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -39,6 +41,9 @@ pub struct Header {
     /// A structure's function pointer members (Gallium's `struct pipe_screen`, `struct pipe_context`), each a function
     /// named by its member.
     pub callbacks: BTreeMap<String, Vec<CFunction>>,
+    /// The structures that are unions (a member `union { ... } index;` is recorded as the structure
+    /// `pipe_draw_info.index`, a union).
+    pub unions: Vec<String>,
 }
 
 impl Header {
@@ -73,8 +78,38 @@ fn clean(text: &str, defines: &mut BTreeMap<String, String>) -> String {
         }
     }
     let mut kept = String::new();
+    // The conditionals' branches kept: a stack of (this branch kept, a branch of this conditional taken).
+    let mut branches: Vec<(bool, bool)> = Vec::new();
     for line in out.lines() {
         let trimmed = line.trim();
+        let outer = branches.iter().all(|(kept, _)| *kept);
+        if let Some(condition) = trimmed.strip_prefix("#ifdef ").or_else(|| trimmed.strip_prefix("#if ")).or_else(|| trimmed.strip_prefix("#ifndef ").map(|_| "1")) {
+            let holds = condition_holds(condition.trim());
+            branches.push((holds, holds));
+            continue;
+        }
+        if let Some(condition) = trimmed.strip_prefix("#elif ") {
+            if let Some((kept, taken)) = branches.last_mut() {
+                let holds = !*taken && condition_holds(condition.trim());
+                *kept = holds;
+                *taken |= holds;
+            }
+            continue;
+        }
+        if trimmed.starts_with("#else") {
+            if let Some((kept, taken)) = branches.last_mut() {
+                *kept = !*taken;
+                *taken = true;
+            }
+            continue;
+        }
+        if trimmed.starts_with("#endif") {
+            branches.pop();
+            continue;
+        }
+        if !outer {
+            continue;
+        }
         if let Some(define) = trimmed.strip_prefix("#define") {
             let mut words = define.split_whitespace();
             if let (Some(name), Some(value)) = (words.next(), words.next()) {
@@ -82,13 +117,22 @@ fn clean(text: &str, defines: &mut BTreeMap<String, String>) -> String {
             }
             continue;
         }
-        if trimmed.starts_with('#') || trimmed == "extern \"C\" {" || trimmed == "}" {
+        // `extern "C" {` and its brace are inside `#ifdef __cplusplus`, which is dropped above.
+        if trimmed.starts_with('#') {
             continue;
         }
         kept.push_str(line);
         kept.push('\n');
     }
     kept
+}
+
+/// Whether a conditional's condition holds where the headers are built (x86-64 and ARM64 Linux, by GCC or Clang, as C):
+/// `__GNUC__`, little-endian and POSIX hold; C++, big-endian and Windows do not; any other condition is taken as
+/// holding, so that its first branch is read (the headers read here have none).
+fn condition_holds(condition: &str) -> bool {
+    let name = condition.trim_start_matches("defined").trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace());
+    !matches!(name, "__cplusplus" | "UTIL_ARCH_BIG_ENDIAN" | "_WIN32" | "_MSC_VER" | "DETECT_OS_WINDOWS" | "0")
 }
 
 /// `void (*name)(struct pipe_context *, unsigned)` to a function named by the pointer's name.
@@ -134,6 +178,10 @@ fn split_parameters(text: &str) -> Vec<String> {
 /// `const struct nir_shader *const sources[WC_STAGES]` to its parts.
 fn declaration(text: &str) -> CParam {
     let text = text.trim();
+    let (text, bits) = match text.rsplit_once(':') {
+        Some((before, width)) if !width.trim().is_empty() && width.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !before.contains('(') => (before.trim(), Some(width.trim().to_string())),
+        _ => (text, None),
+    };
     let (text, array) = match text.split_once('[') {
         Some((before, after)) => (before.trim(), Some(after.trim_end_matches(']').trim().to_string())),
         None => (text, None),
@@ -152,7 +200,7 @@ fn declaration(text: &str) -> CParam {
     };
     // A `const` after the stars (`*const`) is the pointer's own and says nothing of what it points at.
     let base = base.trim_end_matches(" const").to_string();
-    CParam { name, base, pointers, array }
+    CParam { name, base, pointers, array, bits }
 }
 
 pub fn read(texts: &[String]) -> Header {
@@ -197,37 +245,111 @@ pub fn read(texts: &[String]) -> Header {
                 continue;
             };
             let head = rest[..open].trim().to_string();
-            let close = rest[open..].find('}').map_or(rest.len(), |close| open + close);
+            let close = matching_brace(rest, open);
             let body = &rest[open + 1..close];
-            rest = rest[close..].split_once(';').map_or("", |(_, after)| after);
+            // A definition ends at the semicolon after its body; a function's body (a header's `static inline`) at
+            // its brace.
+            let defines_a_type = ["struct", "union", "enum", "typedef"].iter().any(|word| head.starts_with(word));
+            rest = if defines_a_type { rest[close..].split_once(';').map_or("", |(_, after)| after) } else { rest.get(close + 1..).unwrap_or("") };
             if let Some(name) = head.strip_prefix("enum ") {
                 let values = body.split(',').map(|v| v.split('=').next().unwrap_or_default().trim().to_string()).filter(|v| !v.is_empty()).collect();
                 header.enumerations.insert(name.trim().to_string(), values);
-            } else if let Some(name) = head.strip_prefix("struct ") {
-                let mut fields = Vec::new();
-                let mut callbacks = Vec::new();
-                for member in body.split(';').map(str::trim).filter(|f| !f.is_empty()) {
-                    if let Some(function) = function_pointer(member) {
-                        callbacks.push(function);
-                        continue;
-                    }
-                    let field = declaration(member);
-                    if field.pointers == 0
-                        && let Some(typed) = header.function_types.get(field.base.trim())
-                    {
-                        callbacks.push(CFunction { name: field.name.clone(), ..typed.clone() });
-                        continue;
-                    }
-                    fields.push(field);
+            } else if let Some((union, name)) = head.strip_prefix("struct ").map(|name| (false, name)).or_else(|| head.strip_prefix("union ").map(|name| (true, name))) {
+                if union {
+                    header.unions.push(name.trim().to_string());
                 }
-                if !callbacks.is_empty() {
-                    header.callbacks.insert(name.trim().to_string(), callbacks);
-                }
+                let fields = members(&mut header, name.trim(), body);
                 header.structures.insert(name.trim().to_string(), fields);
             }
         }
     }
     header
+}
+
+/// The place of the brace closing the one at `open`.
+fn matching_brace(text: &str, open: usize) -> usize {
+    let mut depth = 0_usize;
+    for (at, character) in text[open..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return open + at;
+                }
+            }
+            _ => {}
+        }
+    }
+    text.len()
+}
+
+/// A body's members split at its top-level semicolons.
+fn split_members(body: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0_i32, 0);
+    for (at, character) in body.char_indices() {
+        match character {
+            '{' | '(' => depth += 1,
+            '}' | ')' => depth -= 1,
+            ';' if depth == 0 => {
+                out.push(body[start..at].trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(body[start..].trim());
+    out.into_iter().filter(|member| !member.is_empty()).collect()
+}
+
+/// A structure's (or union's) fields, its function pointer members recorded as callbacks, and each nested `struct {
+/// ... } name` or `union { ... } name` recorded as the structure `outer.name` (an anonymous one's fields are the outer
+/// structure's own).
+fn members(header: &mut Header, name: &str, body: &str) -> Vec<CParam> {
+    let mut fields = Vec::new();
+    let mut callbacks = Vec::new();
+    for member in split_members(body) {
+        if let Some(open) = member.find('{') {
+            let close = matching_brace(member, open);
+            let kind = member[..open].trim();
+            let union = kind.starts_with("union");
+            let inner_name = member[close + 1..].trim();
+            if inner_name.is_empty() {
+                let inner = members(header, name, &member[open + 1..close]);
+                fields.extend(inner);
+                continue;
+            }
+            // One body may declare several members (`struct { ... } dst, src;`): each gets its own copy.
+            for declarator in inner_name.split(',') {
+                let declared = declaration(&format!("x {}", declarator.trim()));
+                let nested = format!("{name}.{}", declared.name);
+                let inner = members(header, &nested, &member[open + 1..close]);
+                header.structures.insert(nested.clone(), inner);
+                if union {
+                    header.unions.push(nested.clone());
+                }
+                fields.push(CParam { base: format!("{} {nested}", if union { "union" } else { "struct" }), ..declared });
+            }
+            continue;
+        }
+        if let Some(function) = function_pointer(member) {
+            callbacks.push(function);
+            continue;
+        }
+        let field = declaration(member);
+        if field.pointers == 0
+            && let Some(typed) = header.function_types.get(field.base.trim())
+        {
+            callbacks.push(CFunction { name: field.name.clone(), ..typed.clone() });
+            continue;
+        }
+        fields.push(field);
+    }
+    if !callbacks.is_empty() {
+        header.callbacks.entry(name.to_string()).or_default().extend(callbacks);
+    }
+    fields
 }
 
 /// One row of the Mesa compiler's mapping rule, for the crate writer.
