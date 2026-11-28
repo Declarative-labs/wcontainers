@@ -4824,6 +4824,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-kernel-core-on-executor"
+version = "0.1.0"
+dependencies = [
+ "spin 0.10.1",
+ "vstd",
+ "wcontainers-abi",
+ "wcontainers-behavior-source",
+ "wcontainers-capability-table",
+ "wcontainers-executor",
+ "wcontainers-kernel-core",
+ "wcontainers-memory-capability-table",
+ "wcontainers-memory-capability-table-ordered",
+ "wcontainers-memory-shard",
+ "wcontainers-memory-shard-shared-bytes",
+ "wcontainers-processor-architecture",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
 name = "wcontainers-kernel-linux"
 version = "0.1.0"
 dependencies = [
@@ -4865,12 +4884,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-memory-capability-table-ordered"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+ "wcontainers-capability-table",
+ "wcontainers-memory-capability-table",
+ "wcontainers-memory-shard",
+ "wcontainers-memory-shard-shared-bytes",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
 name = "wcontainers-memory-shard"
 version = "0.1.0"
 dependencies = [
  "thiserror",
  "vstd",
  "wcontainers-capability-table",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-memory-shard-shared-bytes"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-memory-shard",
  "wcontainers-volatile-bytes",
 ]
 
