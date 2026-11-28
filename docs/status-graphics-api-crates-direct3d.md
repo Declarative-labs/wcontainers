@@ -11,6 +11,85 @@ HEAD..FETCH_HEAD` 0, MEASURED): nothing to merge. origin/graphics-api-crates (ce
 (9333bd4b4); only Cargo.lock conflicted (both sides kept: the Gallium direct crate's entry). No interface file of his is
 touched by any commit of this branch.
 
+## S. Run of 2026-11-27 night: the safe system constructors, valid suite arguments, every API's plant list (logs d3d/run-1127d/)
+
+His main 1f24bddad merged with a normal merge (bfba07972, clean). Commits, all pushed: f485f13b1, 75d363f22, 78e995e15,
+6faaeb1cd, ca328ceb0, e962bc8ac, 3c1e8e8b6, c7f8c6846, 009770561 and the plant runner's last change. The x86-64 machine
+was lost twice (about 15:55 to 19:20 Pacific); those hours ran on the ARM64 machine, whose disk was nearly full.
+
+### S.1 A safe way to the system's library (the implementations track's request)
+
+Each direct crate with a library now has `System<Api>::system()`, Windows only (src/glue_write.rs `system_library`):
+an `unsafe extern "system"` block `#[link(name = "d3d11" | "dxgi" | "d3d12")]` declaring each export with the
+metadata's parameters (`#[link_name = "D3D11CreateDevice"]` ...), and `system()` building `Library` from those items and
+calling `new` in the direct crate's one marked block, so the promise `new` asks for is kept where the exports are
+declared. Two marks a crate, reasons in src/undo.rs. Its test, tests/system.rs in each direct crate (templates/system/),
+is `#![forbid(unsafe_code)]`: hostile arguments refused before the system sees them (a software module, the
+switch-to-reference flag and an undeclared flag, 17 feature levels; DXGI's debug and an undeclared factory flag; an
+interface no device has), and an honest call gets its object (WARP at 11_0, a factory, a device). MEASURED: windows-gnu
+type-check of the three direct crates' tests status 0 (x86 job gacd 20261127-213114, ARM job gacd 20261128-010350).
+Not run: it needs Windows (AC9). The serving side is checked by `refusals_through_glues` (S.2).
+
+### S.2 What the comparison now covers (the check's blocking 2)
+
+- `SUITE_DIFFERENT` accepts only a line of what the implementation received, never an answer, and only 7 methods remain
+  (GetImmediateContext 0 to 3, GetDevice, GetClassLinkage: answered from the glue's record, no arguments). The suite's
+  invalid arguments became valid ones in src/api.rs `SUITE_ARGUMENTS` (CreateBuffer, CreateTexture1D/2D/3D with initial
+  bytes of exactly the rule's length, UpdateSubresource(1), Map, Unmap, IASetVertexBuffers, the UAV slot, the swap
+  chain's description, GetBuffer, CheckFeatureSupport, and the one value each pin passes), and the calls the calling glue
+  makes of its own are taken out by `SUITE_EXTRA_CALLS` (the buffer's description for Map and UpdateSubresource, the
+  multithread protection of D3D11CreateDevice(AndSwapChain)). Makers that create come first, those by interface id only
+  after; a compared call that hands out an interface by id asks for one the implementation has.
+- The recorder logs which objects an argument holds (an optional object, each element of an array of objects); a
+  mapping's pitches are compared; a union has a known value the same in every member (src/glue_hostile.rs
+  `union_known`), and each union codec has a test that a member given alone is written.
+- `refusals_through_glues` (each recorder): the whole drive through both glues reaches no refusal entry of the serving
+  glue, so a calling glue that forwards what it should refuse (the check's plant c, a GPU address) fails it.
+- tests/exact: `the_serving_glue_passes_what_the_calling_glue_pins` (a raise flag, breaks turned on, a software module
+  reach the recorder through the serving glue) and `one_byte_past_the_lent_memory_is_stopped` (under AddressSanitizer,
+  C touching one byte past the lent memory of a buffer and of each texture shape is a heap-buffer-overflow).
+- The calling glue passes a pin's one value (0, false, null) as a constant; codecs nothing reaches are not written.
+
+### S.3 The bar
+
+| Group | At | Total | Caught | Survived | Other |
+|---|---|---|---|---|---|
+| lengths.rs, cargo-mutants (unit tests and exact tests, dev profile: overflow checks on) | e962bc8ac | 289 | 281 | 0 | 8 unviable |
+| plants/direct3d-12.tsv | e962bc8ac (86), then with the runner fix (164) | 250 | 250 | 0 | 0 invalid; plant 87 hung (killed at 600 s) |
+| plants/lengths.tsv, reference tests | 009770561 | 39 | 39 | 0 | 0 |
+| plants/lengths.tsv, exact C tests under AddressSanitizer | 009770561 | 39 | 39 (the four `lent_length_*.over` among them, by `one_byte_past_the_lent_memory_is_stopped`) | 0 | 0 |
+| fuzz under AddressSanitizer, 3 seeds x 10M: hostile set / C caller | e962bc8ac | 6 runs | status 0, 0 reports | | |
+| plants/direct3d-11.tsv (3,201; stage command: the direct crate's unit tests, the recorder's comparison and refusal count) | e962bc8ac to 009770561 | 2,305 judged | 2,217 | 23 | 5 invalid, 60 hung (killed at 900 s, most likely builds on a loaded machine), 896 not run |
+| plants/directx-graphics-infrastructure.tsv (867) | e962bc8ac to 009770561 | 702 judged | 686 | 13 | 3 hung, 165 not run |
+| generator, this run's functions at the tip (`--re`; answer_summary, presence_of, argument, read_value, union_known, without_unused_codecs) | 64ddf38a1 | 83 | 78 | 0 | 3 unviable, 2 timeouts (an endless loop each), the run stopped before its end |
+| generator, the whole diff since f710cf5b2 | e962bc8ac | 345 | 294 | 37 | 14 unviable; most survivors since fixed (S.4) |
+
+Verdict logs: d3d/run-1127d/gacdpx-verdicts.log (Direct3D 11), gacdpg-verdicts.log (DXGI), gacdp12-verdicts.log.
+
+### S.4 What survives, and why (to fix next, in this order)
+
+- Direct3D 11 and DXGI plants judged under an earlier suite and fixed since (to be rerun at the tip with the full
+  command): the mapped pitches (650, 651), GetType and Buffer::GetDesc of a buffer (the new probe in the recorder's
+  hostile tests, which the stage command does not run), SetPrivateDataInterface's object (the suite now passes one),
+  IDXGIFactory5::CheckFeatureSupport's feature.
+- Answers the serving glue gives from its record (GetType of each texture, GetDesc of textures, queries, views, a
+  surface and a swap chain, GetBuffer): the suite does not compare them (the recorder is never asked); the probe of S.2
+  covers a buffer only. Next: compare each with what its creation passed, for every kind.
+- Arguments the suite passes as zero where zero is the only valid value it has: a buffer's subresource for Map, Unmap and
+  UpdateSubresource(1), RSGetViewports' and RSGetScissorRects' counts. Next: map a texture's second subresource.
+- Single cases: SetMultithreadProtected's value in the glue's own call, set_marker, SetMuteDebugOutput, the shader trace
+  registers, DecoderBeginFrame1's arrays, the video device's feature check and key exchange, DXGI's
+  Offer/ReclaimResources, CreateSoftwareAdapter, GetDisplayModeList1's out count, two InfoQueue filters.
+- 63 hung and 1,061 not run: to rerun with fewer copies at once and a longer limit.
+- The generator's remaining survivors at e962bc8ac outside the functions fixed: known_value's tuple salts,
+  recorded_method (4), Shapes::zero, codecs' newtype detection.
+
+### S.5 Not done this run
+
+D3 (the (heap, index) line, (resource, offset), the pipeline states, the unions holding resources, ExecuteCommandLists,
+Map), the Direct3D 12 hostile set, D2, A6, A7: not started; the run's time went to the bar above and to two losses of
+the x86-64 machine.
+
 ## R. Run of 2026-11-27 evening: values compared, plants committed, mutation runs (logs d3d/run-1127c/)
 
 Merged origin/graphics-api-crates d2cd0e0c4 (055ce667f, clean); his main ac696ea19 already inside (count 0). Commits:
