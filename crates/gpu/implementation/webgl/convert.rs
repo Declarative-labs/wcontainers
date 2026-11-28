@@ -128,6 +128,9 @@ pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String>
         Default::default()
     };
     let towards = [towards, srgb].concat();
+    // The program's `half_bits` gives the bits of a half float sampled as `f`, NaN payloads kept
+    // (packHalf2x16 may make them canonical); `small_bits` those of an unsigned float of `mb`
+    // mantissa bits and a 5-bit exponent.
     let half = |c: &str| format!("half_bits(v.{c})");
     let decode = match from {
         Kind::Unorm => format!("uvec4(v * vec4({max}) + 0.5)"),
@@ -212,7 +215,6 @@ precision highp int;
 uniform highp {prefix}sampler{sampler} src;
 uniform ivec3 at;
 {output}
-// The bits of a half float sampled as `f`, NaN payloads kept (packHalf2x16 may make them canonical).
 uint half_bits(float f) {{
     uint u = floatBitsToUint(f);
     uint sign = (u >> 16u) & 0x8000u;
@@ -223,7 +225,6 @@ uint half_bits(float f) {{
     if (e < 103u) return sign;
     return sign | ((m | 0x800000u) >> (126u - e));
 }}
-// The bits of an unsigned float of `mb` mantissa bits and a 5-bit exponent sampled as `f`.
 uint small_bits(float f, uint mb) {{
     uint u = floatBitsToUint(f);
     uint e = (u >> 23u) & 0xffu;

@@ -7638,9 +7638,10 @@ pub fn float_targets_drawn_with_every_kind_of_value_read_back_its_bits<B: Gpu>(m
 
 /// Every half float word but the signalling NaNs (whose quiet bit a conversion may set), written into
 /// an `rgba16float` texture that is also a render target, and 2048 R11G11B10 words (every 11-bit red,
-/// greens and blues spread over their codes, no NaN) written into an `rg11b10float` one, read back
-/// with every bit: a back end reading such textures by sampling them recovers each value's bits from
-/// its float, denormals, infinities and NaN payloads too.
+/// greens and blues spread over their codes) written into an `rg11b10float` one, read back with every
+/// bit: a back end reading such textures by sampling them recovers each value's bits from its float,
+/// denormals, infinities and half NaN payloads too. An R11G11B10 NaN reads back as a NaN of its
+/// channel (its payload may be made canonical), never as infinity.
 pub fn float_texels_written_read_back_with_every_bit<B: Gpu>(mut b: B) {
     let usage = TextureUsage::COPY_SRC
         | TextureUsage::COPY_DST
@@ -7680,21 +7681,25 @@ pub fn float_texels_written_read_back_with_every_bit<B: Gpu>(mut b: B) {
         assert!(wrong.is_empty(), "rgba16float: {wrong:?}");
     }
     if uses(&b, Format::Rg11b10Float) {
-        let no_nan = |v: u32, mantissa: u32| {
-            let exponent = 0x1f * (mantissa + 1);
-            if v & exponent == exponent && v & mantissa != 0 {
-                0
-            } else {
-                v
-            }
-        };
         let words: Vec<u32> = (0..2048u32)
-            .map(|i| {
-                no_nan(i, 0x3f)
-                    | no_nan((i * 7 + 3) % 2048, 0x3f) << 11
-                    | no_nan((i * 5 + 1) % 1024, 0x1f) << 22
-            })
+            .map(|i| i | ((i * 7 + 3) % 2048) << 11 | ((i * 5 + 1) % 1024) << 22)
             .collect();
+        // Each channel's code, its exponent's bits and its mantissa's.
+        let channels = |w: u32| {
+            [
+                (w & 0x7ff, 0x7c0, 0x3f),
+                (w >> 11 & 0x7ff, 0x7c0, 0x3f),
+                (w >> 22, 0x3e0, 0x1f),
+            ]
+        };
+        let nan =
+            |c: u32, exponent: u32, mantissa: u32| c & exponent == exponent && c & mantissa != 0;
+        let same = |got: u32, want: u32| {
+            channels(got)
+                .iter()
+                .zip(channels(want))
+                .all(|(&(g, e, m), (w, _, _))| if nan(w, e, m) { nan(g, e, m) } else { g == w })
+        };
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let got = round_trip(&mut b, Format::Rg11b10Float, (64, 32), &bytes, 4);
         let wrong: Vec<String> = got
@@ -7702,7 +7707,7 @@ pub fn float_texels_written_read_back_with_every_bit<B: Gpu>(mut b: B) {
             .0
             .iter()
             .zip(&words)
-            .filter(|(g, w)| u32::from_le_bytes(**g) != **w)
+            .filter(|(g, w)| !same(u32::from_le_bytes(**g), **w))
             .take(16)
             .map(|(g, w)| format!("{w:#010x} read as {:#010x}", u32::from_le_bytes(*g)))
             .collect();
