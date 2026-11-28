@@ -1,0 +1,13 @@
+[package]
+name = "wcontainers-kernel-core-executor"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-kernel-core = { path = "../.." }
+
+[lints]
+workspace = true

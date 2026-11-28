@@ -1,0 +1,13 @@
+[package]
+name = "wcontainers-memory-shard-shared-allocation"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-memory-shard = { path = "../.." }
+
+[lints]
+workspace = true

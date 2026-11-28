@@ -1,0 +1,14 @@
+[package]
+name = "wcontainers-memory-capability-table-list"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-memory-capability-table = { path = "../.." }
+wcontainers-memory-shard = { path = "../../../memory-shard" }
+
+[lints]
+workspace = true
