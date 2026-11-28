@@ -166,18 +166,20 @@ impl VolatileBytes for LieBytes {
     fn len(&self) -> u64 {
         if lie(8) { random() } else { self.0.lock().unwrap_or_else(PoisonError::into_inner).len() as u64 }
     }
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         maybe_panic(128);
         let held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let count = into.len().min(held.len());
-        into[..count].copy_from_slice(&held[..count]);
+        let from = usize::try_from(offset).ok().and_then(|offset| held.get(offset..)).unwrap_or_default();
+        let count = into.len().min(from.len());
+        into[..count].copy_from_slice(&from[..count]);
         if lie(8) { random() as usize } else { count }
     }
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         maybe_panic(128);
         let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let count = bytes.len().min(held.len());
-        held[..count].copy_from_slice(&bytes[..count]);
+        let to = usize::try_from(offset).ok().and_then(|offset| held.get_mut(offset..)).unwrap_or_default();
+        let count = bytes.len().min(to.len());
+        to[..count].copy_from_slice(&bytes[..count]);
         if lie(8) { random() as usize } else { count }
     }
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {

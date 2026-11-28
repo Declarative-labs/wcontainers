@@ -42,6 +42,7 @@ wcontainers-direct3d-11-hostile = { path = "../hostile" }
 wcontainers-direct3d-12-hostile = { path = "../../../direct3d-12/implementation/hostile" }
 wcontainers-direct3d-12 = { path = "../../../direct3d-12" }
 wcontainers-direct3d-11-recorder = { path = "../recorder" }
+wcontainers-directx-graphics-infrastructure-recorder = { path = "../../../directx-graphics-infrastructure/implementation/recorder" }
 
 # A C boundary: it denies unsafe code, so that each use is marked with its reason.
 [lints.rust]

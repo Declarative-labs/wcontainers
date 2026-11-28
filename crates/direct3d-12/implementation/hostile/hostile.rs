@@ -464,13 +464,15 @@ impl wcontainers_volatile_bytes::VolatileBytes for LyingBytes {
         self.length(n)
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let _ = offset;
         let n = self.call();
         into.fill(u8::try_from(n % 251).unwrap_or(0));
         into.len().saturating_add(5)
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let _ = offset;
         let _ = self.call();
         bytes.len().saturating_mul(3).saturating_add(1)
     }

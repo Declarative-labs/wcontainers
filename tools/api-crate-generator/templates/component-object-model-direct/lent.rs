@@ -86,12 +86,12 @@ impl VolatileBytes for ForeignLent {
         self.with_view(0, VolatileBytes::len)
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        self.with_view(0, |view| view.read(into))
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        self.with_view(0, |view| view.read_at(offset, into))
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        self.with_view(0, |view| view.write(bytes))
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        self.with_view(0, |view| view.write_at(offset, bytes))
     }
 
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
@@ -202,16 +202,14 @@ impl Shadow {
     /// Copies the bytes in from `source`'s `read_to`, with no copy of ours between, as many as both hold.
     pub fn fill_from(&self, source: &impl VolatileBytes) {
         let Some(block) = self.0.as_ref() else { return };
-        let Some(view) = block.view.part(0..self.1 as u64) else { return };
-        let mut writer = Filling { view, at: 0 };
+        let mut writer = Filling { view: &block.view, at: 0, end: self.1 as u64 };
         let _ = source.read_to(&mut writer);
     }
 
     /// Copies the bytes the C side left out to `target`'s `write_from`, with no copy of ours between.
     pub fn empty_into(&self, target: &impl VolatileBytes) {
         let Some(block) = self.0.as_ref() else { return };
-        let Some(view) = block.view.part(0..self.1 as u64) else { return };
-        let mut reader = Emptying { view, at: 0 };
+        let mut reader = Emptying { view: &block.view, at: 0, end: self.1 as u64 };
         let _ = target.write_from(&mut reader);
     }
 
@@ -223,7 +221,7 @@ impl Shadow {
         let mut at = 0_u64;
         let end = self.1 as u64;
         while at < end {
-            let written = block.view.part(at..end).map_or(0, |rest| rest.write(&ZEROS));
+            let written = block.view.write_at(at, &ZEROS[..within(ZEROS.len(), at, end)]);
             if written == 0 {
                 return;
             }
@@ -233,7 +231,7 @@ impl Shadow {
 
     /// Copies the bytes in from `bytes`, as many as both hold, and returns how many.
     pub fn fill(&self, bytes: &[u8]) -> usize {
-        self.0.as_ref().map_or(0, |block| block.view.part(0..self.1 as u64).map_or(0, |view| view.write(bytes)))
+        self.0.as_ref().map_or(0, |block| block.view.write(&bytes[..within(bytes.len(), 0, self.1 as u64)]))
     }
 
     /// Returns a copy of the bytes the C side left, or none when the allocator cannot give it.
@@ -286,33 +284,41 @@ impl Drop for Shadow {
 #[path = "lent_tests.rs"]
 mod tests;
 
-/// A sink writing a shadow's bytes in order, as many as it holds; past its end it takes nothing.
-struct Filling {
-    view: PointerBytes,
-    at: u64,
+/// How many of a buffer's `count` bytes fit from `at` to `end`.
+fn within(count: usize, at: u64, end: u64) -> usize {
+    usize::try_from(end.saturating_sub(at)).map_or(count, |room| count.min(room))
 }
 
-impl ByteSink for Filling {
+/// A sink writing a shadow's bytes in order, as many as its first `end` bytes hold; past them it takes nothing.
+struct Filling<'block> {
+    view: &'block PointerBytes,
+    at: u64,
+    end: u64,
+}
+
+impl ByteSink for Filling<'_> {
     type Error = core::convert::Infallible;
 
     fn write(&mut self, bytes: &[u8]) -> Result<usize, Self::Error> {
-        let written = self.view.part(self.at..self.view.len()).map_or(0, |rest| rest.write(bytes));
+        let written = self.view.write_at(self.at, &bytes[..within(bytes.len(), self.at, self.end)]);
         self.at += written as u64;
         Ok(written)
     }
 }
 
-/// A source reading a shadow's bytes in order; past its end it gives nothing.
-struct Emptying {
-    view: PointerBytes,
+/// A source reading a shadow's first `end` bytes in order; past them it gives nothing.
+struct Emptying<'block> {
+    view: &'block PointerBytes,
     at: u64,
+    end: u64,
 }
 
-impl ByteSource for Emptying {
+impl ByteSource for Emptying<'_> {
     type Error = core::convert::Infallible;
 
     fn read(&mut self, into: &mut [u8]) -> Result<usize, Self::Error> {
-        let read = self.view.part(self.at..self.view.len()).map_or(0, |rest| rest.read(into));
+        let count = within(into.len(), self.at, self.end);
+        let read = self.view.read_at(self.at, &mut into[..count]);
         self.at += read as u64;
         Ok(read)
     }

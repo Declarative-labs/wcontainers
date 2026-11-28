@@ -632,6 +632,10 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
     }
     if !sliced_here {
         dev.push(format!("{}-recorder = {{ path = \"../recorder\" }}", package(g.apis[d3d11])));
+        // The DXGI recorder, whose factory the exact tests reach through DXGI's serving glue.
+        if let Some(dxgi) = g.apis.iter().find(|spec| spec.folder == "directx-graphics-infrastructure") {
+            dev.push(format!("{}-recorder = {{ path = \"../../../{}/implementation/recorder\" }}", package(dxgi), dxgi.folder));
+        }
     }
     let mut tests = String::from("\n[[test]]\nname = \"c_caller\"\npath = \"tests/c_caller/main.rs\"\nrequired-features = [\"c-caller\"]\n");
     if !sliced_here {

@@ -128,6 +128,34 @@ HRESULT exact_set_break(void *queue, uint32_t slot, int32_t value, int32_t enabl
     return SLOT(queue, slot, SetBreakFunction)(queue, value, enable);
 }
 
+/* QueryInterface (slot 0) of `object` for the interface whose 16 bytes `iid` holds. */
+typedef HRESULT (*QueryFunction)(void *, const void *, void **);
+HRESULT exact_query(void *object, const void *iid, void **out) { return SLOT(object, 0, QueryFunction)(object, iid, out); }
+
+/* DXGI's calls whose values the calling glue never passes (pinned: never called, or a module), handed to the serving
+   glue directly: IDXGIDevice2 OfferResources 14 and ReclaimResources 15, IDXGIDevice4 OfferResources1 18 and
+   ReclaimResources1 19 (dxgi1_2.h, dxgi1_5.h), each of the one resource `resource`; IDXGIFactory CreateSoftwareAdapter 11
+   (dxgi.h). */
+typedef HRESULT (*OfferFunction)(void *, uint32_t, void *const *, int32_t);
+typedef HRESULT (*Offer1Function)(void *, uint32_t, void *const *, int32_t, uint32_t);
+typedef HRESULT (*ReclaimFunction)(void *, uint32_t, void *const *, int32_t *);
+typedef HRESULT (*SoftwareAdapterFunction)(void *, uintptr_t, void **);
+HRESULT exact_offer(void *device, void *resource, int32_t priority) {
+    return SLOT(device, 14, OfferFunction)(device, 1, &resource, priority);
+}
+HRESULT exact_reclaim(void *device, void *resource, int32_t *discarded) {
+    return SLOT(device, 15, ReclaimFunction)(device, 1, &resource, discarded);
+}
+HRESULT exact_offer1(void *device, void *resource, int32_t priority, uint32_t flags) {
+    return SLOT(device, 18, Offer1Function)(device, 1, &resource, priority, flags);
+}
+HRESULT exact_reclaim1(void *device, void *resource, int32_t *results) {
+    return SLOT(device, 19, ReclaimFunction)(device, 1, &resource, results);
+}
+HRESULT exact_software_adapter(void *factory, uintptr_t module, void **adapter) {
+    return SLOT(factory, 11, SoftwareAdapterFunction)(factory, module, adapter);
+}
+
 /* D3D11CreateDevice with the software rasterizer module `module` (D3D_DRIVER_TYPE_SOFTWARE, 4). */
 HRESULT exact_create_device_with_module(uintptr_t create, uintptr_t module, void **device, void **context) {
     int32_t level = 0xb000, made = 0;
@@ -184,8 +212,12 @@ static void read_exactly(const void *bytes, uint64_t length) {
     read_sum += sum;
 }
 
-/* What the system saw: creations, uploads, maps, unmaps, and calls of a slot it does not serve. */
-static atomic_ullong seen[5];
+/* What the system saw: creations, uploads, maps, unmaps, calls of a slot it does not serve, unmaps of another resource
+   or subresource than the one mapped, and devices made. */
+static atomic_ullong seen[7];
+/* The resource and subresource the one Map lent. */
+static void *mapped_resource;
+static uint32_t mapped_subresource;
 
 static Entry device_table[96], context_table[160], multithread_table[7], resource_table[16], query_table[16];
 static Object device = {device_table, 1, KIND_DEVICE, {0}};
@@ -211,7 +243,7 @@ void exact_system_map_with(uint32_t row_pitch, uint32_t depth_pitch, uint64_t le
 }
 
 void exact_system_seen(uint64_t *out) {
-    for (int at = 0; at < 5; at++) out[at] = atomic_load(&seen[at]);
+    for (int at = 0; at < 7; at++) out[at] = atomic_load(&seen[at]);
 }
 
 static intptr_t not_served(void) {
@@ -319,9 +351,11 @@ static void get_desc(void *this, void *out) {
 /* Lends a heap block of exactly the length the test named, at the pitches it named. */
 static HRESULT map(void *this, void *resource, uint32_t subresource, int32_t type, uint32_t flags,
                    MAPPED_SUBRESOURCE *out) {
-    (void)this, (void)resource, (void)subresource, (void)type, (void)flags;
+    (void)this, (void)type, (void)flags;
     if (!out || mapped_block) return E_INVALIDARG;
     mapped_block = exact_block(map_length, 3);
+    mapped_resource = resource;
+    mapped_subresource = subresource;
     out->pData = mapped_block;
     out->RowPitch = map_row_pitch;
     out->DepthPitch = map_depth_pitch;
@@ -330,7 +364,8 @@ static HRESULT map(void *this, void *resource, uint32_t subresource, int32_t typ
 }
 
 static void unmap(void *this, void *resource, uint32_t subresource) {
-    (void)this, (void)resource, (void)subresource;
+    (void)this;
+    if (resource != mapped_resource || subresource != mapped_subresource) atomic_fetch_add(&seen[5], 1);
     free(mapped_block);
     mapped_block = NULL;
     atomic_fetch_add(&seen[3], 1);
@@ -397,6 +432,7 @@ HRESULT exact_system_create_device(void *adapter, int32_t driver_type, void *sof
                                    int32_t *level, void **out_context) {
     (void)adapter, (void)driver_type, (void)software, (void)flags, (void)sdk_version;
     if (!device_table[0]) tables();
+    atomic_fetch_add(&seen[6], 1);
     if (out_device) {
         add_ref(&device);
         *out_device = &device;

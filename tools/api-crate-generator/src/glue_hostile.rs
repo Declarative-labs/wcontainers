@@ -407,13 +407,15 @@ impl wcontainers_volatile_bytes::VolatileBytes for LyingBytes {
         self.length(n)
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let _ = offset;
         let n = self.call();
         into.fill(u8::try_from(n % 251).unwrap_or(0));
         into.len().saturating_add(5)
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let _ = offset;
         let _ = self.call();
         bytes.len().saturating_mul(3).saturating_add(1)
     }
@@ -458,13 +460,15 @@ impl wcontainers_volatile_bytes::VolatileBytes for RecordedBytes {
         lying_length(MAPPED_LENGTH as u64)
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let _ = offset;
         lie(Site::Mapped, "Mapped::read");
         into.fill(u8::try_from(TURN.fetch_add(1, Ordering::SeqCst) % 251).unwrap_or(0));
         into.len().saturating_mul(2)
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let _ = offset;
         lie(Site::Mapped, "Mapped::write");
         bytes.len().saturating_add(9)
     }
@@ -1289,7 +1293,7 @@ impl Shapes {
         }
         let (fields, union) = self.structs.get(ty)?;
         if *union {
-            return self.union_known(ty, salt).or_else(|| self.zero(ty));
+            return self.union_known(ty, salt);
         }
         let parts: Option<Vec<String>> = fields.iter().enumerate().map(|(at, (name, field))| self.known(field, salt + KNOWN_STEP * (at + 1), valid).map(|value| format!("{name}: {value}"))).collect();
         parts.map(|parts| format!("{ty} {{ {} }}", parts.join(", ")))
@@ -1397,29 +1401,6 @@ impl Shapes {
         }
         Some(format!("{ty} {{ {} }}", parts.join(", ")))
     }
-
-    /// A Rust expression of type `ty` that is all zero bytes, made only of literals.
-    fn zero(&self, ty: &str) -> Option<String> {
-        let ty = ty.trim();
-        if KNOWN_INTEGERS.contains(&ty) {
-            return Some(format!("0_{ty}"));
-        }
-        if ["f32", "f64"].contains(&ty) {
-            return Some(format!("0.0_{ty}"));
-        }
-        if ty == "bool" {
-            return Some("false".to_string());
-        }
-        if let Some((element, _)) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).and_then(|inner| inner.rsplit_once(';')) {
-            return self.zero(element).map(|value| format!("core::array::from_fn(|_| {value})"));
-        }
-        if self.values.contains_key(ty) || self.newtypes.contains(ty) {
-            return Some(format!("{ty}(0)"));
-        }
-        let (fields, _) = self.structs.get(ty)?;
-        let parts: Option<Vec<String>> = fields.iter().map(|(name, field)| self.zero(field).map(|value| format!("{name}: {value}"))).collect();
-        parts.map(|parts| format!("{ty} {{ {} }}", parts.join(", ")))
-    }
 }
 
 /// Sets the writer's structure values from the set's crates (a decoder of zero bytes, or `Default`), and returns the
@@ -1451,7 +1432,8 @@ fn codecs(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Codecs {
             for rest in text.lines().filter_map(|line| line.strip_prefix("pub struct ")) {
                 let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
                 let field = rest[name.len()..].trim_start_matches("(pub ").trim_end_matches(");");
-                if rest[name.len()..].starts_with("(pub ") && ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"].contains(&field) {
+                // (Only a tuple structure's one field, `(pub u32);`, trims to an integer's name.)
+                if ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"].contains(&field) {
                     newtypes.insert(format!("{}::{module}::{name}", alias(spec)));
                 }
             }
@@ -1625,17 +1607,19 @@ impl wcontainers_volatile_bytes::VolatileBytes for SuiteBytes {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() as u64
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let held = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = into.len().min(held.len());
-        into[..count].copy_from_slice(&held[..count]);
+        let from = usize::try_from(offset).ok().and_then(|offset| held.get(offset..)).unwrap_or_default();
+        let count = into.len().min(from.len());
+        into[..count].copy_from_slice(&from[..count]);
         count
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         let mut held = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = bytes.len().min(held.len());
-        held[..count].copy_from_slice(&bytes[..count]);
+        let to = usize::try_from(offset).ok().and_then(|offset| held.get_mut(offset..)).unwrap_or_default();
+        let count = bytes.len().min(to.len());
+        to[..count].copy_from_slice(&bytes[..count]);
         count
     }
 

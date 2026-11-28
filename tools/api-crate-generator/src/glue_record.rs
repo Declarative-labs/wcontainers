@@ -19,6 +19,9 @@ pub(super) fn recorder_alias(folder: &str) -> String {
 /// The length of the bytes the recorder lends for each Map, and the pitches it answers: one 64 KiB page, rows of 4 KiB.
 pub(super) const MAPPED: (u32, u32, u32) = (1 << 16, 1 << 12, 1 << 16);
 
+/// The value the hostile implementation answers where an exception line says the answer is one of a list (src/api.rs
+/// `Exception::OneOf`) and two or more are asked: no D3D_FEATURE_LEVEL is 1.
+const NOT_ASKED: i32 = 1;
 /// What a known answer's salt moves by from one part of an answer to the next.
 const KNOWN_STEP: usize = 7;
 /// Stands in the recorder's answer list for a known value of the answer's type, until the types are split (followed
@@ -182,17 +185,19 @@ impl wcontainers_volatile_bytes::VolatileBytes for RecordedBytes {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).len() as u64
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let count = into.len().min(held.len());
-        into[..count].copy_from_slice(&held[..count]);
+        let from = usize::try_from(offset).ok().and_then(|offset| held.get(offset..)).unwrap_or_default();
+        let count = into.len().min(from.len());
+        into[..count].copy_from_slice(&from[..count]);
         count
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let count = bytes.len().min(held.len());
-        held[..count].copy_from_slice(&bytes[..count]);
+        let to = usize::try_from(offset).ok().and_then(|offset| held.get_mut(offset..)).unwrap_or_default();
+        let count = bytes.len().min(to.len());
+        to[..count].copy_from_slice(&bytes[..count]);
         count
     }
 
@@ -263,11 +268,8 @@ impl Writer<'_, '_> {
     /// answer through both glues with the recorder's own). Made of literals only (src/glue_hostile.rs `Shapes`), never
     /// of the glue's own decoders, so that the answer the glues are compared with shares no code with them.
     pub(super) fn known_value(&self, ty: &str, salt: usize) -> Option<String> {
+        // A tuple's parts are asked one by one (`recorded_method`), each with a salt of its own.
         let ty = ty.trim();
-        if let Some(inner) = ty.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
-            let parts: Option<Vec<String>> = split_types(inner).iter().enumerate().map(|(at, part)| self.known_value(part, salt + KNOWN_STEP * (at + 1))).collect();
-            return parts.map(|parts| format!("({})", parts.join(", ")));
-        }
         if let Some(value) = self.shapes.borrow().known(ty, salt, false) {
             return Some(value);
         }
@@ -322,7 +324,7 @@ impl Writer<'_, '_> {
                     // Objects are not compared by value: which are there is, so that a glue dropping one is seen.
                     shown.push(format!("{name}={{:?}}"));
                     shown_values.push(presence);
-                } else if ty.contains("Self") || ty.contains("impl ") || ty.contains("dyn ") || ty.contains("VolatileBytes") {
+                } else if ty.contains("Self") || ty.contains("VolatileBytes") {
                     shown.push(format!("{name}=an object or the caller's bytes"));
                 } else {
                     shown.push(format!("{name}={{:?}}"));
@@ -386,7 +388,8 @@ impl Writer<'_, '_> {
         // The type of the answer at a position of the result's tuple (or the whole result's).
         let inner = result.strip_prefix("Result<").and_then(|rest| rest.strip_suffix('>')).map_or(result.to_string(), |rest| split_types(rest).first().cloned().unwrap_or_default());
         let tuple_types = inner.trim().strip_prefix('(').and_then(|rest| rest.strip_suffix(')')).map(split_types).unwrap_or_default();
-        let type_at = |at: usize| if tuple_types.len() > 1 { tuple_types.get(at).cloned().unwrap_or_default() } else { inner.clone() };
+        // (A tuple has two parts or more: the trait writes no tuple of one.)
+        let type_at = |at: usize| if tuple_types.is_empty() { inner.clone() } else { tuple_types.get(at).cloned().unwrap_or_default() };
         let mut answers: Vec<String> = Vec::new();
         if glued.returned.is_some() {
             answers.push(if known { KNOWN_MARK.to_string() } else { "Default::default()".to_string() });
@@ -412,7 +415,11 @@ impl Writer<'_, '_> {
                 Part::ValueOut { element, .. } => match (one_of, element.as_ref()) {
                     (Some((value, list, default)), Part::Value { rust, .. }) if param.name == value => {
                         let list = crate::names::value_name(list);
-                        answers.push(format!("{list}.first().copied().unwrap_or({rust}({}))", default.first().copied().unwrap_or(0)));
+                        let first = format!("{list}.first().copied().unwrap_or({rust}({}))", default.first().copied().unwrap_or(0));
+                        // The hostile implementation answers a value none of a list of two or more names (1 is no
+                        // feature level), so that the serving glue's check of it is reached; one value asked, it answers
+                        // that one, as the recorder does.
+                        answers.push(if self.hostile.get() { format!("if {list}.len() > 1 {{ {rust}({NOT_ASKED}) }} else {{ {first} }}") } else { first });
                     }
                     _ => answers.push(if known { KNOWN_MARK.to_string() } else { "Default::default()".to_string() }),
                 },
@@ -458,7 +465,9 @@ impl Writer<'_, '_> {
                     answers.push(KNOWN_MARK.to_string());
                     let _ = name;
                 }
-                Part::StructOut { .. } if fallback == "Default::default()" && self.made_value(result).is_some() => {
+                // (A result the recorder can make is never one whose fallback is an error or none: those are answered
+                // the same by the next arm.)
+                Part::StructOut { .. } if self.made_value(result).is_some() => {
                     // A structure the recorder can make: known bytes decoded (the hostile implementation: zero bytes), or its
                     // default.
                     let value = if known { self.known_value(result, salt) } else { self.made_value(result) }.unwrap_or_default();

@@ -745,7 +745,13 @@ impl Writer<'_, '_> {
                                 let kind = &self.g.kinds[made_kind];
                                 let mut answers: Vec<String> = kind.ancestors.iter().map(|k| k.1.clone()).collect();
                                 for api in self.g.apis.iter() {
-                                    answers.extend(api.faces_of(&kind.root.1).iter().map(|face| (*face).to_string()));
+                                    for face in api.faces_of(&kind.root.1) {
+                                        // A face answers its interface's earlier versions too (a texture's IDXGISurface2 is
+                                        // its IDXGISurface).
+                                        let versions = self.g.kinds.iter().filter(|other| other.ancestors.iter().any(|a| a.1 == *face)).flat_map(|other| other.ancestors.iter().map(|a| a.1.clone()));
+                                        answers.extend(versions);
+                                        answers.push((*face).to_string());
+                                    }
                                 }
                                 let mut recorded: Vec<String> = Vec::new();
                                 for exception in self.g.exceptions() {
@@ -1489,29 +1495,43 @@ fn refusal_entry(fn_name: &str, place: &str, refusal: &super::Refusal) -> String
 /// The system's own library on Windows, linked by name (`dll`, e.g. `d3d11.dll`), and the safe constructor of the
 /// calling glue over it: each entry (C name, field name, C parameters and result) is declared with the parameters the
 /// metadata gives and taken as that field of `Library`, so the promise `new` asks for is kept here, not by its caller.
+/// Exports a library's import library on the MinGW toolchain does not carry (each newer than it): `system()` cannot
+/// link them by name, so each answers E_NOTIMPL from a function of ours, as a system without the export would. MEASURED
+/// 2026-11-27 (the check of 63badaa79): MinGW's libdxgi.a holds dxgi.dll's other five exports and not this one.
+const NOT_LINKED: &[(&str, &str)] = &[("dxgi.dll", "DXGIDisableVBlankVirtualization")];
+
 fn system_library(top_name: &str, dll: &str, entries: &[(String, String, (Vec<(String, String)>, String))]) -> String {
     let mut text = String::new();
     if entries.is_empty() {
         return text;
     }
     let link = dll.strip_suffix(".dll").unwrap_or(dll);
+    let unlinked = |c_name: &str| NOT_LINKED.iter().find(|(library, export)| *library == dll && *export == c_name);
     let _ = writeln!(text, "#[cfg(windows)]\n#[link(name = \"{link}\")]");
     let _ = writeln!(text, "#[expect(unsafe_code, reason = \"{dll}'s own exports, declared with the parameters the metadata gives\")]");
     let _ = writeln!(text, "unsafe extern \"system\" {{");
-    for (c_name, field, (parameters, returned)) in entries {
+    for (c_name, field, (parameters, returned)) in entries.iter().filter(|(c_name, _, _)| unlinked(c_name).is_none()) {
         let list: Vec<String> = parameters.iter().map(|(name, c)| format!("{name}: {c}")).collect();
         let returns = if returned == "()" { String::new() } else { format!(" -> {returned}") };
         let _ = writeln!(text, "    #[link_name = \"{c_name}\"]\n    fn system_{field}({}){returns};", list.join(", "));
     }
     let _ = writeln!(text, "}}\n");
+    for (c_name, field, (parameters, returned)) in entries {
+        if unlinked(c_name).is_none() {
+            continue;
+        }
+        assert!(returned == "i32", "{c_name}: an export left unlinked answers an HRESULT");
+        let list: Vec<String> = parameters.iter().map(|(name, c)| format!("_{name}: {c}")).collect();
+        let _ = writeln!(text, "/// `{c_name}`, which MinGW's import library of {dll} does not carry: E_NOTIMPL, as a system without the export\n/// answers.\n#[cfg(windows)]\nextern \"system\" fn system_{field}({}) -> i32 {{\n    E_NOTIMPL.0\n}}\n", list.join(", "));
+    }
     let fields: Vec<String> = entries.iter().map(|(_, field, _)| format!("{field}: system_{field}")).collect();
     let _ = writeln!(text, "#[cfg(windows)]\nimpl crate::System{top_name} {{");
     let _ = writeln!(text, "    /// Returns the API over the system's {dll}, linked by name: each entry is that library's own export of its");
-    let _ = writeln!(text, "    /// name, declared here with the parameters the metadata gives.");
+    let _ = writeln!(text, "    /// name, declared here with the parameters the metadata gives{}.", if entries.iter().any(|(c_name, _, _)| unlinked(c_name).is_some()) { " (an export newer than MinGW's import library answers E_NOTIMPL)" } else { "" });
     let _ = writeln!(text, "    pub fn system() -> crate::System{top_name} {{");
     let _ = writeln!(text, "        let library = Library {{ {} }};", fields.join(", "));
     let _ = writeln!(text, "        #[expect(unsafe_code, reason = \"{dll}'s own exports, linked by name above\")]");
-    let _ = writeln!(text, "        // SAFETY: each entry of `library` is {dll}'s export of that name, declared above with the metadata's parameters.");
+    let _ = writeln!(text, "        // SAFETY: each entry of `library` is {dll}'s export of that name, declared above with the metadata's parameters, or a function of ours of those parameters.");
     let _ = writeln!(text, "        unsafe {{ crate::System{top_name}::new(library) }}\n    }}\n}}\n");
     text
 }

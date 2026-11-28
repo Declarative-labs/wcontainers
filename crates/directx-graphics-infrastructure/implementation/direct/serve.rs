@@ -1866,16 +1866,21 @@ unsafe extern "system" {
     fn system_create_dxgi_factory2(flags: u32, riid: *const u8, factory: *mut Raw) -> i32;
     #[link_name = "DXGIDeclareAdapterRemovalSupport"]
     fn system_dxgi_declare_adapter_removal_support() -> i32;
-    #[link_name = "DXGIDisableVBlankVirtualization"]
-    fn system_dxgi_disable_v_blank_virtualization() -> i32;
     #[link_name = "DXGIGetDebugInterface1"]
     fn system_dxgi_get_debug_interface1(flags: u32, riid: *const u8, debug: *mut Raw) -> i32;
+}
+
+/// `DXGIDisableVBlankVirtualization`, which MinGW's import library of dxgi.dll does not carry: E_NOTIMPL, as a system without the export
+/// answers.
+#[cfg(windows)]
+extern "system" fn system_dxgi_disable_v_blank_virtualization() -> i32 {
+    E_NOTIMPL.0
 }
 
 #[cfg(windows)]
 impl crate::SystemDirectXGraphicsInfrastructure {
     /// Returns the API over the system's dxgi.dll, linked by name: each entry is that library's own export of its
-    /// name, declared here with the parameters the metadata gives.
+    /// name, declared here with the parameters the metadata gives (an export newer than MinGW's import library answers E_NOTIMPL).
     pub fn system() -> crate::SystemDirectXGraphicsInfrastructure {
         let library = Library {
             create_dxgi_factory: system_create_dxgi_factory,
@@ -1886,7 +1891,7 @@ impl crate::SystemDirectXGraphicsInfrastructure {
             dxgi_get_debug_interface1: system_dxgi_get_debug_interface1,
         };
         #[expect(unsafe_code, reason = "dxgi.dll's own exports, linked by name above")]
-        // SAFETY: each entry of `library` is dxgi.dll's export of that name, declared above with the metadata's parameters.
+        // SAFETY: each entry of `library` is dxgi.dll's export of that name, declared above with the metadata's parameters, or a function of ours of those parameters.
         unsafe {
             crate::SystemDirectXGraphicsInfrastructure::new(library)
         }

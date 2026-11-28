@@ -4336,6 +4336,7 @@ dependencies = [
  "wcontainers-direct3d-common-direct",
  "wcontainers-directx-graphics-infrastructure",
  "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-directx-graphics-infrastructure-recorder",
  "wcontainers-volatile-bytes",
 ]
 
@@ -4415,6 +4416,7 @@ dependencies = [
  "wcontainers-component-object-model",
  "wcontainers-direct3d-12",
  "wcontainers-direct3d-common",
+ "wcontainers-directx-graphics-infrastructure",
  "wcontainers-volatile-bytes",
 ]
 
@@ -5159,7 +5161,6 @@ name = "wcontainers-kernel"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
- "vstd",
  "wcontainers-abi",
  "wcontainers-executor",
 ]

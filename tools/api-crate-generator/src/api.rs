@@ -989,7 +989,6 @@ pub const UINT64_JUDGED: &[(&str, &str, Uint64)] = &[
 /// directly, by design, each with the reason (src/glue_hostile.rs `every_answer_and_argument_equals_the_reference`): any
 /// other difference fails the comparison.
 pub const SUITE_DIFFERENT: &[(&str, &str)] = &[
-    ("ID3D11VideoContext3::DecoderBeginFrame1", "the suite passes one histogram offset and no histogram buffer: two arrays of one count must have one length"),
     ("ID3D11Device::GetImmediateContext", "the serving glue answers the immediate context it holds, never asking the implementation again"),
     ("ID3D11Device1::GetImmediateContext1", "the serving glue answers the immediate context it holds, never asking the implementation again"),
     ("ID3D11Device2::GetImmediateContext2", "the serving glue answers the immediate context it holds, never asking the implementation again"),
@@ -1011,20 +1010,23 @@ pub const SUITE_ARGUMENTS: &[(&str, &str, &str)] = &[
     // 8 texels of R8G8B8A8_UNORM, one level, one slice: one row of 32 bytes.
     ("ID3D11Device::CreateTexture1D", "desc", "&direct3d_11::structures::Texture1DDesc { width: 8_u32, mip_levels: 1_u32, array_size: 1_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, usage: direct3d_11::enumerations::D3D11_USAGE_DYNAMIC, bind_flags: 8_u32, cpu_access_flags: 65536_u32, misc_flags: 2048_u32 }"),
     ("ID3D11Device::CreateTexture1D", "initial_data", "&[direct3d_11::structures::SubresourceData { sys_mem: (1_u8..=32_u8).collect(), sys_mem_pitch: 32_u32, sys_mem_slice_pitch: 33_u32 }]"),
-    // 4 x 2 texels of R8G8B8A8_UNORM, one level, one slice, at a row pitch of 16: two rows, 32 bytes.
-    ("ID3D11Device::CreateTexture2D", "desc", "&direct3d_11::structures::Texture2DDesc { width: 4_u32, height: 2_u32, mip_levels: 1_u32, array_size: 1_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 3_u32 }, usage: direct3d_11::enumerations::D3D11_USAGE_DYNAMIC, bind_flags: 8_u32, cpu_access_flags: 65536_u32, misc_flags: 2048_u32 }"),
-    ("ID3D11Device::CreateTexture2D", "initial_data", "&[direct3d_11::structures::SubresourceData { sys_mem: (1_u8..=32_u8).collect(), sys_mem_pitch: 16_u32, sys_mem_slice_pitch: 33_u32 }]"),
+    // 4 x 2 texels of R8G8B8A8_UNORM, one level, two slices (subresources 0 and 1), each at a row pitch of 16: two rows,
+    // 32 bytes.
+    ("ID3D11Device::CreateTexture2D", "desc", "&direct3d_11::structures::Texture2DDesc { width: 4_u32, height: 2_u32, mip_levels: 1_u32, array_size: 2_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 3_u32 }, usage: direct3d_11::enumerations::D3D11_USAGE_DYNAMIC, bind_flags: 8_u32, cpu_access_flags: 65536_u32, misc_flags: 2048_u32 }"),
+    ("ID3D11Device::CreateTexture2D", "initial_data", "&[direct3d_11::structures::SubresourceData { sys_mem: (1_u8..=32_u8).collect(), sys_mem_pitch: 16_u32, sys_mem_slice_pitch: 33_u32 }, direct3d_11::structures::SubresourceData { sys_mem: (33_u8..=64_u8).collect(), sys_mem_pitch: 16_u32, sys_mem_slice_pitch: 34_u32 }]"),
     // 2 x 2 x 2 texels of R8G8B8A8_UNORM, one level, at a row pitch of 8 and a slice pitch of 16: 32 bytes.
     ("ID3D11Device::CreateTexture3D", "desc", "&direct3d_11::structures::Texture3DDesc { width: 2_u32, height: 2_u32, depth: 2_u32, mip_levels: 1_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, usage: direct3d_11::enumerations::D3D11_USAGE_DYNAMIC, bind_flags: 8_u32, cpu_access_flags: 65536_u32, misc_flags: 2048_u32 }"),
     ("ID3D11Device::CreateTexture3D", "initial_data", "&[direct3d_11::structures::SubresourceData { sys_mem: (1_u8..=32_u8).collect(), sys_mem_pitch: 8_u32, sys_mem_slice_pitch: 16_u32 }]"),
-    // The buffer's first subresource (its only one), and the box of its byte 0 (a buffer's box is in bytes, one row and
-    // one slice): one byte uploaded.
-    ("ID3D11DeviceContext::UpdateSubresource", "dst_subresource", "0_u32"),
-    ("ID3D11DeviceContext::UpdateSubresource", "dst_box", "Some(&direct3d_11::structures::Box { left: 0_u32, top: 0_u32, front: 0_u32, right: 1_u32, bottom: 1_u32, back: 1_u32 })"),
-    ("ID3D11DeviceContext::UpdateSubresource", "src_data", "&[9_u8]"),
-    ("ID3D11DeviceContext1::UpdateSubresource1", "dst_subresource", "0_u32"),
-    ("ID3D11DeviceContext1::UpdateSubresource1", "dst_box", "Some(&direct3d_11::structures::Box { left: 0_u32, top: 0_u32, front: 0_u32, right: 1_u32, bottom: 1_u32, back: 1_u32 })"),
-    ("ID3D11DeviceContext1::UpdateSubresource1", "src_data", "&[9_u8]"),
+    // The 2D texture's second subresource (its second slice), so that a subresource passed as 0 is seen, and the box of
+    // its texel (1, 0) (one row, one slice): one texel of R8G8B8A8_UNORM, 4 bytes, uploaded.
+    ("ID3D11DeviceContext::UpdateSubresource", "dst_resource", "match o.k36.as_ref() { Some(texture) => direct3d_11::ResourceRef::Texture2D(texture), None => return false }"),
+    ("ID3D11DeviceContext::UpdateSubresource", "dst_subresource", "1_u32"),
+    ("ID3D11DeviceContext::UpdateSubresource", "dst_box", "Some(&direct3d_11::structures::Box { left: 1_u32, top: 0_u32, front: 0_u32, right: 2_u32, bottom: 1_u32, back: 1_u32 })"),
+    ("ID3D11DeviceContext::UpdateSubresource", "src_data", "&[9_u8, 8_u8, 7_u8, 6_u8]"),
+    ("ID3D11DeviceContext1::UpdateSubresource1", "dst_resource", "match o.k36.as_ref() { Some(texture) => direct3d_11::ResourceRef::Texture2D(texture), None => return false }"),
+    ("ID3D11DeviceContext1::UpdateSubresource1", "dst_subresource", "1_u32"),
+    ("ID3D11DeviceContext1::UpdateSubresource1", "dst_box", "Some(&direct3d_11::structures::Box { left: 1_u32, top: 0_u32, front: 0_u32, right: 2_u32, bottom: 1_u32, back: 1_u32 })"),
+    ("ID3D11DeviceContext1::UpdateSubresource1", "src_data", "&[9_u8, 8_u8, 7_u8, 6_u8]"),
     // D3D11_COPY_DISCARD (0x2).
     ("ID3D11DeviceContext1::UpdateSubresource1", "copy_flags", "2_u32"),
     // DXGI_SWAP_CHAIN_DESC within its documented ranges (checked_swap_chain): two 64 x 32 buffers of R8G8B8A8_UNORM at
@@ -1052,11 +1054,13 @@ pub const SUITE_ARGUMENTS: &[(&str, &str, &str)] = &[
     ("ID3D11DeviceContext::IASetVertexBuffers", "start_slot", "1_u32"),
     // One render target in slot 0, then one unordered access view in slot 1 of 8.
     ("ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews", "uav_start_slot", "1_u32"),
-    // The buffer's first subresource, read (D3D11_MAP_READ) without waiting (D3D11_MAP_FLAG_DO_NOT_WAIT, 0x100000), then
-    // that subresource unmapped.
-    ("ID3D11DeviceContext::Map", "subresource", "0_u32"),
+    // The 2D texture's second subresource, read (D3D11_MAP_READ) without waiting (D3D11_MAP_FLAG_DO_NOT_WAIT, 0x100000),
+    // then that subresource unmapped.
+    ("ID3D11DeviceContext::Map", "resource", "match o.k36.as_ref() { Some(texture) => direct3d_11::ResourceRef::Texture2D(texture), None => return false }"),
+    ("ID3D11DeviceContext::Map", "subresource", "1_u32"),
     ("ID3D11DeviceContext::Map", "map_flags", "1048576_u32"),
-    ("ID3D11DeviceContext::Unmap", "subresource", "0_u32"),
+    ("ID3D11DeviceContext::Unmap", "resource", "match o.k36.as_ref() { Some(texture) => direct3d_11::ResourceRef::Texture2D(texture), None => return false }"),
+    ("ID3D11DeviceContext::Unmap", "subresource", "1_u32"),
 ];
 
 /// Calls the calling glue makes of its own during a method, which the implementation receives through both glues and not
@@ -1065,7 +1069,4 @@ pub const SUITE_ARGUMENTS: &[(&str, &str, &str)] = &[
 pub const SUITE_EXTRA_CALLS: &[(&str, &str, &str)] = &[
     ("D3D11CreateDevice", "ID3D11Multithread::SetMultithreadProtected(b_mt_protect=true)", "the calling glue turns on the device's multithread protection before handing the device out"),
     ("D3D11CreateDeviceAndSwapChain", "ID3D11Multithread::SetMultithreadProtected(b_mt_protect=true)", "the calling glue turns on the device's multithread protection before handing the device out"),
-    ("ID3D11DeviceContext::Map", "ID3D11Buffer::GetDesc()", "the calling glue asks the buffer's description for the length a program may view of what the system mapped"),
-    ("ID3D11DeviceContext::UpdateSubresource", "ID3D11Buffer::GetDesc()", "the calling glue asks the buffer's description for the length the upload's rule gives"),
-    ("ID3D11DeviceContext1::UpdateSubresource1", "ID3D11Buffer::GetDesc()", "the calling glue asks the buffer's description for the length the upload's rule gives"),
 ];

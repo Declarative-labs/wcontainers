@@ -5622,7 +5622,7 @@ impl crate::SystemDirect3D11 {
             d_3d11_create_device_and_swap_chain: system_d_3d11_create_device_and_swap_chain,
         };
         #[expect(unsafe_code, reason = "d3d11.dll's own exports, linked by name above")]
-        // SAFETY: each entry of `library` is d3d11.dll's export of that name, declared above with the metadata's parameters.
+        // SAFETY: each entry of `library` is d3d11.dll's export of that name, declared above with the metadata's parameters, or a function of ours of those parameters.
         unsafe {
             crate::SystemDirect3D11::new(library)
         }
@@ -7134,6 +7134,9 @@ pub unsafe extern "system" fn device_create_texture_2d<V: direct3d_11::Device>(
             let mut texture_2d_record =
                 this_weak.map_or_else(record, |weak| record_related("Device", weak));
             if let Some(value) = Some(crate::lengths::resolved_texture_2d(&desc)) {
+                texture_2d_record.push(Box::new(Recorded(value)));
+            }
+            if let Some(value) = Some(crate::lengths::surface_of_texture_2d(&desc)) {
                 texture_2d_record.push(Box::new(Recorded(value)));
             }
             let texture_2d_served = serve(

@@ -9,7 +9,6 @@ wcontainers_direct3d_12_conformance::tests!(
     wcontainers_direct3d_12_recorder::arguments_logged,
     wcontainers_direct3d_12_recorder::arguments_since,
     &[
-        "ID3D11VideoContext3::DecoderBeginFrame1",
         "ID3D11Device::GetImmediateContext",
         "ID3D11Device1::GetImmediateContext1",
         "ID3D11Device2::GetImmediateContext2",
@@ -25,15 +24,6 @@ wcontainers_direct3d_12_conformance::tests!(
         (
             "D3D11CreateDeviceAndSwapChain",
             "ID3D11Multithread::SetMultithreadProtected(b_mt_protect=true)"
-        ),
-        ("ID3D11DeviceContext::Map", "ID3D11Buffer::GetDesc()"),
-        (
-            "ID3D11DeviceContext::UpdateSubresource",
-            "ID3D11Buffer::GetDesc()"
-        ),
-        (
-            "ID3D11DeviceContext1::UpdateSubresource1",
-            "ID3D11Buffer::GetDesc()"
         )
     ]
 );

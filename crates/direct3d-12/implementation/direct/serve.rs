@@ -800,7 +800,7 @@ impl crate::SystemDirect3D12 {
             d_3d12_create_device: system_d_3d12_create_device,
         };
         #[expect(unsafe_code, reason = "d3d12.dll's own exports, linked by name above")]
-        // SAFETY: each entry of `library` is d3d12.dll's export of that name, declared above with the metadata's parameters.
+        // SAFETY: each entry of `library` is d3d12.dll's export of that name, declared above with the metadata's parameters, or a function of ours of those parameters.
         unsafe {
             crate::SystemDirect3D12::new(library)
         }

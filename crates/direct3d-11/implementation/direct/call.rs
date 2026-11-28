@@ -17672,7 +17672,6 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
     }
     fn rs_get_viewports(&self) -> Vec<direct3d_11::structures::Viewport> {
         let mut num_viewports_cell: u32 = 0;
-        let mut viewports_words: Vec<u64> = Vec::new();
         #[expect(
             unsafe_code,
             reason = "ID3D11DeviceContext::RSGetViewports, called out"
@@ -17682,11 +17681,7 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
             (self.object.entry_points().device_context_rs_get_viewports)(
                 self.object.raw(),
                 (&raw mut num_viewports_cell).cast::<u8>(),
-                if viewports_words.is_empty() {
-                    null_mut()
-                } else {
-                    viewports_words.as_mut_ptr().cast::<u8>()
-                },
+                null_mut(),
             )
         };
         let () = first;
@@ -17696,7 +17691,7 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
         else {
             return Vec::new();
         };
-        viewports_words = vec![0_u64; (viewports_room * 24).div_ceil(8).max(1)];
+        let mut viewports_words = vec![0_u64; (viewports_room * 24).div_ceil(8).max(1)];
         let Ok(room) = u32::try_from(viewports_room) else {
             return Vec::new();
         };
@@ -17710,11 +17705,7 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
             (self.object.entry_points().device_context_rs_get_viewports)(
                 self.object.raw(),
                 (&raw mut num_viewports_cell).cast::<u8>(),
-                if viewports_words.is_empty() {
-                    null_mut()
-                } else {
-                    viewports_words.as_mut_ptr().cast::<u8>()
-                },
+                viewports_words.as_mut_ptr().cast::<u8>(),
             )
         };
         let viewports_number = usize::try_from(num_viewports_cell)
@@ -17737,7 +17728,6 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
     }
     fn rs_get_scissor_rects(&self) -> Vec<component_object_model::structures::Rect> {
         let mut num_rects_cell: u32 = 0;
-        let mut rects_words: Vec<u64> = Vec::new();
         #[expect(
             unsafe_code,
             reason = "ID3D11DeviceContext::RSGetScissorRects, called out"
@@ -17750,11 +17740,7 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
                 .device_context_rs_get_scissor_rects)(
                 self.object.raw(),
                 (&raw mut num_rects_cell).cast::<u8>(),
-                if rects_words.is_empty() {
-                    null_mut()
-                } else {
-                    rects_words.as_mut_ptr().cast::<u8>()
-                },
+                null_mut(),
             )
         };
         let () = first;
@@ -17764,7 +17750,7 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
         else {
             return Vec::new();
         };
-        rects_words = vec![0_u64; (rects_room * 16).div_ceil(8).max(1)];
+        let mut rects_words = vec![0_u64; (rects_room * 16).div_ceil(8).max(1)];
         let Ok(room) = u32::try_from(rects_room) else {
             return Vec::new();
         };
@@ -17781,11 +17767,7 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
                 .device_context_rs_get_scissor_rects)(
                 self.object.raw(),
                 (&raw mut num_rects_cell).cast::<u8>(),
-                if rects_words.is_empty() {
-                    null_mut()
-                } else {
-                    rects_words.as_mut_ptr().cast::<u8>()
-                },
+                rects_words.as_mut_ptr().cast::<u8>(),
             )
         };
         let rects_number = usize::try_from(num_rects_cell)

@@ -166,3 +166,57 @@ fn every_group_of_interfaces_keeps_the_facts_the_marks_rely_on() {
     }
     assert_eq!(checked, EFFECTS.len());
 }
+
+/// The serving glue refuses a feature level the implementation answers that none of the levels asked names
+/// (https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-d3d11createdevice: the level made is one of those
+/// asked), as E_FAIL, and gives back what was made; asked one level, the hostile implementation answers it and the device
+/// crosses.
+#[test]
+fn a_feature_level_not_asked_is_refused_and_what_was_made_given_back() {
+    use wcontainers_component_object_model::constants::E_FAIL;
+    use wcontainers_component_object_model::structures::Hmodule;
+    use wcontainers_direct3d_11::Direct3D11 as _;
+    use wcontainers_direct3d_11::enumerations::CreateDeviceFlag;
+    use wcontainers_direct3d_common::enumerations::{DriverType, FeatureLevel};
+    hostile::plan(None);
+    let api = wcontainers_direct3d_11_direct::served(hostile::HostileLibrary);
+    let levels = [FeatureLevel(0xb000), FeatureLevel(0xa100)];
+    let before = hostile::live();
+    let made = api.create_device(
+        None,
+        DriverType(1),
+        Hmodule(0),
+        CreateDeviceFlag(0),
+        &levels,
+        7,
+    );
+    assert_eq!(
+        made.err(),
+        Some(E_FAIL),
+        "a level the implementation answers and nobody asked"
+    );
+    let made = api.create_device_and_swap_chain(
+        None,
+        DriverType(1),
+        Hmodule(0),
+        CreateDeviceFlag(0),
+        &levels,
+        7,
+        None,
+    );
+    assert_eq!(made.err(), Some(E_FAIL), "the same, with a swap chain");
+    assert_eq!(
+        hostile::live(),
+        before,
+        "what the implementation made is given back"
+    );
+    let one = api.create_device(
+        None,
+        DriverType(1),
+        Hmodule(0),
+        CreateDeviceFlag(0),
+        &levels[..1],
+        7,
+    );
+    assert_eq!(one.map(|(_, level, _)| level).ok(), Some(levels[0]));
+}

@@ -161,23 +161,31 @@ impl VolatileBytes for Bytes {
             .len() as u64
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let held = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = into.len().min(held.len());
-        into[..count].copy_from_slice(&held[..count]);
+        let from = usize::try_from(offset)
+            .ok()
+            .and_then(|offset| held.get(offset..))
+            .unwrap_or_default();
+        let count = into.len().min(from.len());
+        into[..count].copy_from_slice(&from[..count]);
         count
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         let mut held = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = bytes.len().min(held.len());
-        held[..count].copy_from_slice(&bytes[..count]);
+        let to = usize::try_from(offset)
+            .ok()
+            .and_then(|offset| held.get_mut(offset..))
+            .unwrap_or_default();
+        let count = bytes.len().min(to.len());
+        to[..count].copy_from_slice(&bytes[..count]);
         count
     }
 
@@ -214,12 +222,14 @@ impl VolatileBytes for Lying {
         self.length
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let _ = offset;
         self.touched.fetch_add(into.len(), Ordering::SeqCst);
         0
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let _ = offset;
         self.touched.fetch_add(bytes.len(), Ordering::SeqCst);
         0
     }
@@ -1485,4 +1495,269 @@ fn a_buffer_answers_its_kind_and_description_as_made() {
         d3d11::enumerations::ResourceDimension(1)
     );
     assert_eq!(d3d11::Buffer::get_desc(&buffer), desc);
+}
+
+/// A 2D texture's description: `mip_levels` 0 asks for the full chain.
+fn texture_2d_desc(width: u32, height: u32, mip_levels: u32) -> Texture2DDesc {
+    Texture2DDesc {
+        width,
+        height,
+        mip_levels,
+        array_size: 2,
+        format: Format(28),
+        sample_desc: SampleDesc {
+            count: 1,
+            quality: 0,
+        },
+        usage: Usage(0),
+        bind_flags: 0x8,
+        cpu_access_flags: 0,
+        misc_flags: 0,
+    }
+}
+
+/// Every answer the serving glue gives from its record of a creation, for two objects of each kind made with different
+/// descriptions, each read after both exist: a description is what the creation passed, its mip levels the full chain
+/// where it passed 0 (d3d11.h: "Use 1 for a multisampled texture; or 0 to generate a full set of subtextures"), a
+/// texture's kind is its dimension (D3D11_RESOURCE_DIMENSION_TEXTURE1D 2, TEXTURE2D 3, TEXTURE3D 4), a texture's surface
+/// is its sides, format and samples, and a query's data size is its kind's (OCCLUSION a UINT64: 8;
+/// PIPELINE_STATISTICS eleven UINT64: 88). None of these reaches the recorder.
+#[test]
+fn every_recorded_answer_is_its_own_creations() {
+    let (device, _) = device();
+    let buffers = [
+        buffer_desc(64),
+        BufferDesc {
+            byte_width: 4,
+            usage: Usage(2),
+            bind_flags: 1,
+            cpu_access_flags: 0x10000,
+            misc_flags: 0x40,
+            structure_byte_stride: 4,
+        },
+    ];
+    let made_buffers: Vec<_> = buffers
+        .iter()
+        .map(|desc| device.create_buffer(desc, None).expect("a buffer"))
+        .collect();
+    let ones = [
+        d3d11::structures::Texture1DDesc {
+            width: 16,
+            mip_levels: 0,
+            array_size: 1,
+            format: Format(28),
+            usage: Usage(0),
+            bind_flags: 0x8,
+            cpu_access_flags: 0,
+            misc_flags: 0,
+        },
+        d3d11::structures::Texture1DDesc {
+            width: 4,
+            mip_levels: 2,
+            array_size: 3,
+            format: Format(2),
+            usage: Usage(0),
+            bind_flags: 0x8,
+            cpu_access_flags: 0,
+            misc_flags: 0,
+        },
+    ];
+    let made_ones: Vec<_> = ones
+        .iter()
+        .map(|desc| d3d11::Device::create_texture_1d(&device, desc, &[]).expect("a 1D texture"))
+        .collect();
+    let twos = [texture_2d_desc(8, 4, 0), texture_2d_desc(16, 16, 2)];
+    let made_twos: Vec<_> = twos
+        .iter()
+        .map(|desc| device.create_texture_2d(desc, &[]).expect("a 2D texture"))
+        .collect();
+    let threes = [
+        d3d11::structures::Texture3DDesc {
+            width: 2,
+            height: 4,
+            depth: 32,
+            mip_levels: 0,
+            format: Format(28),
+            usage: Usage(0),
+            bind_flags: 0x8,
+            cpu_access_flags: 0,
+            misc_flags: 0,
+        },
+        d3d11::structures::Texture3DDesc {
+            width: 8,
+            height: 8,
+            depth: 8,
+            mip_levels: 1,
+            format: Format(2),
+            usage: Usage(0),
+            bind_flags: 0x8,
+            cpu_access_flags: 0,
+            misc_flags: 0,
+        },
+    ];
+    let made_threes: Vec<_> = threes
+        .iter()
+        .map(|desc| d3d11::Device::create_texture_3d(&device, desc, &[]).expect("a 3D texture"))
+        .collect();
+    let queries = [
+        d3d11::structures::QueryDesc {
+            query: QueryKind(1),
+            misc_flags: 0,
+        },
+        d3d11::structures::QueryDesc {
+            query: QueryKind(4),
+            misc_flags: 1,
+        },
+    ];
+    let made_queries: Vec<_> = queries
+        .iter()
+        .map(|desc| match device.create_query(desc).expect("a query") {
+            d3d11::QueryObject::Query(query) => query,
+            d3d11::QueryObject::Predicate(_) => panic!("the recorder makes a query"),
+        })
+        .collect();
+    let before = recorder::logged() + dxgi_recorder::logged();
+    for (made, desc) in made_buffers.iter().zip(&buffers) {
+        assert_eq!(d3d11::Buffer::get_desc(made), *desc);
+        assert_eq!(
+            d3d11::Resource::get_type(made),
+            d3d11::enumerations::ResourceDimension(1)
+        );
+    }
+    let full_ones = [5, 2];
+    for ((made, desc), mips) in made_ones.iter().zip(&ones).zip(full_ones) {
+        assert_eq!(
+            d3d11::Texture1D::get_desc(made),
+            d3d11::structures::Texture1DDesc {
+                mip_levels: mips,
+                ..*desc
+            }
+        );
+        assert_eq!(
+            d3d11::Resource::get_type(made),
+            d3d11::enumerations::ResourceDimension(2)
+        );
+    }
+    let full_twos = [4, 2];
+    for ((made, desc), mips) in made_twos.iter().zip(&twos).zip(full_twos) {
+        assert_eq!(
+            d3d11::Texture2D::get_desc(made),
+            Texture2DDesc {
+                mip_levels: mips,
+                ..*desc
+            }
+        );
+        assert_eq!(
+            d3d11::Resource::get_type(made),
+            d3d11::enumerations::ResourceDimension(3)
+        );
+        let surface = dxgi::structures::SurfaceDesc {
+            width: desc.width,
+            height: desc.height,
+            format: desc.format,
+            sample_desc: desc.sample_desc,
+        };
+        assert_eq!(dxgi::Surface::get_desc(made), Ok(surface));
+    }
+    let full_threes = [6, 1];
+    for ((made, desc), mips) in made_threes.iter().zip(&threes).zip(full_threes) {
+        assert_eq!(
+            d3d11::Texture3D::get_desc(made),
+            d3d11::structures::Texture3DDesc {
+                mip_levels: mips,
+                ..*desc
+            }
+        );
+        assert_eq!(
+            d3d11::Resource::get_type(made),
+            d3d11::enumerations::ResourceDimension(4)
+        );
+    }
+    for ((made, desc), size) in made_queries.iter().zip(&queries).zip([8, 88]) {
+        assert_eq!(d3d11::Query::get_desc(made), *desc);
+        assert_eq!(d3d11::Asynchronous::get_data_size(made), size);
+    }
+    assert_eq!(
+        recorder::logged() + dxgi_recorder::logged(),
+        before,
+        "every answer above comes from the glue's record"
+    );
+}
+
+/// A swap chain describes itself as it was made, asks the implementation for each of its buffers by index (the index
+/// reaching it as passed), and refuses an index at or past its buffer count before the implementation sees it
+/// (https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getbuffer); two swap chains each answer
+/// their own.
+#[test]
+fn a_swap_chain_answers_its_own_description_and_buffers() {
+    let wide = SwapChainDesc {
+        buffer_count: 2,
+        ..swap_chain_desc()
+    };
+    let tall = SwapChainDesc {
+        buffer_desc: ModeDesc {
+            width: 4,
+            height: 16,
+            ..swap_chain_desc().buffer_desc
+        },
+        buffer_count: 3,
+        ..swap_chain_desc()
+    };
+    let made: Vec<_> = [wide, tall]
+        .iter()
+        .map(|desc| {
+            api()
+                .create_device_and_swap_chain(
+                    None,
+                    DriverType(1),
+                    Hmodule(0),
+                    CreateDeviceFlag(0),
+                    &LEVELS,
+                    SDK_VERSION,
+                    Some(desc),
+                )
+                .expect("a device and a swap chain")
+                .0
+        })
+        .collect();
+    for (swap_chain, desc) in made.iter().zip([wide, tall]) {
+        assert_eq!(dxgi::SwapChain::get_desc(swap_chain), Ok(desc));
+    }
+    let calls = |index: u32| {
+        dxgi_recorder::calls("IDXGISwapChain::GetBuffer")
+            .iter()
+            .chain(&recorder::calls("IDXGISwapChain::GetBuffer"))
+            .filter(|call| call.contains(&format!("buffer={index})")))
+            .count()
+    };
+    for (swap_chain, desc) in made.iter().zip([wide, tall]) {
+        let last = desc.buffer_count - 1;
+        let before = calls(last);
+        // The recorder makes no bound object (a swap chain's buffer): its E_NOTIMPL comes back as it answered.
+        assert_eq!(
+            dxgi::SwapChain::get_buffer(swap_chain, last).err(),
+            Some(wcontainers_component_object_model::constants::E_NOTIMPL)
+        );
+        assert_eq!(
+            calls(last),
+            before + 1,
+            "the index reaches the implementation as passed"
+        );
+        let past = (
+            calls(desc.buffer_count),
+            recorder::logged() + dxgi_recorder::logged(),
+        );
+        assert_eq!(
+            dxgi::SwapChain::get_buffer(swap_chain, desc.buffer_count).err(),
+            Some(wcontainers_component_object_model::constants::E_INVALIDARG)
+        );
+        assert_eq!(
+            (
+                calls(desc.buffer_count),
+                recorder::logged() + dxgi_recorder::logged()
+            ),
+            past,
+            "an index past the count is refused before the implementation"
+        );
+    }
 }

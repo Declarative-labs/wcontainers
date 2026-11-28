@@ -74,23 +74,31 @@ impl wcontainers_volatile_bytes::VolatileBytes for SuiteBytes {
             .len() as u64
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let held = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = into.len().min(held.len());
-        into[..count].copy_from_slice(&held[..count]);
+        let from = usize::try_from(offset)
+            .ok()
+            .and_then(|offset| held.get(offset..))
+            .unwrap_or_default();
+        let count = into.len().min(from.len());
+        into[..count].copy_from_slice(&from[..count]);
         count
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         let mut held = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = bytes.len().min(held.len());
-        held[..count].copy_from_slice(&bytes[..count]);
+        let to = usize::try_from(offset)
+            .ok()
+            .and_then(|offset| held.get_mut(offset..))
+            .unwrap_or_default();
+        let count = bytes.len().min(to.len());
+        to[..count].copy_from_slice(&bytes[..count]);
         count
     }
 
@@ -787,7 +795,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     let o = &*o;
                     made(|| {
                         let this = o.k14.as_ref()?;
-                        let answer = direct3d_11::Device::create_texture_2d(this, &direct3d_11::structures::Texture2DDesc { width: 4_u32, height: 2_u32, mip_levels: 1_u32, array_size: 1_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 3_u32 }, usage: direct3d_11::enumerations::D3D11_USAGE_DYNAMIC, bind_flags: 8_u32, cpu_access_flags: 65536_u32, misc_flags: 2048_u32 }, &[direct3d_11::structures::SubresourceData { sys_mem: (1_u8..=32_u8).collect(), sys_mem_pitch: 16_u32, sys_mem_slice_pitch: 33_u32 }]);
+                        let answer = direct3d_11::Device::create_texture_2d(this, &direct3d_11::structures::Texture2DDesc { width: 4_u32, height: 2_u32, mip_levels: 1_u32, array_size: 2_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 3_u32 }, usage: direct3d_11::enumerations::D3D11_USAGE_DYNAMIC, bind_flags: 8_u32, cpu_access_flags: 65536_u32, misc_flags: 2048_u32 }, &[direct3d_11::structures::SubresourceData { sys_mem: (1_u8..=32_u8).collect(), sys_mem_pitch: 16_u32, sys_mem_slice_pitch: 33_u32 }, direct3d_11::structures::SubresourceData { sys_mem: (33_u8..=64_u8).collect(), sys_mem_pitch: 16_u32, sys_mem_slice_pitch: 34_u32 }]);
                         answer.ok()
                     })
                 };
@@ -19161,7 +19169,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     width: 4_u32,
                     height: 2_u32,
                     mip_levels: 1_u32,
-                    array_size: 1_u32,
+                    array_size: 2_u32,
                     format:
                         directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM,
                     sample_desc: directx_graphics_infrastructure::structures::SampleDesc {
@@ -19173,11 +19181,18 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     cpu_access_flags: 65536_u32,
                     misc_flags: 2048_u32,
                 },
-                &[direct3d_11::structures::SubresourceData {
-                    sys_mem: (1_u8..=32_u8).collect(),
-                    sys_mem_pitch: 16_u32,
-                    sys_mem_slice_pitch: 33_u32,
-                }],
+                &[
+                    direct3d_11::structures::SubresourceData {
+                        sys_mem: (1_u8..=32_u8).collect(),
+                        sys_mem_pitch: 16_u32,
+                        sys_mem_slice_pitch: 33_u32,
+                    },
+                    direct3d_11::structures::SubresourceData {
+                        sys_mem: (33_u8..=64_u8).collect(),
+                        sys_mem_pitch: 16_u32,
+                        sys_mem_slice_pitch: 34_u32,
+                    },
+                ],
             );
             answers.push(format!(
                 "ID3D11Device::CreateTexture2D -> {}",
@@ -21107,33 +21122,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
         answered({
             let answer = direct3d_11::DeviceContext1::update_subresource1(
                 this,
-                v1,
-                0_u32,
+                match o.k36.as_ref() {
+                    Some(texture) => direct3d_11::ResourceRef::Texture2D(texture),
+                    None => return false,
+                },
+                1_u32,
                 Some(&direct3d_11::structures::Box {
-                    left: 0_u32,
+                    left: 1_u32,
                     top: 0_u32,
                     front: 0_u32,
-                    right: 1_u32,
+                    right: 2_u32,
                     bottom: 1_u32,
                     back: 1_u32,
                 }),
-                &[9_u8],
+                &[9_u8, 8_u8, 7_u8, 6_u8],
                 58_u32,
                 14_u32,
                 2_u32,
@@ -21781,24 +21786,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
         failure_is_negative({
             let answer = direct3d_11::DeviceContext::map(
                 this,
-                v1,
-                0_u32,
+                match o.k36.as_ref() {
+                    Some(texture) => direct3d_11::ResourceRef::Texture2D(texture),
+                    None => return false,
+                },
+                1_u32,
                 direct3d_11::enumerations::D3D11_MAP_READ,
                 1048576_u32,
             );
@@ -21826,21 +21821,15 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
         answered({
-            let answer = direct3d_11::DeviceContext::unmap(this, v1, 0_u32);
+            let answer = direct3d_11::DeviceContext::unmap(
+                this,
+                match o.k36.as_ref() {
+                    Some(texture) => direct3d_11::ResourceRef::Texture2D(texture),
+                    None => return false,
+                },
+                1_u32,
+            );
             answers.push("ID3D11DeviceContext::Unmap -> nothing".to_string());
             answer
         })
@@ -22552,33 +22541,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
         answered({
             let answer = direct3d_11::DeviceContext::update_subresource(
                 this,
-                v1,
-                0_u32,
+                match o.k36.as_ref() {
+                    Some(texture) => direct3d_11::ResourceRef::Texture2D(texture),
+                    None => return false,
+                },
+                1_u32,
                 Some(&direct3d_11::structures::Box {
-                    left: 0_u32,
+                    left: 1_u32,
                     top: 0_u32,
                     front: 0_u32,
-                    right: 1_u32,
+                    right: 2_u32,
                     bottom: 1_u32,
                     back: 1_u32,
                 }),
-                &[9_u8],
+                &[9_u8, 8_u8, 7_u8, 6_u8],
                 58_u32,
                 14_u32,
             );

@@ -41,6 +41,12 @@ unsafe extern "C" {
     fn exact_open_shared(device: usize, handle: usize, iid: *const u8, out: *mut usize) -> i32;
     fn exact_set_break(queue: usize, slot: u32, value: i32, enable: i32) -> i32;
     fn exact_create_device_with_module(create: usize, module: usize, device: *mut usize, context: *mut usize) -> i32;
+    fn exact_query(object: usize, iid: *const u8, out: *mut usize) -> i32;
+    fn exact_offer(device: usize, resource: usize, priority: i32) -> i32;
+    fn exact_reclaim(device: usize, resource: usize, discarded: *mut i32) -> i32;
+    fn exact_offer1(device: usize, resource: usize, priority: i32, flags: u32) -> i32;
+    fn exact_reclaim1(device: usize, resource: usize, results: *mut i32) -> i32;
+    fn exact_software_adapter(factory: usize, module: usize, adapter: *mut usize) -> i32;
     fn exact_system_answer(kind: u32, iids: *const u8, count: usize);
     fn exact_system_expect(lengths: *const u64, count: usize);
     fn exact_system_map_with(row_pitch: u32, depth_pitch: u32, length: u64);
@@ -281,11 +287,12 @@ fn expect_lengths(lengths: &[u64]) {
     unsafe { exact_system_expect(lengths.as_ptr(), lengths.len()) };
 }
 
-/// What the stand-in saw: creations, uploads, maps, unmaps, calls of a slot it does not serve.
-fn seen() -> [u64; 5] {
-    let mut seen = [0_u64; 5];
+/// What the stand-in saw: creations, uploads, maps, unmaps, calls of a slot it does not serve, unmaps of another
+/// resource or subresource than the one mapped, devices made.
+fn seen() -> [u64; 7] {
+    let mut seen = [0_u64; 7];
     #[expect(unsafe_code, reason = "exact.c's stand-in's counts")]
-    // SAFETY: five words.
+    // SAFETY: seven words.
     unsafe { exact_system_seen(seen.as_mut_ptr()) };
     seen
 }
@@ -411,6 +418,7 @@ fn the_calling_glue_passes_and_views_exactly_the_documented_bytes() {
     let seen = seen();
     println!("EXACT CALLING: {short_refused} short bytes refused, {uploads} exact uploads, {refused_boxes} boxes past an edge refused, {maps} maps viewing {viewed_bytes} bytes; the stand-in saw {seen:?}");
     assert_eq!(seen[2], seen[3], "every map unmapped");
+    assert_eq!(seen[5], 0, "every Unmap, the glue's own after a mapping it refuses too, names the resource and subresource mapped");
     assert_eq!(seen[4], 0, "the calling glue called no slot the stand-in does not serve");
     assert!(uploads > 0 && maps > 0 && refused_boxes > 0);
 }
@@ -463,7 +471,7 @@ const SHAPES: [(&str, Resource); 4] = [
     ("texture_3d", Resource::Texture3D { width: 19, height: 16, depth: 7, mips: 0, format: 28 }),
 ];
 
-/// Under AddressSanitizer (`EXACT_ASAN` set, as plants/exact-under-asan.sh sets it): the memory the serving glue lends
+/// Under AddressSanitizer (`EXACT_ASAN` set, as the plant runner's exact-under-asan.sh sets it): the memory the serving glue lends
 /// for a mapped subresource ends exactly where the reference says, for a buffer and each texture shape: C touching one
 /// byte past it is stopped with a heap-buffer-overflow, each shape in a process of its own (this test binary again).
 /// Without AddressSanitizer nothing would stop the touch, so the test checks nothing there.
@@ -564,4 +572,89 @@ fn the_serving_glue_passes_what_the_calling_glue_pins() {
     #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
     // SAFETY: references the serving glue handed out, each released once.
     let _ = unsafe { (exact_release(queue), exact_release(soft_context), exact_release(soft_device), exact_release(context), exact_release(device)) };
+}
+
+/// The calling glue refuses a list of more feature levels than d3dcommon.h declares (src/api.rs: at most 16) before the
+/// system reads it, and passes a list of 16.
+#[test]
+fn seventeen_feature_levels_never_reach_the_system() {
+    let _ = stand_in();
+    let library = Library {
+        d_3d11_create_device: exact_system_create_device,
+        d_3d11_create_device_and_swap_chain: exact_system_create_device_and_swap_chain,
+    };
+    #[expect(unsafe_code, reason = "the calling glue over exact.c's stand-in d3d11.dll")]
+    // SAFETY: each entry is the stand-in's export of that name, taking what d3d11.h declares.
+    let system = unsafe { SystemDirect3D11::new(library) };
+    let made = seen()[6];
+    let refused = system.create_device(None, DriverType(1), Hmodule(0), CreateDeviceFlag(0), &[LEVELS[0]; 17], SDK_VERSION);
+    assert_eq!(refused.err(), Some(wcontainers_component_object_model::constants::E_INVALIDARG));
+    assert_eq!(seen()[6], made, "seventeen levels never reach the system");
+    let passed = system.create_device(None, DriverType(1), Hmodule(0), CreateDeviceFlag(0), &[LEVELS[0]; 16], SDK_VERSION);
+    assert!(passed.is_ok(), "sixteen levels pass");
+    assert_eq!(seen()[6], made + 1, "and reach the system");
+}
+
+/// The interface `iid` of `object`, asked through C.
+fn queried(object: usize, iid: &Guid) -> usize {
+    let bytes = id_bytes(&[*iid]);
+    let mut out = 0_usize;
+    #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+    // SAFETY: `object` is a reference the serving glue handed out; `bytes` holds 16 bytes; the out is ours.
+    let status = unsafe { exact_query(object, bytes.as_ptr(), &mut out) };
+    assert!(status >= 0 && out != 0, "QueryInterface: {status:#x}");
+    out
+}
+
+/// What the recorder received in the calls of `place` after the first `from` arguments it logged.
+fn received_since(from: usize, place: &str) -> Vec<String> {
+    wcontainers_direct3d_11_recorder::arguments_since(from).into_iter().filter(|call| call.starts_with(place)).collect()
+}
+
+/// DXGI's calls the calling glue never makes of the system (OfferResources and ReclaimResources, never called; a software
+/// adapter's module, pinned), made by C on our implementation through the serving glue: each reaches the recorder with
+/// its list of one resource (null: an element left empty, which the header lets a caller pass and the trait passes as
+/// none), the priority (DXGI_OFFER_RESOURCE_PRIORITY_NORMAL, 2), the flags (DXGI_OFFER_RESOURCE_FLAG_ALLOW_DECOMMIT, 1)
+/// and the module (0x2000) as given.
+#[test]
+fn the_serving_glue_passes_dxgis_calls_the_calling_glue_never_makes() {
+    let library = exports(Recorder);
+    let (mut device, mut context) = (0_usize, 0_usize);
+    #[expect(unsafe_code, reason = "exact.c's caller, given the serving glue's own D3D11CreateDevice")]
+    // SAFETY: `create` is the serving glue's export, which takes what d3d11.h declares; the two outs are ours.
+    let status = unsafe { exact_create_device(library.d_3d11_create_device as usize, &mut device, &mut context) };
+    assert!(status >= 0, "a device through the serving glue: {status:#x}");
+    let device2 = queried(device, &wcontainers_directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE2);
+    let device4 = queried(device, &wcontainers_directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4);
+    let from = wcontainers_direct3d_11_recorder::arguments_logged();
+    let mut answered = [0_i32; 1];
+    #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+    // SAFETY: the two devices are references the serving glue handed out; each list holds one null element; `answered`
+    // holds one word.
+    let statuses = unsafe {
+        [
+            exact_offer(device2, 0, 2),
+            exact_reclaim(device2, 0, answered.as_mut_ptr()),
+            exact_offer1(device4, 0, 2, 1),
+            exact_reclaim1(device4, 0, answered.as_mut_ptr()),
+        ]
+    };
+    assert!(statuses.iter().all(|status| *status >= 0), "{statuses:x?}");
+    assert_eq!(received_since(from, "IDXGIDevice2::OfferResources"), ["IDXGIDevice2::OfferResources(resources=[false], priority=OfferResourcePriority(2))"]);
+    assert_eq!(received_since(from, "IDXGIDevice2::ReclaimResources"), ["IDXGIDevice2::ReclaimResources(resources=[false])"]);
+    assert_eq!(received_since(from, "IDXGIDevice4::OfferResources1"), ["IDXGIDevice4::OfferResources1(resources=[false], priority=OfferResourcePriority(2), flags=1)"]);
+    assert_eq!(received_since(from, "IDXGIDevice4::ReclaimResources1"), ["IDXGIDevice4::ReclaimResources1(resources=[false])"]);
+    let factories = wcontainers_directx_graphics_infrastructure_direct::exports(Recorder);
+    let iid = id_bytes(&[wcontainers_directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY]);
+    let mut factory: Raw = core::ptr::null_mut();
+    #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+    // SAFETY: the serving glue's export, which takes what dxgi.h declares: 16 bytes of an id and an out of ours.
+    let status = unsafe { (factories.create_dxgi_factory)(iid.as_ptr(), &mut factory) };
+    assert!(status >= 0 && !factory.is_null(), "a factory: {status:#x}");
+    let mut adapter = 0_usize;
+    #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+    // SAFETY: `factory` is the serving glue's factory; the module is a number it passes on, never loads; the out is ours.
+    let status = unsafe { exact_software_adapter(factory.addr(), 0x2000, &mut adapter) };
+    let calls = wcontainers_directx_graphics_infrastructure_recorder::calls("IDXGIFactory::CreateSoftwareAdapter");
+    assert!(calls.last().is_some_and(|call| call.contains("module=Hmodule(8192)")), "{status:#x} {calls:?}");
 }

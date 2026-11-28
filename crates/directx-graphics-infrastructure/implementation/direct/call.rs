@@ -5542,7 +5542,6 @@ impl<A: System> directx_graphics_infrastructure::Output1 for SystemOutput<A> {
         component_object_model::structures::HResult,
     > {
         let mut num_modes_cell: u32 = 0;
-        let mut desc_words: Vec<u64> = Vec::new();
         #[expect(unsafe_code, reason = "IDXGIOutput1::GetDisplayModeList1, called out")]
         // SAFETY: a live object whose table holds `IDXGIOutput1::GetDisplayModeList1` where the metadata orders it; every pointer passed is ours for the call.
         let first = unsafe {
@@ -5551,11 +5550,7 @@ impl<A: System> directx_graphics_infrastructure::Output1 for SystemOutput<A> {
                 enum_format.0,
                 flags.0,
                 (&raw mut num_modes_cell).cast::<u8>(),
-                if desc_words.is_empty() {
-                    null_mut()
-                } else {
-                    desc_words.as_mut_ptr().cast::<u8>()
-                },
+                null_mut(),
             )
         };
         succeeded(first)?;
@@ -5565,7 +5560,7 @@ impl<A: System> directx_graphics_infrastructure::Output1 for SystemOutput<A> {
         else {
             return Err(E_INVALIDARG);
         };
-        desc_words = vec![0_u64; (desc_room * 32).div_ceil(8).max(1)];
+        let mut desc_words = vec![0_u64; (desc_room * 32).div_ceil(8).max(1)];
         let Ok(room) = u32::try_from(desc_room) else {
             return Err(E_INVALIDARG);
         };
@@ -5578,11 +5573,7 @@ impl<A: System> directx_graphics_infrastructure::Output1 for SystemOutput<A> {
                 enum_format.0,
                 flags.0,
                 (&raw mut num_modes_cell).cast::<u8>(),
-                if desc_words.is_empty() {
-                    null_mut()
-                } else {
-                    desc_words.as_mut_ptr().cast::<u8>()
-                },
+                desc_words.as_mut_ptr().cast::<u8>(),
             )
         };
         succeeded(returned)?;
@@ -5773,7 +5764,6 @@ impl<A: System> directx_graphics_infrastructure::Output for SystemOutput<A> {
         component_object_model::structures::HResult,
     > {
         let mut num_modes_cell: u32 = 0;
-        let mut desc_words: Vec<u64> = Vec::new();
         #[expect(unsafe_code, reason = "IDXGIOutput::GetDisplayModeList, called out")]
         // SAFETY: a live object whose table holds `IDXGIOutput::GetDisplayModeList` where the metadata orders it; every pointer passed is ours for the call.
         let first = unsafe {
@@ -5782,11 +5772,7 @@ impl<A: System> directx_graphics_infrastructure::Output for SystemOutput<A> {
                 enum_format.0,
                 flags.0,
                 (&raw mut num_modes_cell).cast::<u8>(),
-                if desc_words.is_empty() {
-                    null_mut()
-                } else {
-                    desc_words.as_mut_ptr().cast::<u8>()
-                },
+                null_mut(),
             )
         };
         succeeded(first)?;
@@ -5796,7 +5782,7 @@ impl<A: System> directx_graphics_infrastructure::Output for SystemOutput<A> {
         else {
             return Err(E_INVALIDARG);
         };
-        desc_words = vec![0_u64; (desc_room * 28).div_ceil(8).max(1)];
+        let mut desc_words = vec![0_u64; (desc_room * 28).div_ceil(8).max(1)];
         let Ok(room) = u32::try_from(desc_room) else {
             return Err(E_INVALIDARG);
         };
@@ -5809,11 +5795,7 @@ impl<A: System> directx_graphics_infrastructure::Output for SystemOutput<A> {
                 enum_format.0,
                 flags.0,
                 (&raw mut num_modes_cell).cast::<u8>(),
-                if desc_words.is_empty() {
-                    null_mut()
-                } else {
-                    desc_words.as_mut_ptr().cast::<u8>()
-                },
+                desc_words.as_mut_ptr().cast::<u8>(),
             )
         };
         succeeded(returned)?;

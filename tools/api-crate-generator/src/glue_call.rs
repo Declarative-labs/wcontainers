@@ -9,6 +9,10 @@ use crate::api::{Exception, Hold};
 use crate::emit::{At, HEADER, Key, alias};
 use crate::metadata::Method;
 
+/// Marks, in a call's arguments, an array the system is asked for twice (how many, then that many), until the two
+/// calls are written: null in the first, the room in the second.
+const ASKED_ARRAY: &str = "@ASKED@";
+
 impl Writer<'_, '_> {
     fn system_path(&self, kind: usize, api_type: &str) -> String {
         format!("{}::<{api_type}>", self.system_type(kind, self.current.get()))
@@ -208,6 +212,8 @@ impl Writer<'_, '_> {
         let mut after = String::new();
         // An array out counted by pointer: what runs between the call asking how many and the call that fills them.
         let mut by_pointer = String::new();
+        // The arrays asked for twice (by pointer): their names, marked in `args` until the two calls are written.
+        let mut asked: Vec<String> = Vec::new();
         let mut outs: Vec<String> = Vec::new();
         for exception in self.g.exceptions() {
             if let Exception::Checked { method: m, param, rule } = exception
@@ -404,10 +410,11 @@ impl Writer<'_, '_> {
                 Part::ValuesOut { element, size, by_pointer: true, count } => {
                     // Asked twice of the system (see the call below): how many, then that many, none past the glue's limit.
                     let count_name = &glued.parts[*count].0;
-                    let _ = writeln!(body, "        let mut {name}_words: Vec<u64> = Vec::new();");
-                    args.push(format!("if {name}_words.is_empty() {{ null_mut() }} else {{ {name}_words.as_mut_ptr().cast::<u8>() }}"));
+                    // The first call passes no array (null), the second the room the first's count asked for.
+                    args.push(format!("{ASKED_ARRAY}{name}{ASKED_ARRAY}"));
+                    asked.push(name.clone());
                     let _ = writeln!(by_pointer, "        let Some({name}_room) = usize::try_from({count_name}_cell).ok().filter(|count| *count <= {MOST_ELEMENTS}) else {{ {fail} }};");
-                    let _ = writeln!(by_pointer, "        {name}_words = vec![0_u64; ({}).div_ceil(8).max(1)];", super::times(&format!("{name}_room"), &size.to_string()));
+                    let _ = writeln!(by_pointer, "        let mut {name}_words = vec![0_u64; ({}).div_ceil(8).max(1)];", super::times(&format!("{name}_room"), &size.to_string()));
                     let _ = writeln!(by_pointer, "        let Ok(room) = u32::try_from({name}_room) else {{ {fail} }};\n        {count_name}_cell = room;");
                     let read = Self::element_read(element, "element");
                     let _ = writeln!(after, "        let {name}_number = usize::try_from({count_name}_cell).unwrap_or(usize::MAX).min({name}_room);");
@@ -658,6 +665,10 @@ impl Writer<'_, '_> {
         }
         let target = if face.is_some() { "object".to_string() } else { call_target.to_string() };
         let callee = if this { format!("({target}.entry_points().{slot})({target}.raw(){})", args.iter().map(|a| format!(", {a}")).collect::<String>()) } else { format!("({target}.{slot})({})", args.join(", ")) };
+        let (first_callee, callee) = asked.iter().fold((callee.clone(), callee), |(first, second), name| {
+            let mark = format!("{ASKED_ARRAY}{name}{ASKED_ARRAY}");
+            (first.replace(&mark, "null_mut()"), second.replace(&mark, &format!("{name}_words.as_mut_ptr().cast::<u8>()")))
+        });
         let _ = writeln!(body, "        #[expect(unsafe_code, reason = \"{place}{}, called out\")]", if this { "" } else { ", the library's export" });
         if this {
             let _ = writeln!(body, "        // SAFETY: a live object whose table holds `{place}` where the metadata orders it; every pointer passed is ours for the call.");
@@ -666,7 +677,7 @@ impl Writer<'_, '_> {
         }
         if !by_pointer.is_empty() {
             // First the system is asked how many (a null array), then that many are passed room for.
-            let _ = writeln!(body, "        let first = unsafe {{ {callee} }};");
+            let _ = writeln!(body, "        let first = unsafe {{ {first_callee} }};");
             if status {
                 let _ = writeln!(body, "        succeeded(first)?;");
             } else {
