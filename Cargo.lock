@@ -4235,6 +4235,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-capability-table-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-capability-table",
+]
+
+[[package]]
+name = "wcontainers-capability-table-ordered-map"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-capability-table",
+ "wcontainers-capability-table-conformance",
+ "wcontainers-kernel-core",
+ "wcontainers-memory-shard",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
 name = "wcontainers-clock"
 version = "0.1.0"
 

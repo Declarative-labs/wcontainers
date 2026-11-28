@@ -1,7 +1,7 @@
-//! A capability table in the standard library's ordered map from each identifier to a shared reference to a thing.
+//! A capability table in the standard library's ordered map, and a kind of memory shard for it to hold.
 //!
-//! A thing is made from its config by `TryFrom` straight into the map, and a duplicate is a second reference to it, so
-//! no number stands for a thing apart from its entries and none can come to name a thing made later.
+//! The table makes and duplicates capabilities by the two functions it holds, whose specifications say that a made
+//! capability is what its config asks for and a duplicate is the same capability.
 
 #![no_std]
 
@@ -12,36 +12,42 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use thiserror::Error;
 use vstd::cell::invcell::InvCell;
 use vstd::predicate::Predicate;
 use vstd::prelude::*;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
-use wcontainers_capability_table::{CapabilityTable, CreateError, DuplicateError};
+use wcontainers_capability_table::{CapabilityConfig, CapabilityTable, CreateError, DuplicateError};
+use wcontainers_kernel_core::memory::MemoryError;
+use wcontainers_memory_shard::{BorrowError, MemoryPermissions, MemoryShard, MemoryShardConfig};
 use wcontainers_volatile_bytes::VolatileBytes;
 
 verus! {
 
 broadcast use vstd::std_specs::btree::group_btree_axioms;
 
-/// A table of capabilities in an ordered map from each identifier to a shared thing made from a config.
-pub struct OrderedMapCapabilityTable<Identifier: Ord, Config, Thing> {
-    entries: Entries<Identifier, Thing>,
-    configs: PhantomData<Config>,
-}
-
-/// A capability to a thing, which only its table can duplicate, so that none outlives every entry holding it.
-pub struct Shared<Thing> {
-    thing: Rc<Thing>,
+/// A table of capabilities in an ordered map from each identifier, which makes and duplicates them by its two functions.
+#[verifier::reject_recursive_types(Capability)]
+#[verifier::reject_recursive_types(Config)]
+#[verifier::reject_recursive_types(Error)]
+pub struct OrderedMapCapabilityTable<
+    Identifier: Ord,
+    Capability,
+    Config: CapabilityConfig<Capability>,
+    Error,
+    Make: Fn(Config) -> Result<Capability, Error>,
+    Duplicate: Fn(&Capability) -> Capability,
+> {
+    entries: Entries<Identifier, Capability>,
+    makers: Makers<Capability, Config, Error, Make, Duplicate>,
 }
 
 // The standard library's ordered map from identifiers to capabilities, kept with the order laws its specification needs.
-struct Entries<Identifier: Ord, Thing> {
-    map: BTreeMap<Identifier, Shared<Thing>>,
+struct Entries<Identifier: Ord, Capability> {
+    map: BTreeMap<Identifier, Capability>,
 }
 
-impl<Identifier: Ord, Thing> Entries<Identifier, Thing> {
+impl<Identifier: Ord, Capability> Entries<Identifier, Capability> {
     // The order laws under which the standard library's map is specified, which identifiers obey, and the map's own.
     #[verifier::type_invariant]
     spec fn ordered(self) -> bool {
@@ -51,18 +57,62 @@ impl<Identifier: Ord, Thing> Entries<Identifier, Thing> {
     }
 }
 
-// Returns a second capability to the same thing.
-fn duplicate<Thing>(capability: &Shared<Thing>) -> (duplicate: Shared<Thing>)
-    ensures
-        duplicate == *capability,
-{
-    Shared { thing: Rc::clone(&capability.thing) }
+// The two functions a table makes and duplicates capabilities by, kept with the specifications the table relies on.
+#[verifier::reject_recursive_types(Capability)]
+#[verifier::reject_recursive_types(Config)]
+#[verifier::reject_recursive_types(Error)]
+struct Makers<
+    Capability,
+    Config: CapabilityConfig<Capability>,
+    Error,
+    Make: Fn(Config) -> Result<Capability, Error>,
+    Duplicate: Fn(&Capability) -> Capability,
+> {
+    make: Make,
+    duplicate: Duplicate,
+    kinds: PhantomData<(Capability, Config, Error)>,
+}
+
+impl<
+    Capability,
+    Config: CapabilityConfig<Capability>,
+    Error,
+    Make: Fn(Config) -> Result<Capability, Error>,
+    Duplicate: Fn(&Capability) -> Capability,
+> Makers<Capability, Config, Error, Make, Duplicate> {
+    // Every config may be made, what is made is what its config asks for, and a duplicate equals its original.
+    #[verifier::type_invariant]
+    spec fn specified(self) -> bool {
+        &&& makes_what_is_asked(self.make)
+        &&& duplicates_the_same(self.duplicate)
+    }
+}
+
+// Whether a function makes, from every config, either an error or a capability the config describes.
+spec fn makes_what_is_asked<
+    Capability,
+    Config: CapabilityConfig<Capability>,
+    Error,
+    Make: Fn(Config) -> Result<Capability, Error>,
+>(make: Make) -> bool {
+    &&& forall|config: Config| #[trigger] make.requires((config,))
+    &&& forall|config: Config, made: Result<Capability, Error>| #[trigger]
+        make.ensures((config,), made) ==> (made matches Ok(capability) ==> config.describes(capability))
+}
+
+// Whether a function returns, for every capability, one equal to it.
+spec fn duplicates_the_same<Capability, Duplicate: Fn(&Capability) -> Capability>(
+    duplicate: Duplicate,
+) -> bool {
+    &&& forall|capability: &Capability| #[trigger] duplicate.requires((capability,))
+    &&& forall|capability: &Capability, copy: Capability| #[trigger]
+        duplicate.ensures((capability,), copy) ==> copy == *capability
 }
 
 // Returns the map, leaving an empty one in its place, so that the map can change under no borrow of a field.
-fn take<Identifier: Ord, Thing>(entries: &mut Entries<Identifier, Thing>) -> (map: BTreeMap<
+fn take<Identifier: Ord, Capability>(entries: &mut Entries<Identifier, Capability>) -> (map: BTreeMap<
     Identifier,
-    Shared<Thing>,
+    Capability,
 >)
     ensures
         map@ == old(entries).map@,
@@ -82,7 +132,7 @@ fn take<Identifier: Ord, Thing>(entries: &mut Entries<Identifier, Thing>) -> (ma
 }
 
 // Returns the entries of a map whose keys obey the order laws.
-fn wrap<Identifier: Ord, Thing>(map: BTreeMap<Identifier, Shared<Thing>>) -> (entries: Entries<Identifier, Thing>)
+fn wrap<Identifier: Ord, Capability>(map: BTreeMap<Identifier, Capability>) -> (entries: Entries<Identifier, Capability>)
     requires
         vstd::laws_cmp::obeys_cmp::<Identifier>(),
         vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>(),
@@ -93,40 +143,78 @@ fn wrap<Identifier: Ord, Thing>(map: BTreeMap<Identifier, Shared<Thing>>) -> (en
     Entries { map }
 }
 
-impl<Config, Thing> Default for OrderedMapCapabilityTable<u64, Config, Thing> {
-    // Returns a table holding nothing; only u64 identifiers, whose order laws vstd proves, can make one.
-    fn default() -> (table: Self) {
-        OrderedMapCapabilityTable { entries: wrap(BTreeMap::new()), configs: PhantomData }
+// Returns a table holding nothing, which makes and duplicates by the two functions.
+fn make_table<
+    Identifier: Ord,
+    Capability,
+    Config: CapabilityConfig<Capability>,
+    Error,
+    Make: Fn(Config) -> Result<Capability, Error>,
+    Duplicate: Fn(&Capability) -> Capability,
+>(make: Make, duplicate: Duplicate) -> (table: OrderedMapCapabilityTable<
+    Identifier,
+    Capability,
+    Config,
+    Error,
+    Make,
+    Duplicate,
+>)
+    requires
+        vstd::laws_cmp::obeys_cmp::<Identifier>(),
+        vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>(),
+        makes_what_is_asked(make),
+        duplicates_the_same(duplicate),
+    ensures
+        table.state() == Map::<Identifier, Capability>::empty(),
+{
+    OrderedMapCapabilityTable {
+        entries: wrap(BTreeMap::new()),
+        makers: Makers { make, duplicate, kinds: PhantomData },
     }
 }
 
-impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier, Shared<Thing>> for
-    OrderedMapCapabilityTable<Identifier, Config, Thing> {
-    type Config = Config;
-
-    type Error = <Thing as TryFrom<Config>>::Error;
-
-    closed spec fn state(&self) -> Map<Identifier, Shared<Thing>> {
+impl<
+    Identifier: Ord,
+    Capability,
+    Config: CapabilityConfig<Capability>,
+    Error,
+    Make: Fn(Config) -> Result<Capability, Error>,
+    Duplicate: Fn(&Capability) -> Capability,
+> CapabilityTable<Identifier, Capability, Config, Error> for OrderedMapCapabilityTable<
+    Identifier,
+    Capability,
+    Config,
+    Error,
+    Make,
+    Duplicate,
+> {
+    closed spec fn state(&self) -> Map<Identifier, Capability> {
         self.entries.map@
     }
 
     fn create(&mut self, identifier: Identifier, config: Config) -> (created: Result<
         (),
-        CreateError<Self::Error>,
+        CreateError<Error>,
     >) {
         proof {
             use_type_invariant(&self.entries);
+            use_type_invariant(&self.makers);
         }
         if self.entries.map.contains_key(&identifier) {
             return Err(CreateError::IdentifierTaken);
         }
-        let thing = match Thing::try_from(config) {
-            Ok(thing) => thing,
+        let ghost asked = config;
+        let made = (self.makers.make)(config);
+        let capability = match made {
+            Ok(capability) => capability,
             Err(error) => return Err(CreateError::Failed(error)),
         };
+        proof {
+            assert(self.makers.make.ensures((asked,), made));
+        }
         let ghost key = identifier;
         let mut map = take(&mut self.entries);
-        let _ = map.insert(identifier, Shared { thing: Rc::new(thing) });
+        let _ = map.insert(identifier, capability);
         proof {
             assert(map@.remove(key) =~= old(self).entries.map@);
         }
@@ -134,7 +222,7 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
         Ok(())
     }
 
-    fn get(&self, identifier: &Identifier) -> (capability: Option<&Shared<Thing>>) {
+    fn get(&self, identifier: &Identifier) -> (capability: Option<&Capability>) {
         proof {
             use_type_invariant(&self.entries);
         }
@@ -148,12 +236,13 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
     }
 
     fn duplicate_within(&mut self, identifier: &Identifier, new_identifier: Identifier) -> (duplicated:
-        Result<(), DuplicateError<Self::Error>>) {
+        Result<(), DuplicateError<Error>>) {
         proof {
             use_type_invariant(&self.entries);
+            use_type_invariant(&self.makers);
         }
         let duplicate = match self.entries.map.get(identifier) {
-            Some(capability) => duplicate(capability),
+            Some(capability) => (self.makers.duplicate)(capability),
             None => return Err(DuplicateError::NothingHeld),
         };
         if self.entries.map.contains_key(&new_identifier) {
@@ -170,13 +259,14 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
         other: &Self,
         identifier: &Identifier,
         new_identifier: Identifier,
-    ) -> (duplicated: Result<(), DuplicateError<Self::Error>>) {
+    ) -> (duplicated: Result<(), DuplicateError<Error>>) {
         proof {
             use_type_invariant(&self.entries);
+            use_type_invariant(&self.makers);
             use_type_invariant(&other.entries);
         }
         let duplicate = match other.entries.map.get(identifier) {
-            Some(capability) => duplicate(capability),
+            Some(capability) => (self.makers.duplicate)(capability),
             None => return Err(DuplicateError::NothingHeld),
         };
         if self.entries.map.contains_key(&new_identifier) {
@@ -189,43 +279,33 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
     }
 }
 
-impl<Thing: VolatileBytes> VolatileBytes for Shared<Thing> {
-    closed spec fn spec_len(&self) -> nat {
-        self.thing.spec_len()
-    }
-
-    fn len(&self) -> (length: u64) {
-        self.thing.len()
-    }
-
-    fn read_at(&self, offset: u64, into: &mut [u8]) -> (count: usize) {
-        self.thing.read_at(offset, into)
-    }
-
-    fn write_at(&self, offset: u64, bytes: &[u8]) -> (count: usize) {
-        self.thing.write_at(offset, bytes)
-    }
-
-    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> (read: Result<usize, Sink::Error>) {
-        self.thing.read_to(sink)
-    }
-
-    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> (written: Result<usize, Source::Error>) {
-        self.thing.write_from(source)
-    }
-}
-
-/// The length of a WebAssembly page, the most bytes a page holds.
+/// The length of a WebAssembly page, the most bytes a shard holds.
 ///
 /// https://webassembly.github.io/spec/core/exec/runtime.html#page-size
 const WEBASSEMBLY_PAGE_LENGTH: u64 = 65536;
 
-/// A page of bytes, each in a cell that a shared borrow may write, made from its length.
-pub struct Page {
-    bytes: Vec<InvCell<u8, AnyByte>>,
+/// A shard of memory whose bytes every duplicate shares, held with the permissions it was made with.
+pub struct Shard {
+    cells: Rc<Vec<InvCell<u8, AnyByte>>>,
+    permissions: MemoryPermissions,
 }
 
-// The rule every byte of a page meets, which any byte does.
+/// A run of a shard's bytes that a borrow lends.
+pub struct Window<'shard> {
+    shard: &'shard Shard,
+    start: usize,
+    length: usize,
+}
+
+impl<'shard> Window<'shard> {
+    // The run lies inside the shard.
+    #[verifier::type_invariant]
+    spec fn inside(self) -> bool {
+        self.start + self.length <= self.shard.cells@.len()
+    }
+}
+
+// The rule every byte of a shard meets, which any byte does.
 struct AnyByte;
 
 impl Predicate<u8> for AnyByte {
@@ -234,66 +314,112 @@ impl Predicate<u8> for AnyByte {
     }
 }
 
-/// Why a page could not be made.
-#[derive(Debug, Error)]
-#[verifier::external_derive]
-pub enum PageError {
-    #[error("the length is more than a WebAssembly page holds")]
-    TooLong,
-}
-
-// Returns a page of the length, every byte zero, or `TooLong` past a WebAssembly page.
-fn make(length: u64) -> (made: Result<Page, PageError>)
+// Returns a shard of the config's length and permissions, every byte zero, or `OutOfMemory` past a WebAssembly page.
+fn make_shard(config: MemoryShardConfig) -> (made: Result<Shard, MemoryError>)
     ensures
-        made matches Ok(page) ==> page.spec_len() == length,
-        made is Err <==> length > WEBASSEMBLY_PAGE_LENGTH,
+        made matches Ok(shard) ==> config.describes(shard),
+        made is Err <==> config.length > WEBASSEMBLY_PAGE_LENGTH,
 {
-    if length > WEBASSEMBLY_PAGE_LENGTH {
-        return Err(PageError::TooLong);
+    if config.length > WEBASSEMBLY_PAGE_LENGTH {
+        return Err(MemoryError::OutOfMemory);
     }
-    let mut bytes: Vec<InvCell<u8, AnyByte>> = Vec::new();
+    let mut cells: Vec<InvCell<u8, AnyByte>> = Vec::new();
     let mut made: u64 = u64::MIN;
-    while made < length
+    while made < config.length
         invariant
-            made <= length,
-            length <= WEBASSEMBLY_PAGE_LENGTH,
-            bytes@.len() == made,
-        decreases length - made,
+            made <= config.length,
+            config.length <= WEBASSEMBLY_PAGE_LENGTH,
+            cells@.len() == made,
+        decreases config.length - made,
     {
-        bytes.push(InvCell::new(u8::MIN, Ghost(AnyByte)));
+        cells.push(InvCell::new(u8::MIN, Ghost(AnyByte)));
         made += 1;
     }
-    Ok(Page { bytes })
+    Ok(Shard { cells: Rc::new(cells), permissions: config.permissions })
 }
 
-// Returns where in the page a copy at the offset starts and how many bytes it moves for a buffer of the length.
-fn range(page: &Page, offset: u64, buffer: usize) -> (range: (usize, usize))
+// Returns a second capability to the same bytes with the same permissions.
+fn duplicate_shard(shard: &Shard) -> (duplicate: Shard)
     ensures
-        range.1 == wcontainers_volatile_bytes::copied(page.spec_len(), offset, buffer as nat),
-        range.0 + range.1 <= page.bytes@.len(),
-        range.1 > 0 ==> range.0 == offset,
-        page.bytes@.len() <= usize::MAX,
+        duplicate == *shard,
 {
-    let length = page.bytes.len();
-    if offset >= length as u64 {
-        return (usize::MIN, usize::MIN);
-    }
-    let start = offset as usize;
-    let rest = length - start;
-    if buffer <= rest {
-        (start, buffer)
-    } else {
-        (start, rest)
-    }
+    Shard { cells: Rc::clone(&shard.cells), permissions: shard.permissions }
 }
 
-impl VolatileBytes for Page {
-    closed spec fn spec_len(&self) -> nat {
-        self.bytes@.len()
+/// Returns a table of shards under their starting addresses, holding nothing.
+pub fn make_shard_table() -> (table: OrderedMapCapabilityTable<
+    u64,
+    Shard,
+    MemoryShardConfig,
+    MemoryError,
+    impl Fn(MemoryShardConfig) -> Result<Shard, MemoryError>,
+    impl Fn(&Shard) -> Shard,
+>)
+    ensures
+        table.state() == Map::<u64, Shard>::empty(),
+{
+    make_table(make_shard, duplicate_shard)
+}
+
+impl MemoryShard for Shard {
+    type ByteView<'shard> = Window<'shard>;
+
+    closed spec fn spec_len(&self) -> u64 {
+        self.cells@.len() as u64
     }
 
     fn len(&self) -> (length: u64) {
-        self.bytes.len() as u64
+        self.cells.len() as u64
+    }
+
+    closed spec fn spec_permissions(&self) -> MemoryPermissions {
+        self.permissions
+    }
+
+    fn permissions(&self) -> (permissions: MemoryPermissions) {
+        self.permissions
+    }
+
+    fn borrow(&self, offset: u64, length: u64) -> (borrowed: Result<Window<'_>, BorrowError>) {
+        let size = self.cells.len() as u64;
+        if offset > size || length > size - offset {
+            return Err(BorrowError::OutsideShard);
+        }
+        Ok(Window { shard: self, start: offset as usize, length: length as usize })
+    }
+}
+
+// Returns where in the shard a copy at the offset of the window starts and how many bytes it moves for a buffer.
+fn range(window: &Window, offset: u64, buffer: usize) -> (range: (usize, usize))
+    ensures
+        range.1 == wcontainers_volatile_bytes::copied(window.spec_len(), offset, buffer as nat),
+        range.0 + range.1 <= window.shard.cells@.len(),
+        window.start + window.length <= window.shard.cells@.len(),
+        window.shard.cells@.len() <= usize::MAX,
+{
+    proof {
+        use_type_invariant(window);
+    }
+    let _ = window.shard.cells.len();
+    if offset >= window.length as u64 {
+        return (window.start, usize::MIN);
+    }
+    let skip = offset as usize;
+    let rest = window.length - skip;
+    if buffer <= rest {
+        (window.start + skip, buffer)
+    } else {
+        (window.start + skip, rest)
+    }
+}
+
+impl<'shard> VolatileBytes for Window<'shard> {
+    closed spec fn spec_len(&self) -> nat {
+        self.length as nat
+    }
+
+    fn len(&self) -> (length: u64) {
+        self.length as u64
     }
 
     fn read_at(&self, offset: u64, into: &mut [u8]) -> (count: usize) {
@@ -302,14 +428,14 @@ impl VolatileBytes for Page {
         while index < count
             invariant
                 count == wcontainers_volatile_bytes::copied(self.spec_len(), offset, old(into)@.len()),
-                start + count <= self.bytes@.len(),
-                self.bytes@.len() <= usize::MAX,
+                start + count <= self.shard.cells@.len(),
+                self.shard.cells@.len() <= usize::MAX,
                 into@.len() == old(into)@.len(),
                 index <= count,
                 forall|later: int| count <= later < old(into)@.len() ==> into@[later] == old(into)@[later],
             decreases count - index,
         {
-            into[index] = self.bytes[start + index].get();
+            into[index] = self.shard.cells[start + index].get();
             index += 1;
         }
         count
@@ -321,53 +447,61 @@ impl VolatileBytes for Page {
         while index < count
             invariant
                 count == wcontainers_volatile_bytes::copied(self.spec_len(), offset, bytes@.len()),
-                start + count <= self.bytes@.len(),
-                self.bytes@.len() <= usize::MAX,
+                start + count <= self.shard.cells@.len(),
+                self.shard.cells@.len() <= usize::MAX,
                 count <= bytes@.len(),
                 index <= count,
             decreases count - index,
         {
-            self.bytes[start + index].set(bytes[index]);
+            self.shard.cells[start + index].set(bytes[index]);
             index += 1;
         }
         count
     }
 
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> (read: Result<usize, Sink::Error>) {
+        let (start, count) = range(self, u64::MIN, self.length);
         let mut copy: Vec<u8> = Vec::new();
-        let mut index: usize = usize::MIN;
-        while index < self.bytes.len()
+        while copy.len() < count
             invariant
-                index <= self.bytes@.len(),
-                copy@.len() == index,
-            decreases self.bytes@.len() - index,
+                start + count <= self.shard.cells@.len(),
+                self.shard.cells@.len() <= usize::MAX,
+                count <= self.length,
+                copy@.len() <= count,
+            decreases count - copy@.len(),
         {
-            copy.push(self.bytes[index].get());
-            index += 1;
+            copy.push(self.shard.cells[start + copy.len()].get());
         }
         sink.write(copy.as_slice())
     }
 
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> (written: Result<usize, Source::Error>) {
+        let (start, count) = range(self, u64::MIN, self.length);
         let mut copy: Vec<u8> = Vec::new();
-        while copy.len() < self.bytes.len()
+        while copy.len() < count
             invariant
-                copy@.len() <= self.bytes@.len(),
-            decreases self.bytes@.len() - copy@.len(),
+                start + count <= self.shard.cells@.len(),
+                self.shard.cells@.len() <= usize::MAX,
+                count <= self.length,
+                copy@.len() <= count,
+            decreases count - copy@.len(),
         {
             copy.push(u8::MIN);
         }
         let read = source.read(copy.as_mut_slice());
-        if let Ok(count) = read {
+        if let Ok(read_count) = read {
             let mut index: usize = usize::MIN;
-            while index < count
+            while index < read_count
                 invariant
-                    count <= copy@.len(),
-                    copy@.len() == self.bytes@.len(),
-                    index <= count,
-                decreases count - index,
+                    read_count <= copy@.len(),
+                    copy@.len() == count,
+                    count <= self.length,
+                    start + count <= self.shard.cells@.len(),
+                    self.shard.cells@.len() <= usize::MAX,
+                    index <= read_count,
+                decreases read_count - index,
             {
-                self.bytes[index].set(copy[index]);
+                self.shard.cells[start + index].set(copy[index]);
                 index += 1;
             }
         }
@@ -376,13 +510,3 @@ impl VolatileBytes for Page {
 }
 
 } // verus!
-
-// TODO: prove it. Verus proves an impl of `TryFrom` only beside one of `TryFromSpecImpl`, which vstd declares only when
-// Verus compiles, so a crate that also builds without Verus cannot write it; this impl is one call of the proven `make`.
-impl TryFrom<u64> for Page {
-    type Error = PageError;
-
-    fn try_from(length: u64) -> Result<Page, PageError> {
-        make(length)
-    }
-}

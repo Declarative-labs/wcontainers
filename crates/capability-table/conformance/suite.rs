@@ -1,379 +1,493 @@
 //! The tests every implementation of wcontainers-capability-table runs, written against its trait alone.
 //!
-//! Each takes functions that make an empty table, give the identifier of a number, a config that creates the
-//! capability of a number and one whose create fails, and tell a capability's number.
+//! Each takes functions that make a table, name a number's identifier, give a config that makes its capability and one
+//! that fails, tell a capability's number, and write and read a mark that only the same capability shares.
 
 #![no_std]
 
-use wcontainers_capability_table::{CapabilityTable, CreateError, DuplicateError};
+use core::num::NonZeroU8;
+
+use wcontainers_capability_table::{
+    CapabilityConfig, CapabilityTable, CreateError, DuplicateError,
+};
 
 // The number of the first identifier and capability a test uses.
-const FIRST: u8 = u8::MIN;
+const FIRST: u8 = NonZeroU8::MIN.get();
 
 // The number of the second identifier and capability a test uses.
 const SECOND: u8 = u8::MAX;
 
+// The number of the identifier and capability that stand by, which no test's operation names.
+const THIRD: u8 = i8::MAX.unsigned_abs();
+
 // The functions an implementation gives the suite, as the crate's comment says.
-type Value<T, Identifier, Capability> = (
+type Value<T, Identifier, Capability, Config> = (
     fn() -> T,
     fn(u8) -> Identifier,
-    fn(u8) -> <T as CapabilityTable<Identifier, Capability>>::Config,
-    fn() -> <T as CapabilityTable<Identifier, Capability>>::Config,
+    fn(u8) -> Config,
+    fn() -> Config,
+    fn(&Capability) -> u8,
+    fn(&Capability, u8),
     fn(&Capability) -> u8,
 );
 
-// The functions an implementation serving two capability types gives the suite: the table, the identifiers, and the
-// config and the number of each capability type.
-type TwoTypes<T, Identifier, First, Second> = (
-    fn() -> T,
-    fn(u8) -> Identifier,
-    fn(u8) -> <T as CapabilityTable<Identifier, First>>::Config,
-    fn(&First) -> u8,
-    fn(u8) -> <T as CapabilityTable<Identifier, Second>>::Config,
-    fn(&Second) -> u8,
-);
-
-// Returns the number of the capability the table holds under the identifier, if it holds one.
-fn lookup<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
+// Returns the number and the mark of the capability the table holds under the identifier, if it holds one.
+fn lookup<T, Identifier, Capability, Config, Error>(
     table: &T,
-    identifier: &Identifier,
-    number: fn(&Capability) -> u8,
-) -> Option<u8> {
-    table.get(identifier).map(number)
+    value: &Value<T, Identifier, Capability, Config>,
+    identifier: u8,
+) -> Option<(u8, u8)>
+where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
+    let (_, name, _, _, number, _, read) = value;
+    table
+        .get(&name(identifier))
+        .map(|capability| (number(capability), read(capability)))
 }
 
-// Returns a table holding the first capability under the first identifier, made by the value's functions.
-fn filled<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: &Value<T, Identifier, Capability>,
-) -> T {
-    let (make, identifier, config, _, _) = value;
-    let mut table = make();
-    assert!(table.create(identifier(FIRST), config(FIRST)).is_ok());
+// Writes the mark through the capability the table holds under the identifier.
+fn mark<T, Identifier, Capability, Config, Error>(
+    table: &T,
+    value: &Value<T, Identifier, Capability, Config>,
+    identifier: u8,
+    mark: u8,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
+    let (_, name, _, _, _, write, _) = value;
+    write(
+        table
+            .get(&name(identifier))
+            .expect("the table holds the identifier the test marks"),
+        mark,
+    );
+}
+
+// Creates the capability of the number under the identifier of the number, and marks it with the number.
+fn create<T, Identifier, Capability, Config, Error>(
+    table: &mut T,
+    value: &Value<T, Identifier, Capability, Config>,
+    number: u8,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
+    let (_, name, config, _, _, _, _) = value;
+    assert!(matches!(table.create(name(number), config(number)), Ok(())));
+    mark(table, value, number, number);
+}
+
+// Returns a table holding the first and the third capability, each marked with its number.
+fn filled<T, Identifier, Capability, Config, Error>(
+    value: &Value<T, Identifier, Capability, Config>,
+) -> T
+where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
+    let mut table = value.0();
+    create(&mut table, value, FIRST);
+    create(&mut table, value, THIRD);
     table
 }
 
-/// Checks that a create on an identifier holding nothing puts the capability of its config there.
-pub fn creates_on_a_free_identifier<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
-    let (make, identifier, config, _, number) = value;
-    let mut table = make();
-    assert!(matches!(table.create(identifier(FIRST), config(FIRST)), Ok(())));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
+/// Checks that a create on an identifier holding nothing puts the capability of its config there and keeps the rest.
+pub fn creates_on_a_free_identifier<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
+    let mut table = filled(&value);
+    let (_, name, config, _, _, _, _) = value;
+    assert!(matches!(table.create(name(SECOND), config(SECOND)), Ok(())));
+    mark(&table, &value, SECOND, SECOND);
+    assert_eq!(lookup(&table, &value, SECOND), Some((SECOND, SECOND)));
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
-/// Checks that a create on a taken identifier is refused, whatever its config, and keeps what the identifier holds.
-pub fn refuses_to_create_on_a_taken_identifier<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
+/// Checks that a create on a taken identifier is refused, whatever its config, and keeps every capability.
+pub fn refuses_to_create_on_a_taken_identifier<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (_, identifier, config, failing, number) = value;
-    assert!(matches!(table.create(identifier(FIRST), config(SECOND)), Err(CreateError::IdentifierTaken)));
-    assert!(matches!(table.create(identifier(FIRST), failing()), Err(CreateError::IdentifierTaken)));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
+    let (_, name, config, failing, _, _, _) = value;
+    assert!(matches!(
+        table.create(name(FIRST), config(SECOND)),
+        Err(CreateError::IdentifierTaken)
+    ));
+    assert!(matches!(
+        table.create(name(FIRST), failing()),
+        Err(CreateError::IdentifierTaken)
+    ));
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
-/// Checks that a create whose config fails says so and leaves every identifier as it was.
-pub fn changes_nothing_when_a_create_fails<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
+/// Checks that a create whose config fails says so and keeps every capability.
+pub fn changes_nothing_when_a_create_fails<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (_, identifier, _, failing, number) = value;
-    assert!(matches!(table.create(identifier(SECOND), failing()), Err(CreateError::Failed(_))));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), None);
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
+    let (_, name, _, failing, _, _, _) = value;
+    assert!(matches!(
+        table.create(name(SECOND), failing()),
+        Err(CreateError::Failed(_))
+    ));
+    assert_eq!(lookup(&table, &value, SECOND), None);
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
 /// Checks that a table made anew lends nothing.
-pub fn gets_nothing_where_nothing_was_created<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
-    let (make, identifier, _, _, number) = value;
-    let table = make();
-    assert_eq!(lookup(&table, &identifier(FIRST), number), None);
-    assert_eq!(lookup(&table, &identifier(SECOND), number), None);
+pub fn gets_nothing_where_nothing_was_created<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
+    let table = value.0();
+    assert_eq!(lookup(&table, &value, FIRST), None);
+    assert_eq!(lookup(&table, &value, SECOND), None);
+    assert_eq!(lookup(&table, &value, THIRD), None);
 }
 
-/// Checks that a dropped identifier lends nothing and takes a new capability.
-pub fn gets_nothing_after_a_drop<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
+/// Checks that a dropped identifier lends nothing, keeps the rest, and takes a new capability.
+pub fn gets_nothing_after_a_drop<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (_, identifier, config, _, number) = value;
-    table.drop(&identifier(FIRST));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), None);
-    assert!(matches!(table.create(identifier(FIRST), config(SECOND)), Ok(())));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(SECOND));
+    let (_, name, config, _, _, _, _) = value;
+    table.drop(&name(FIRST));
+    assert_eq!(lookup(&table, &value, FIRST), None);
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
+    assert!(matches!(table.create(name(FIRST), config(SECOND)), Ok(())));
+    mark(&table, &value, FIRST, SECOND);
+    assert_eq!(lookup(&table, &value, FIRST), Some((SECOND, SECOND)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
-/// Checks that two identifiers hold their own capabilities, and that dropping one leaves the other.
-pub fn keeps_two_identifiers_apart<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
+/// Checks that a dropped identifier stays empty when another identifier takes a new capability.
+pub fn forgets_a_dropped_identifier<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (_, identifier, config, _, number) = value;
-    assert!(matches!(table.create(identifier(SECOND), config(SECOND)), Ok(())));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), Some(SECOND));
-    table.drop(&identifier(FIRST));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), None);
-    assert_eq!(lookup(&table, &identifier(SECOND), number), Some(SECOND));
+    let (_, name, _, _, _, _, _) = value;
+    table.drop(&name(FIRST));
+    create(&mut table, &value, SECOND);
+    assert_eq!(lookup(&table, &value, FIRST), None);
+    assert_eq!(lookup(&table, &value, SECOND), Some((SECOND, SECOND)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
-/// Checks that dropping an identifier that holds nothing leaves every other identifier as it was.
-pub fn drops_nothing_where_nothing_is_held<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
+/// Checks that identifiers hold their own capabilities, and that dropping one leaves the others.
+pub fn keeps_identifiers_apart<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (_, identifier, _, _, number) = value;
-    table.drop(&identifier(SECOND));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), None);
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
+    let (_, name, _, _, _, _, _) = value;
+    create(&mut table, &value, SECOND);
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, SECOND), Some((SECOND, SECOND)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
+    table.drop(&name(FIRST));
+    assert_eq!(lookup(&table, &value, FIRST), None);
+    assert_eq!(lookup(&table, &value, SECOND), Some((SECOND, SECOND)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
-/// Checks that a duplicate within the table puts the capability under the new identifier and keeps it under the old.
-pub fn duplicates_within_the_table<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
+/// Checks that dropping an identifier that holds nothing keeps every capability.
+pub fn drops_nothing_where_nothing_is_held<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (_, identifier, _, _, number) = value;
-    assert!(matches!(table.duplicate_within(&identifier(FIRST), identifier(SECOND)), Ok(())));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), Some(FIRST));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
+    let (_, name, _, _, _, _, _) = value;
+    table.drop(&name(SECOND));
+    assert_eq!(lookup(&table, &value, SECOND), None);
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
+}
+
+/// Checks that a duplicate within the table puts the same capability under the new identifier and keeps the rest.
+pub fn duplicates_within_the_table<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
+    let mut table = filled(&value);
+    let (_, name, _, _, _, _, _) = value;
+    assert!(matches!(
+        table.duplicate_within(&name(FIRST), name(SECOND)),
+        Ok(())
+    ));
+    assert_eq!(lookup(&table, &value, SECOND), Some((FIRST, FIRST)));
+    mark(&table, &value, SECOND, SECOND);
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, SECOND)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
 /// Checks that a duplicate within the table of an identifier holding nothing is refused, even onto a taken identifier.
-pub fn refuses_to_duplicate_nothing_within_the_table<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
+pub fn refuses_to_duplicate_nothing_within_the_table<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (_, identifier, _, _, number) = value;
+    let (_, name, _, _, _, _, _) = value;
     assert!(matches!(
-        table.duplicate_within(&identifier(SECOND), identifier(FIRST)),
+        table.duplicate_within(&name(SECOND), name(FIRST)),
         Err(DuplicateError::NothingHeld)
     ));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), None);
+    assert!(matches!(
+        table.duplicate_within(&name(SECOND), name(SECOND)),
+        Err(DuplicateError::NothingHeld)
+    ));
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, SECOND), None);
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
-/// Checks that a duplicate within the table onto a taken identifier, the held one itself too, is refused and keeps both.
+/// Checks that a duplicate within the table onto a taken identifier, the held one itself too, is refused and keeps all.
 pub fn refuses_to_duplicate_within_onto_a_taken_identifier<
-    T: CapabilityTable<Identifier, Capability>,
+    T,
     Identifier,
     Capability,
+    Config,
+    Error,
 >(
-    value: Value<T, Identifier, Capability>,
-) {
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (_, identifier, config, _, number) = value;
-    assert!(matches!(table.create(identifier(SECOND), config(SECOND)), Ok(())));
+    let (_, name, _, _, _, _, _) = value;
+    create(&mut table, &value, SECOND);
     assert!(matches!(
-        table.duplicate_within(&identifier(FIRST), identifier(SECOND)),
+        table.duplicate_within(&name(FIRST), name(SECOND)),
         Err(DuplicateError::IdentifierTaken)
     ));
     assert!(matches!(
-        table.duplicate_within(&identifier(FIRST), identifier(FIRST)),
+        table.duplicate_within(&name(FIRST), name(FIRST)),
         Err(DuplicateError::IdentifierTaken)
     ));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), Some(SECOND));
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, SECOND), Some((SECOND, SECOND)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
 /// Checks that a duplicate within the table of a held capability onto a free identifier succeeds or changes nothing.
 ///
 /// These are the only two outcomes the clauses leave it.
-pub fn changes_nothing_when_a_duplicate_within_fails<
-    T: CapabilityTable<Identifier, Capability>,
-    Identifier,
-    Capability,
->(
-    value: Value<T, Identifier, Capability>,
-) {
+pub fn changes_nothing_when_a_duplicate_within_fails<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (_, identifier, _, _, number) = value;
-    let expected = match table.duplicate_within(&identifier(FIRST), identifier(SECOND)) {
-        Ok(()) => Some(FIRST),
+    let (_, name, _, _, _, _, _) = value;
+    let expected = match table.duplicate_within(&name(FIRST), name(SECOND)) {
+        Ok(()) => Some((FIRST, FIRST)),
         Err(DuplicateError::Failed(_)) => None,
         Err(DuplicateError::NothingHeld | DuplicateError::IdentifierTaken) => {
             panic!("a duplicate of a held capability onto a free identifier was refused")
         }
     };
-    assert_eq!(lookup(&table, &identifier(SECOND), number), expected);
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
+    assert_eq!(lookup(&table, &value, SECOND), expected);
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
-/// Checks that a duplicate from another table puts the other's capability under the new identifier, and the other keeps it.
+/// Checks that a duplicate from another table puts the other's same capability under the new identifier, and keeps all.
 ///
 /// This table holds a capability of its own under the identifier duplicated, which must not be the one copied.
-pub fn duplicates_from_another_table<T: CapabilityTable<Identifier, Capability>, Identifier, Capability>(
-    value: Value<T, Identifier, Capability>,
-) {
+pub fn duplicates_from_another_table<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let other = filled(&value);
-    let (make, identifier, config, _, number) = value;
+    let (make, name, config, _, _, _, _) = value;
     let mut table = make();
-    assert!(matches!(table.create(identifier(FIRST), config(SECOND)), Ok(())));
-    assert!(matches!(table.duplicate_from(&other, &identifier(FIRST), identifier(SECOND)), Ok(())));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), Some(FIRST));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(SECOND));
-    assert_eq!(lookup(&other, &identifier(FIRST), number), Some(FIRST));
-    assert_eq!(lookup(&other, &identifier(SECOND), number), None);
+    assert!(matches!(table.create(name(FIRST), config(SECOND)), Ok(())));
+    mark(&table, &value, FIRST, SECOND);
+    create(&mut table, &value, THIRD);
+    assert!(matches!(
+        table.duplicate_from(&other, &name(FIRST), name(SECOND)),
+        Ok(())
+    ));
+    assert_eq!(lookup(&table, &value, SECOND), Some((FIRST, FIRST)));
+    mark(&table, &value, SECOND, THIRD);
+    assert_eq!(lookup(&other, &value, FIRST), Some((FIRST, THIRD)));
+    assert_eq!(lookup(&table, &value, FIRST), Some((SECOND, SECOND)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
+    assert_eq!(lookup(&other, &value, SECOND), None);
+    assert_eq!(lookup(&other, &value, THIRD), Some((THIRD, THIRD)));
 }
 
 /// Checks that a duplicate from another table holding nothing under the identifier is refused and changes nothing.
 ///
 /// This table holds the identifier itself, which must not count.
-pub fn refuses_to_duplicate_nothing_from_another_table<
-    T: CapabilityTable<Identifier, Capability>,
-    Identifier,
-    Capability,
->(
-    value: Value<T, Identifier, Capability>,
-) {
+pub fn refuses_to_duplicate_nothing_from_another_table<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (make, identifier, _, _, number) = value;
-    let other = make();
+    let mut other = value.0();
+    create(&mut other, &value, SECOND);
+    let (_, name, _, _, _, _, _) = value;
     assert!(matches!(
-        table.duplicate_from(&other, &identifier(FIRST), identifier(SECOND)),
+        table.duplicate_from(&other, &name(FIRST), name(SECOND)),
         Err(DuplicateError::NothingHeld)
     ));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), None);
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
+    assert_eq!(lookup(&table, &value, SECOND), None);
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
+    assert_eq!(lookup(&other, &value, SECOND), Some((SECOND, SECOND)));
 }
 
-/// Checks that a duplicate from another table onto an identifier this table holds is refused and keeps what it holds.
+/// Checks that a duplicate from another table onto an identifier this table holds is refused and keeps all.
 ///
 /// Only this table's identifiers count as taken: the other's do not.
-pub fn refuses_to_duplicate_from_onto_a_taken_identifier<
-    T: CapabilityTable<Identifier, Capability>,
-    Identifier,
-    Capability,
->(
-    value: Value<T, Identifier, Capability>,
-) {
+pub fn refuses_to_duplicate_from_onto_a_taken_identifier<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut other = filled(&value);
-    let (make, identifier, config, _, number) = value;
-    assert!(matches!(other.create(identifier(SECOND), config(SECOND)), Ok(())));
+    create(&mut other, &value, SECOND);
+    let (make, name, config, _, _, _, _) = value;
     let mut table = make();
-    assert!(matches!(table.create(identifier(FIRST), config(SECOND)), Ok(())));
+    assert!(matches!(table.create(name(FIRST), config(SECOND)), Ok(())));
+    mark(&table, &value, FIRST, SECOND);
     assert!(matches!(
-        table.duplicate_from(&other, &identifier(SECOND), identifier(FIRST)),
+        table.duplicate_from(&other, &name(SECOND), name(FIRST)),
         Err(DuplicateError::IdentifierTaken)
     ));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(SECOND));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), None);
+    assert_eq!(lookup(&table, &value, FIRST), Some((SECOND, SECOND)));
+    assert_eq!(lookup(&table, &value, SECOND), None);
     let mut empty = make();
-    assert!(matches!(empty.duplicate_from(&other, &identifier(FIRST), identifier(SECOND)), Ok(())));
-    assert_eq!(lookup(&empty, &identifier(SECOND), number), Some(FIRST));
+    assert!(matches!(
+        empty.duplicate_from(&other, &name(FIRST), name(SECOND)),
+        Ok(())
+    ));
+    assert_eq!(lookup(&empty, &value, SECOND), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&other, &value, THIRD), Some((THIRD, THIRD)));
 }
 
 /// Checks that a duplicate from another table of a held capability onto a free identifier succeeds or changes nothing.
 ///
 /// These are the only two outcomes the clauses leave it.
-pub fn changes_nothing_when_a_duplicate_from_fails<
-    T: CapabilityTable<Identifier, Capability>,
-    Identifier,
-    Capability,
->(
-    value: Value<T, Identifier, Capability>,
-) {
+pub fn changes_nothing_when_a_duplicate_from_fails<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let other = filled(&value);
-    let (make, identifier, config, _, number) = value;
-    let mut table = make();
-    assert!(matches!(table.create(identifier(SECOND), config(SECOND)), Ok(())));
-    let expected = match table.duplicate_from(&other, &identifier(FIRST), identifier(FIRST)) {
-        Ok(()) => Some(FIRST),
+    let mut table = value.0();
+    create(&mut table, &value, SECOND);
+    create(&mut table, &value, THIRD);
+    let (_, name, _, _, _, _, _) = value;
+    let expected = match table.duplicate_from(&other, &name(FIRST), name(FIRST)) {
+        Ok(()) => Some((FIRST, FIRST)),
         Err(DuplicateError::Failed(_)) => None,
         Err(DuplicateError::NothingHeld | DuplicateError::IdentifierTaken) => {
             panic!("a duplicate of a held capability onto a free identifier was refused")
         }
     };
-    assert_eq!(lookup(&table, &identifier(FIRST), number), expected);
-    assert_eq!(lookup(&table, &identifier(SECOND), number), Some(SECOND));
+    assert_eq!(lookup(&table, &value, FIRST), expected);
+    assert_eq!(lookup(&table, &value, SECOND), Some((SECOND, SECOND)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
-/// Checks that a duplicate, within the table or from another, keeps its capability when the original is dropped.
-pub fn keeps_a_duplicate_after_the_original_is_dropped<
-    T: CapabilityTable<Identifier, Capability>,
-    Identifier,
-    Capability,
->(
-    value: Value<T, Identifier, Capability>,
-) {
+/// Checks that a duplicate, within the table or from another, keeps the same capability when the original is dropped.
+pub fn keeps_a_duplicate_after_the_original_is_dropped<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (make, identifier, _, _, number) = value;
-    assert!(matches!(table.duplicate_within(&identifier(FIRST), identifier(SECOND)), Ok(())));
+    let (make, name, _, _, _, _, _) = value;
+    assert!(matches!(
+        table.duplicate_within(&name(FIRST), name(SECOND)),
+        Ok(())
+    ));
     let mut copy = make();
-    assert!(matches!(copy.duplicate_from(&table, &identifier(FIRST), identifier(FIRST)), Ok(())));
-    table.drop(&identifier(FIRST));
-    assert_eq!(lookup(&table, &identifier(FIRST), number), None);
-    assert_eq!(lookup(&table, &identifier(SECOND), number), Some(FIRST));
-    assert_eq!(lookup(&copy, &identifier(FIRST), number), Some(FIRST));
+    assert!(matches!(
+        copy.duplicate_from(&table, &name(FIRST), name(FIRST)),
+        Ok(())
+    ));
+    table.drop(&name(FIRST));
+    assert_eq!(lookup(&table, &value, FIRST), None);
+    mark(&copy, &value, FIRST, SECOND);
+    assert_eq!(lookup(&table, &value, SECOND), Some((FIRST, SECOND)));
+    assert_eq!(lookup(&copy, &value, FIRST), Some((FIRST, SECOND)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
 /// Checks that the original keeps its capability when a duplicate of it, within the table or from another, is dropped.
-pub fn keeps_the_original_after_a_duplicate_is_dropped<
-    T: CapabilityTable<Identifier, Capability>,
-    Identifier,
-    Capability,
->(
-    value: Value<T, Identifier, Capability>,
-) {
+pub fn keeps_the_original_after_a_duplicate_is_dropped<T, Identifier, Capability, Config, Error>(
+    value: Value<T, Identifier, Capability, Config>,
+) where
+    T: CapabilityTable<Identifier, Capability, Config, Error>,
+    Config: CapabilityConfig<Capability>,
+{
     let mut table = filled(&value);
-    let (make, identifier, _, _, number) = value;
-    assert!(matches!(table.duplicate_within(&identifier(FIRST), identifier(SECOND)), Ok(())));
+    let (make, name, _, _, _, _, _) = value;
+    assert!(matches!(
+        table.duplicate_within(&name(FIRST), name(SECOND)),
+        Ok(())
+    ));
     let mut copy = make();
-    assert!(matches!(copy.duplicate_from(&table, &identifier(FIRST), identifier(FIRST)), Ok(())));
-    table.drop(&identifier(SECOND));
-    copy.drop(&identifier(FIRST));
-    assert_eq!(lookup(&table, &identifier(SECOND), number), None);
-    assert_eq!(lookup(&copy, &identifier(FIRST), number), None);
-    assert_eq!(lookup(&table, &identifier(FIRST), number), Some(FIRST));
-}
-
-/// Checks that one type serving two capability types keeps the clauses of each.
-///
-/// Each runs on a table made anew; on one table what one capability type does to the other's is unspecified, so there
-/// the test takes every outcome the clauses allow.
-pub fn serves_two_capability_types<
-    T: CapabilityTable<Identifier, First> + CapabilityTable<Identifier, Second>,
-    Identifier,
-    First,
-    Second,
->(
-    value: TwoTypes<T, Identifier, First, Second>,
-) {
-    let (make, identifier, first_config, first_number, second_config, second_number) = value;
-    let mut firsts = make();
     assert!(matches!(
-        CapabilityTable::<Identifier, First>::create(&mut firsts, identifier(FIRST), first_config(FIRST)),
+        copy.duplicate_from(&table, &name(FIRST), name(FIRST)),
         Ok(())
     ));
-    assert_eq!(lookup::<T, Identifier, First>(&firsts, &identifier(FIRST), first_number), Some(FIRST));
-    let mut seconds = make();
-    assert!(matches!(
-        CapabilityTable::<Identifier, Second>::create(&mut seconds, identifier(FIRST), second_config(SECOND)),
-        Ok(())
-    ));
-    assert_eq!(lookup::<T, Identifier, Second>(&seconds, &identifier(FIRST), second_number), Some(SECOND));
-    CapabilityTable::<Identifier, Second>::drop(&mut seconds, &identifier(FIRST));
-    assert_eq!(lookup::<T, Identifier, Second>(&seconds, &identifier(FIRST), second_number), None);
-    let created = CapabilityTable::<Identifier, Second>::create(&mut firsts, identifier(SECOND), second_config(SECOND));
-    let held = lookup::<T, Identifier, Second>(&firsts, &identifier(SECOND), second_number);
-    match created {
-        Ok(()) => assert_eq!(held, Some(SECOND)),
-        Err(CreateError::IdentifierTaken) => assert!(held.is_some()),
-        Err(CreateError::Failed(_)) => assert_eq!(held, None),
-    }
+    table.drop(&name(SECOND));
+    copy.drop(&name(FIRST));
+    assert_eq!(lookup(&table, &value, SECOND), None);
+    assert_eq!(lookup(&copy, &value, FIRST), None);
+    assert_eq!(lookup(&table, &value, FIRST), Some((FIRST, FIRST)));
+    assert_eq!(lookup(&table, &value, THIRD), Some((THIRD, THIRD)));
 }
 
-/// Runs each suite function above as its own test on values made anew for every test.
-///
-/// The first value holds the functions the crate's comment names, the second those of a type serving two.
+/// Runs each suite function above as its own test on a value made anew for every test.
 ///
 /// List every suite function here, in the order above, and nothing else.
 #[macro_export]
 macro_rules! tests {
-    ($value:expr, $two:expr) => {
+    ($value:expr) => {
         #[test]
         fn creates_on_a_free_identifier() {
             $crate::creates_on_a_free_identifier($value);
@@ -395,8 +509,12 @@ macro_rules! tests {
             $crate::gets_nothing_after_a_drop($value);
         }
         #[test]
-        fn keeps_two_identifiers_apart() {
-            $crate::keeps_two_identifiers_apart($value);
+        fn forgets_a_dropped_identifier() {
+            $crate::forgets_a_dropped_identifier($value);
+        }
+        #[test]
+        fn keeps_identifiers_apart() {
+            $crate::keeps_identifiers_apart($value);
         }
         #[test]
         fn drops_nothing_where_nothing_is_held() {
@@ -441,10 +559,6 @@ macro_rules! tests {
         #[test]
         fn keeps_the_original_after_a_duplicate_is_dropped() {
             $crate::keeps_the_original_after_a_duplicate_is_dropped($value);
-        }
-        #[test]
-        fn serves_two_capability_types() {
-            $crate::serves_two_capability_types($two);
         }
     };
 }
