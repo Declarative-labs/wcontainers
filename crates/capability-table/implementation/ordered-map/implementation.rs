@@ -27,13 +27,28 @@ broadcast use vstd::std_specs::btree::group_btree_axioms;
 
 /// A table of capabilities in an ordered map from each identifier to a shared thing made from a config.
 pub struct OrderedMapCapabilityTable<Identifier: Ord, Config, Thing> {
-    entries: BTreeMap<Identifier, Shared<Thing>>,
+    entries: Entries<Identifier, Thing>,
     configs: PhantomData<Config>,
 }
 
 /// A capability to a thing, which only its table can duplicate, so that none outlives every entry holding it.
 pub struct Shared<Thing> {
     thing: Rc<Thing>,
+}
+
+// The standard library's ordered map from identifiers to capabilities, kept with the order laws its specification needs.
+struct Entries<Identifier: Ord, Thing> {
+    map: BTreeMap<Identifier, Shared<Thing>>,
+}
+
+impl<Identifier: Ord, Thing> Entries<Identifier, Thing> {
+    // The order laws under which the standard library's map is specified, which identifiers obey, and the map's own.
+    #[verifier::type_invariant]
+    spec fn ordered(self) -> bool {
+        &&& vstd::laws_cmp::obeys_cmp::<Identifier>()
+        &&& vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>()
+        &&& vstd::std_specs::btree::btree_map_inv(&self.map)
+    }
 }
 
 // Returns a second capability to the same thing.
@@ -44,53 +59,44 @@ fn duplicate<Thing>(capability: &Shared<Thing>) -> (duplicate: Shared<Thing>)
     Shared { thing: Rc::clone(&capability.thing) }
 }
 
-impl<Identifier: Ord, Config, Thing> OrderedMapCapabilityTable<Identifier, Config, Thing> {
-    // The order laws under which the standard library's map is specified, which identifiers obey, and the map's own.
-    #[verifier::type_invariant]
-    spec fn ordered(self) -> bool {
-        &&& vstd::laws_cmp::obeys_cmp::<Identifier>()
-        &&& vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>()
-        &&& vstd::std_specs::btree::btree_map_inv(&self.entries)
-    }
-}
-
-// Returns the table's map, leaving an empty one in its place, so that the map can change under no borrow of a field.
-fn take<Identifier: Ord, Config, Thing>(table: &mut OrderedMapCapabilityTable<Identifier, Config, Thing>) -> (entries:
-    BTreeMap<Identifier, Shared<Thing>>)
+// Returns the map, leaving an empty one in its place, so that the map can change under no borrow of a field.
+fn take<Identifier: Ord, Thing>(entries: &mut Entries<Identifier, Thing>) -> (map: BTreeMap<
+    Identifier,
+    Shared<Thing>,
+>)
     ensures
-        entries@ == old(table).entries@,
+        map@ == old(entries).map@,
         vstd::laws_cmp::obeys_cmp::<Identifier>(),
         vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>(),
-        vstd::std_specs::btree::btree_map_inv(&entries),
+        vstd::std_specs::btree::btree_map_inv(&map),
 {
     proof {
-        use_type_invariant(&*table);
+        use_type_invariant(&*entries);
     }
-    let mut taken = OrderedMapCapabilityTable { entries: BTreeMap::new(), configs: PhantomData };
-    core::mem::swap(table, &mut taken);
+    let mut taken = Entries { map: BTreeMap::new() };
+    core::mem::swap(entries, &mut taken);
     proof {
         use_type_invariant(&taken);
     }
-    taken.entries
+    taken.map
 }
 
-// Returns the table of a map whose keys obey the order laws.
-fn wrap<Identifier: Ord, Config, Thing>(entries: BTreeMap<Identifier, Shared<Thing>>) -> (table:
-    OrderedMapCapabilityTable<Identifier, Config, Thing>)
+// Returns the entries of a map whose keys obey the order laws.
+fn wrap<Identifier: Ord, Thing>(map: BTreeMap<Identifier, Shared<Thing>>) -> (entries: Entries<Identifier, Thing>)
     requires
         vstd::laws_cmp::obeys_cmp::<Identifier>(),
         vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>(),
-        vstd::std_specs::btree::btree_map_inv(&entries),
+        vstd::std_specs::btree::btree_map_inv(&map),
     ensures
-        table.entries@ == entries@,
+        entries.map@ == map@,
 {
-    OrderedMapCapabilityTable { entries, configs: PhantomData }
+    Entries { map }
 }
 
 impl<Config, Thing> Default for OrderedMapCapabilityTable<u64, Config, Thing> {
     // Returns a table holding nothing; only u64 identifiers, whose order laws vstd proves, can make one.
     fn default() -> (table: Self) {
-        OrderedMapCapabilityTable { entries: BTreeMap::new(), configs: PhantomData }
+        OrderedMapCapabilityTable { entries: wrap(BTreeMap::new()), configs: PhantomData }
     }
 }
 
@@ -101,7 +107,7 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
     type Error = <Thing as TryFrom<Config>>::Error;
 
     closed spec fn state(&self) -> Map<Identifier, Shared<Thing>> {
-        self.entries@
+        self.entries.map@
     }
 
     fn create(&mut self, identifier: Identifier, config: Config) -> (created: Result<
@@ -109,9 +115,9 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
         CreateError<Self::Error>,
     >) {
         proof {
-            use_type_invariant(&*self);
+            use_type_invariant(&self.entries);
         }
-        if self.entries.contains_key(&identifier) {
+        if self.entries.map.contains_key(&identifier) {
             return Err(CreateError::IdentifierTaken);
         }
         let thing = match Thing::try_from(config) {
@@ -119,43 +125,43 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
             Err(error) => return Err(CreateError::Failed(error)),
         };
         let ghost key = identifier;
-        let mut entries = take(self);
-        let _ = entries.insert(identifier, Shared { thing: Rc::new(thing) });
+        let mut map = take(&mut self.entries);
+        let _ = map.insert(identifier, Shared { thing: Rc::new(thing) });
         proof {
-            assert(entries@.remove(key) =~= old(self).entries@);
+            assert(map@.remove(key) =~= old(self).entries.map@);
         }
-        *self = wrap(entries);
+        self.entries = wrap(map);
         Ok(())
     }
 
     fn get(&self, identifier: &Identifier) -> (capability: Option<&Shared<Thing>>) {
         proof {
-            use_type_invariant(self);
+            use_type_invariant(&self.entries);
         }
-        self.entries.get(identifier)
+        self.entries.map.get(identifier)
     }
 
     fn drop(&mut self, identifier: &Identifier) {
-        let mut entries = take(self);
-        let _ = entries.remove(identifier);
-        *self = wrap(entries);
+        let mut map = take(&mut self.entries);
+        let _ = map.remove(identifier);
+        self.entries = wrap(map);
     }
 
     fn duplicate_within(&mut self, identifier: &Identifier, new_identifier: Identifier) -> (duplicated:
         Result<(), DuplicateError<Self::Error>>) {
         proof {
-            use_type_invariant(&*self);
+            use_type_invariant(&self.entries);
         }
-        let duplicate = match self.entries.get(identifier) {
+        let duplicate = match self.entries.map.get(identifier) {
             Some(capability) => duplicate(capability),
             None => return Err(DuplicateError::NothingHeld),
         };
-        if self.entries.contains_key(&new_identifier) {
+        if self.entries.map.contains_key(&new_identifier) {
             return Err(DuplicateError::IdentifierTaken);
         }
-        let mut entries = take(self);
-        let _ = entries.insert(new_identifier, duplicate);
-        *self = wrap(entries);
+        let mut map = take(&mut self.entries);
+        let _ = map.insert(new_identifier, duplicate);
+        self.entries = wrap(map);
         Ok(())
     }
 
@@ -166,19 +172,19 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
         new_identifier: Identifier,
     ) -> (duplicated: Result<(), DuplicateError<Self::Error>>) {
         proof {
-            use_type_invariant(&*self);
-            use_type_invariant(other);
+            use_type_invariant(&self.entries);
+            use_type_invariant(&other.entries);
         }
-        let duplicate = match other.entries.get(identifier) {
+        let duplicate = match other.entries.map.get(identifier) {
             Some(capability) => duplicate(capability),
             None => return Err(DuplicateError::NothingHeld),
         };
-        if self.entries.contains_key(&new_identifier) {
+        if self.entries.map.contains_key(&new_identifier) {
             return Err(DuplicateError::IdentifierTaken);
         }
-        let mut entries = take(self);
-        let _ = entries.insert(new_identifier, duplicate);
-        *self = wrap(entries);
+        let mut map = take(&mut self.entries);
+        let _ = map.insert(new_identifier, duplicate);
+        self.entries = wrap(map);
         Ok(())
     }
 }
