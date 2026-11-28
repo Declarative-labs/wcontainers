@@ -168,8 +168,10 @@ fn run(gpu: &WebGpu, by_product: bool, mut check: impl FnMut(u32, &[u32])) {
             .slice(..)
             .get_mapped_range()
             .expect("the read buffer maps")
-            .chunks_exact(4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b))
             .collect();
         read.unmap();
         check(first, &words);

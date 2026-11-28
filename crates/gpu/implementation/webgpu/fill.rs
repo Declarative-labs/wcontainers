@@ -499,11 +499,15 @@ pub(crate) fn quantise(gpu: &mut WebGpu, target: &PackedTarget) {
     });
     let pipeline = program.pipeline.clone();
     let three_d = target.texture.dimension() == wgpu::TextureDimension::D3;
+    // A 3D texture is drawn into through a 3D view at the slice; a 2D view takes one layer.
     let view = target.texture.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::D2),
+        dimension: Some(if three_d {
+            wgpu::TextureViewDimension::D3
+        } else {
+            wgpu::TextureViewDimension::D2
+        }),
         base_mip_level: target.mip,
         mip_level_count: Some(1),
-        // A 2D view takes one layer.
         base_array_layer: if three_d { 0 } else { target.z },
         ..Default::default()
     });

@@ -476,7 +476,7 @@ out highp uvec4 o;
                 gles::UNSIGNED_INT,
                 PixelPack::Bytes(&mut texels),
             );
-            for t in texels.chunks_exact(16) {
+            for t in texels.as_chunks::<16>().0 {
                 let [c, s, r] =
                     [0, 4, 8].map(|k| u32::from_le_bytes([t[k], t[k + 1], t[k + 2], t[k + 3]]));
                 let Some(once) = seen.get_mut(c as usize) else {

@@ -424,9 +424,10 @@ fn drawable(word: u32, got: u32) -> bool {
     }
 }
 
-/// Float words a draw cannot write as depth (above 1, below 0, a denormal, NaN) beside ones it can,
-/// copied into `depth32float` from an `r32float` texture and from a buffer: each texel holds what
-/// the listed loss says.
+/// Float words a draw cannot write as depth (above 1, below 0, a denormal, NaN, each infinity, the
+/// NaNs nearest each infinity) beside ones it can, copied into `depth32float` from an `r32float`, an
+/// `r32uint` and an `r32sint` texture and from a buffer: each texel holds what the listed loss says
+/// (+infinity 1, -infinity 0, every NaN 0).
 #[test]
 fn float_depth_copies_keep_what_a_draw_can_write() {
     let mut b = device();
@@ -439,25 +440,41 @@ fn float_depth_copies_keep_what_a_draw_can_write() {
         0x7fc0_0001, // NaN
         1.0f32.to_bits(),
         0.1234f32.to_bits(),
+        f32::INFINITY.to_bits(),
+        f32::NEG_INFINITY.to_bits(),
+        0x7f80_0001, // the NaN next above +infinity
+        0xff80_0001, // the NaN next above -infinity
+        0xffff_ffff, // the largest NaN
+        0x8000_0001, // the negative denormal nearest zero
     ];
     words.resize((W * H) as usize, 0.5f32.to_bits());
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-    let (src, _) = draw::texture_2d(
-        &mut b,
-        Format::R32Float,
-        W,
-        H,
-        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-    )
-    .unwrap();
-    b.write_texture(
-        &region(&src, 0, 0),
-        extent(W, H),
-        &bytes,
-        W * 4,
-        H,
-        WriteMode::Ordered,
-    );
+    let sources: Vec<(&str, Tex)> = [
+        ("from an r32float texture", Format::R32Float),
+        ("from an r32uint texture", Format::R32Uint),
+        ("from an r32sint texture", Format::R32Sint),
+    ]
+    .into_iter()
+    .map(|(name, format)| {
+        let (src, _) = draw::texture_2d(
+            &mut b,
+            format,
+            W,
+            H,
+            TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+        )
+        .unwrap();
+        b.write_texture(
+            &region(&src, 0, 0),
+            extent(W, H),
+            &bytes,
+            W * 4,
+            H,
+            WriteMode::Ordered,
+        );
+        (name, src)
+    })
+    .collect();
     let buffer = b
         .create_buffer(&BufferDesc {
             size: bytes.len() as u64,
@@ -466,13 +483,13 @@ fn float_depth_copies_keep_what_a_draw_can_write() {
         })
         .unwrap();
     b.write_buffer(&buffer, 0, &bytes, WriteMode::Ordered);
-    let (from_texture, _) = depth_texture(&mut b, Format::Depth32Float);
+    let mut copied: Vec<(&str, Tex)> = Vec::new();
+    for (name, src) in &sources {
+        let (to, _) = depth_texture(&mut b, Format::Depth32Float);
+        b.copy_texture(&region(src, 0, 0), &region(&to, 0, 0), extent(W, H));
+        copied.push((name, to));
+    }
     let (from_buffer, _) = depth_texture(&mut b, Format::Depth32Float);
-    b.copy_texture(
-        &region(&src, 0, 0),
-        &region(&from_texture, 0, 0),
-        extent(W, H),
-    );
     b.copy_buffer_to_texture(
         &CopyBufferTexture {
             buffer: &buffer,
@@ -483,10 +500,8 @@ fn float_depth_copies_keep_what_a_draw_can_write() {
         &region(&from_buffer, 0, 0),
         extent(W, H),
     );
-    for (name, t) in [
-        ("from a texture", &from_texture),
-        ("from a buffer", &from_buffer),
-    ] {
+    copied.push(("from a buffer", from_buffer));
+    for (name, t) in &copied {
         let got: Vec<u32> = read(&mut b, t, 4)
             .chunks(4)
             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))

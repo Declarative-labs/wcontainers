@@ -74,8 +74,13 @@ fn raw_texture(
 
 /// Fills level `mip`, layer `layer` of `texture` with `texel` in every texel.
 fn fill_level(gpu: &WebGpu, texture: &wgpu::Texture, mip: u32, layer: u32, texel: [u8; 4]) {
+    fill_texels(gpu, texture, mip, layer, &level_of(mip, texel));
+}
+
+/// Writes `bytes` (4 a texel, row after row) into level `mip`, layer (or depth slice) `layer` of
+/// `texture`.
+fn fill_texels(gpu: &WebGpu, texture: &wgpu::Texture, mip: u32, layer: u32, bytes: &[u8]) {
     let n = N >> mip;
-    let bytes: Vec<u8> = (0..n * n).flat_map(|_| texel).collect();
     gpu.queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -87,7 +92,7 @@ fn fill_level(gpu: &WebGpu, texture: &wgpu::Texture, mip: u32, layer: u32, texel
             },
             aspect: wgpu::TextureAspect::All,
         },
-        &bytes,
+        bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(n * 4),
@@ -234,6 +239,51 @@ fn a_packed_target_is_rounded_to_its_bits_at_its_level_and_layer_alone() {
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 
+/// A 3D `b5g6r5unorm` target held as `rgba8unorm` (three slices) is rounded at depth slice 1 alone:
+/// that slice reads [`ROUNDED`], slices 0 and 2 keep [`HELD`].
+#[test]
+fn a_packed_3d_target_is_rounded_at_its_slice_alone() {
+    let mut gpu = device();
+    let t = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: N,
+            height: N,
+            depth_or_array_layers: 3,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    for slice in 0..3 {
+        fill_level(&gpu, &t, 0, slice, [HELD; 4]);
+    }
+    fill::quantise(
+        &mut gpu,
+        &PackedTarget {
+            format: Format::B5g6r5Unorm,
+            texture: t.clone(),
+            mip: 0,
+            z: 1,
+        },
+    );
+    for slice in 0..3 {
+        let want = if slice == 1 { ROUNDED } else { [HELD; 4] };
+        assert_eq!(
+            read_level(&mut gpu, &t, 0, slice),
+            level_of(0, want),
+            "slice {slice}"
+        );
+    }
+    assert_eq!(gpu.status(), DeviceStatus::Ok);
+}
+
 /// A four-sample `b5g6r5unorm` target held as `rgba8unorm` is rounded sample by sample: every sample
 /// cleared to 0.4 becomes [`ROUNDED`], so its resolve does too.
 #[test]
@@ -277,6 +327,24 @@ fn a_multisampled_packed_target_is_rounded_in_every_sample() {
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 
+/// The texel at column `x`, row `y` of a level whose texels all differ: red the column, green the row,
+/// blue both, alpha 255 less the column.
+fn texel_at(x: u32, y: u32) -> [u8; 4] {
+    [
+        (x * 30 + 5) as u8,
+        (y * 30 + 7) as u8,
+        (x * 3 + y * 25) as u8,
+        (255 - x) as u8,
+    ]
+}
+
+/// Every texel of a level of `n` by `n`, each [`texel_at`] its place.
+fn positioned(n: u32) -> Vec<u8> {
+    (0..n)
+        .flat_map(|y| (0..n).flat_map(move |x| texel_at(x, y)))
+        .collect()
+}
+
 /// A frame drawn into a window texture of another format (`PresentConverted`) holds the frame's
 /// colours there: `rgba8unorm` texels into `bgra8unorm`, each channel in its place.
 #[test]
@@ -304,6 +372,41 @@ fn a_frame_presented_by_a_draw_keeps_its_colours() {
         read_level(&mut gpu, &window, 0, 0),
         level_of(0, [30, 20, 10, 255])
     );
+    assert_eq!(gpu.status(), DeviceStatus::Ok);
+}
+
+/// A frame whose texels all differ ([`texel_at`]) presented by a draw holds each texel at its own
+/// place in the window texture, its channels in `bgra8unorm`'s order.
+#[test]
+fn a_frame_presented_by_a_draw_keeps_each_texel_in_its_place() {
+    let mut gpu = device();
+    let frame = raw_texture(
+        &gpu,
+        false,
+        1,
+        1,
+        1,
+        wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+    );
+    let window = raw_texture(
+        &gpu,
+        true,
+        1,
+        1,
+        1,
+        wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
+    );
+    fill_texels(&gpu, &frame, 0, 0, &positioned(N));
+    fill::present_by_draw(&mut gpu, &frame, &window);
+    let want: Vec<u8> = (0..N)
+        .flat_map(|y| {
+            (0..N).flat_map(move |x| {
+                let [r, g, b, a] = texel_at(x, y);
+                [b, g, r, a]
+            })
+        })
+        .collect();
+    assert_eq!(read_level(&mut gpu, &window, 0, 0), want);
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 
@@ -350,6 +453,126 @@ fn a_resolve_by_a_draw_writes_the_samples_colour() {
         read_level(&mut gpu, &dst, 0, 0),
         level_of(0, [102, 51, 153, 255])
     );
+    assert_eq!(gpu.status(), DeviceStatus::Ok);
+}
+
+/// Red, green, blue and alpha (of 255) each sample `i` of the resolve test is drawn with, before red
+/// adds 8 times the column and green 8 times the row: their averages are red 60, green 76, blue 254,
+/// alpha 255.
+const SAMPLE_BASES: [[u32; 4]; 4] = [
+    [0, 200, 255, 255],
+    [40, 100, 255, 255],
+    [80, 0, 255, 255],
+    [120, 4, 251, 255],
+];
+
+/// Draws sample `i` of every texel of the four-sample `rgba8unorm` `view` alone (its sample mask)
+/// with [`SAMPLE_BASES`]`[i]`, red and green adding 8 times the texel's column and row.
+fn draw_samples_apart(gpu: &WebGpu, view: &wgpu::TextureView) {
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    let pipelines: Vec<wgpu::RenderPipeline> = (0..4)
+        .map(|i| {
+            let [r, g, b, a] = SAMPLE_BASES[i];
+            let module = gpu
+                .device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(
+                    format!(
+                        "@vertex fn v(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}}
+@fragment fn f(@builtin(position) p: vec4f) -> @location(0) vec4f {{
+    return vec4f(floor(p.x) * 8.0 + {r}.0, floor(p.y) * 8.0 + {g}.0, {b}.0, {a}.0) / 255.0;
+}}"
+                    )
+                    .into(),
+                ),
+            });
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: None,
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: None,
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState {
+                        count: 4,
+                        mask: 1 << i,
+                        alpha_to_coverage_enabled: false,
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: None,
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        })
+        .collect();
+    {
+        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        for pipeline in &pipelines {
+            rp.set_pipeline(pipeline);
+            rp.draw(0..3, 0..1);
+        }
+    }
+    gpu.queue.submit([encoder.finish()]);
+}
+
+/// A resolve by a draw of four samples that all differ, and differ by place, writes each texel the
+/// average of its own samples: red 60 and green 76 (each plus 8 times the column, the row), blue 254,
+/// alpha 255.
+#[test]
+fn a_resolve_by_a_draw_averages_samples_that_differ_at_each_place() {
+    let mut gpu = device();
+    let ms = raw_texture(
+        &gpu,
+        false,
+        1,
+        1,
+        4,
+        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+    );
+    let dst = raw_texture(
+        &gpu,
+        false,
+        1,
+        1,
+        1,
+        wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
+    );
+    let ms_view = ms.create_view(&Default::default());
+    draw_samples_apart(&gpu, &ms_view);
+    fill::resolve_by_draw(
+        &mut gpu,
+        &ms_view,
+        &dst.create_view(&Default::default()),
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
+    let want: Vec<u8> = (0..N)
+        .flat_map(|y| (0..N).flat_map(move |x| [(60 + 8 * x) as u8, (76 + 8 * y) as u8, 254, 255]))
+        .collect();
+    assert_eq!(read_level(&mut gpu, &dst, 0, 0), want);
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 
@@ -556,18 +779,18 @@ fn each_fill_program_is_made_once_and_counted() {
         .flat_map(|i| (i as f32 / 16.0).to_bits().to_le_bytes())
         .collect();
     let buffer = upload(&mut gpu, &words);
-    let copy = |stencil: bool, texel: u32| CopyBufferTexture {
+    let copy = |texel: u32| CopyBufferTexture {
         buffer: &buffer,
         offset: 0,
         row_pitch: 4 * texel,
         rows_per_layer: 4,
     };
     let mut depth_write =
-        |gpu: &mut WebGpu| gpu.copy_buffer_to_texture(&copy(false, 4), &part(false), extent(4, 1));
+        |gpu: &mut WebGpu| gpu.copy_buffer_to_texture(&copy(4), &part(false), extent(4, 1));
     assert_eq!(made(&mut gpu, &mut depth_write), 1, "the depth draw");
     assert_eq!(made(&mut gpu, &mut depth_write), 0, "the depth draw again");
     let mut stencil_write =
-        |gpu: &mut WebGpu| gpu.copy_buffer_to_texture(&copy(true, 1), &part(true), extent(4, 1));
+        |gpu: &mut WebGpu| gpu.copy_buffer_to_texture(&copy(1), &part(true), extent(4, 1));
     assert_eq!(made(&mut gpu, &mut stencil_write), 9, "the stencil draws");
     assert_eq!(
         made(&mut gpu, &mut stencil_write),
