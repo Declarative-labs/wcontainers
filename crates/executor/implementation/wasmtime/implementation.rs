@@ -41,7 +41,11 @@ pub struct WasmtimeExecutor {
 /// How the executor translates code, and how long a run goes on before it asks the handler.
 #[derive(Clone, Copy, Debug)]
 pub struct WasmtimeTranslatorConfig {
-    /// The look-ahead code reached at run time is translated at.
+    /// The look-ahead code reached at run time is translated at, which bounds how long a run goes on once interrupted.
+    ///
+    /// Once its interrupter is used, a run executes at most this many more guest instructions before it asks the
+    /// handler (the translator's contract, "Where a thread looks at its stop flag"): 1 at none, N at `Bounded(N)`, and
+    /// at full the 5,120 instructions of the five pages a run-time translation is given, which also caps `Bounded(N)`.
     pub look_ahead: LookAhead,
     /// The slice of a run, in events of the translator's progress count; none for a run no slice bounds.
     ///

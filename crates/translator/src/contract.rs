@@ -26,6 +26,16 @@
 //! its stop flag and wait until its hook runs or it has left `run`), as a real kernel interrupts the other processors before it changes a page table. The
 //! thread making the change is already stopped, in its system call or hook. With one host thread this
 //! happens by itself, because only a stopped thread lets the kernel run.
+//!
+//! **Where a thread looks at its stop flag.** Translated code looks (tests the flag, or with the progress count kept
+//! whether the count has reached its limit, and calls [`HOOK_STOP`] if so) at the entry of every piece, at every jump
+//! back inside a piece, right after every call returns to it, after every system call, and after an instruction that
+//! raises the flag; the thread module's bottom loop and the dispatcher run no guest instruction. So between two looks
+//! a thread runs instructions of one piece only, along a path with no jump back, each at most once: at most 1 at
+//! look-ahead none (and `Bounded(1)`), at most N at `Bounded(N)`, and at full at most the instructions of the
+//! translation's largest piece, which a translation of B bytes of code holds at most B / `Guest::ALIGN` of. A thread
+//! whose flag is raised (or whose limit is set at or below its count) therefore runs at most that many more guest
+//! instructions before the hook is called, once the raise is seen by its next load of the flag.
 
 use wcontainers_guest_cpu::Guest;
 pub use wcontainers_guest_cpu::{Reason, TrapKind};

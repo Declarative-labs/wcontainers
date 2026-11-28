@@ -230,8 +230,8 @@ impl ThreadStore {
 
     /// Runs the thread until it ends, running it again from its registers whenever it leaves to, and returns why.
     pub(crate) fn run_to_end(&mut self) -> Ending {
-        // A piece that only loops checks the stop flag at its jump back and not at its entry, so an interrupt raised
-        // before the run is answered here, before any guest code runs.
+        // Readying the run set the progress limit over the interrupter's, so an interrupt raised before the run is
+        // answered here, before any guest code runs.
         let data = self.store.data();
         if matches!(data.mode, Mode::Execute(_))
             && data.interrupt.raised.swap(false, Ordering::SeqCst)

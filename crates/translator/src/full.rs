@@ -876,7 +876,7 @@ struct Plan<G: Guest> {
     frame_checks: FxHashMap<u64, (i64, u32)>,
     /// Calls after which a frame is known, so the stack pointer must come back unchanged.
     frame_across: FxHashSet<u64>,
-    /// The piece calls or jumps to other pieces, so its entry needs the stop check.
+    /// The piece calls or jumps to other pieces, so its entry checks the engine's stack.
     calls_out: bool,
     /// What is known at each block's start about the stack: its frame and whether it is aligned.
     frame_in: Vec<Frame>,
@@ -1662,9 +1662,6 @@ struct At {
 /// How a piece carries on when the stop hook says so.
 #[derive(Clone, Copy)]
 enum AfterStop {
-    /// Go on in a new call of this piece or of a loop piece (by function index) at the loop jumped back to,
-    /// so an engine that has optimised the function since this call began runs the optimised code.
-    Enter(u32),
     /// Write back and go on at once in a new call of a piece whose entry check calls the stop hook, so the
     /// loop has no call that returns to it.
     Hand(u32),
@@ -1722,8 +1719,8 @@ struct FullEmitter<'a, G: Guest> {
     kept_pages: Vec<(u32, u32)>,
     /// The loops whose copy without proven checks is being emitted.
     unchecked: Vec<usize>,
-    /// The piece checks the stop flag at its entry: when it calls or leaves to other pieces, and always for
-    /// a loop piece, which a stop check at a jump back enters.
+    /// The piece checks the stop flag at its entry: always, unless stop checks are left out, so no way into a piece
+    /// (a call, a jump from another piece, the bottom loop, a stop check at a jump back) runs on without a look.
     entry_check: bool,
     /// The instruction being emitted has written a register, the flags or a control register.
     written: bool,
@@ -1780,7 +1777,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             own,
             kept_pages: Vec::new(),
             unchecked: Vec::new(),
-            entry_check: (plan.calls_out || loop_piece) && !omit.stop,
+            entry_check: !omit.stop,
             written: false,
             raised_stop: false,
             depth: 0,
@@ -1817,8 +1814,8 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             e.sink().i32_const(FLAGS_IN_BLOCK as i32).local_set(state);
         }
         if e.entry_check {
-            // One branch for both entry checks: the stop flag, and the stack budget.
-            let depth = (!omit.depth).then_some(function.entry);
+            // One branch for both entry checks: the stop flag, and the stack budget of a piece that calls or leaves.
+            let depth = ((plan.calls_out || loop_piece) && !omit.depth).then_some(function.entry);
             e.stop_check_or_deep(Pc::Offset(function.entry), AfterStop::Continue, depth);
         }
         for bit in plan.live_in[0].bits() {
@@ -2099,8 +2096,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 {
                     let start = self.function.blocks[to].start;
                     let after = match self.loops.get(&start) {
-                        _ if to == 0 && self.entry_check => AfterStop::Hand(self.own),
-                        _ if to == 0 => AfterStop::Enter(self.own),
+                        _ if to == 0 => AfterStop::Hand(self.own),
                         Some(&f) => AfterStop::Hand(f),
                         None if self.unchecked.contains(&to) => {
                             AfterStop::Reprove(self.plan.live_in[to], to)
@@ -2372,10 +2368,6 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         let released = self.taken.swap_remove(at);
         self.free.push(released);
         match after {
-            AfterStop::Enter(f) => {
-                self.rare_arguments();
-                self.sink().return_call(f);
-            }
             AfterStop::Reload(live) => {
                 self.reload(live, None);
                 // The table may have changed during the stop.
@@ -3183,6 +3175,12 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         // The registers passed in only live in parameters, which liveness does not follow.
         for (local, bit) in passed_in_only::<G>() {
             Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
+        }
+        // The callee and what it called looked at their entries, but what they ran after that may reach the limit, so
+        // the caller looks before it carries on.
+        if !self.omit.stop {
+            let live = self.plan.live_after[&offset];
+            self.stop_check(Pc::Offset(next), AfterStop::Reload(live));
         }
     }
 
