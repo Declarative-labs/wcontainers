@@ -9,20 +9,20 @@ use wcontainers_memory_shard::{BorrowError, MemoryPermissions, MemoryShard, Memo
 use wcontainers_volatile_bytes::VolatileBytes;
 
 /// The length of one byte, the step between neighboring offsets.
-const BYTE: u64 = size_of::<u8>() as u64;
+const STEP: u64 = size_of::<u8>() as u64;
 
 /// The byte the tests write where they need one value.
-const WRITTEN: u8 = u8::MAX;
+const MARK: u8 = u8::MAX;
 
 /// Returns the length of the shard, which the tests need to be at least two bytes that the host can address.
 fn length_of<S: MemoryShard>(shard: &S) -> usize {
     let length = usize::try_from(shard.len()).expect("the shard is no longer than the host can address");
-    assert!(shard.len() > BYTE, "the suite needs a shard of at least two bytes");
+    assert!(shard.len() > STEP, "the suite needs a shard of at least two bytes");
     length
 }
 
 /// Returns bytes that each differ from the bytes beside them, so a copy one byte off shows.
-fn numbered(count: usize) -> Vec<u8> {
+fn number_bytes(count: usize) -> Vec<u8> {
     (0..count).map(|index| (index % usize::from(u8::MAX)) as u8).collect()
 }
 
@@ -34,7 +34,7 @@ fn permits_the_same(first: MemoryPermissions, second: MemoryPermissions) -> bool
 /// Returns every byte of the shard, read through one borrow of all of it.
 fn read_whole<S: MemoryShard>(shard: &S) -> Vec<u8> {
     let view = shard.borrow(u64::MIN, shard.len()).expect("a shard lends all its bytes");
-    let mut read = vec![WRITTEN; length_of(shard)];
+    let mut read = vec![MARK; length_of(shard)];
     assert_eq!(view.read(&mut read), read.len());
     read
 }
@@ -59,9 +59,9 @@ pub fn lends_every_range_inside<S: MemoryShard>(made: (&S, MemoryShardConfig)) {
     assert_eq!(shard.borrow(u64::MIN, length).expect("all of it lies inside").len(), length);
     assert_eq!(shard.borrow(u64::MIN, u64::MIN).expect("nothing at the start lies inside").len(), u64::MIN);
     assert_eq!(shard.borrow(length, u64::MIN).expect("nothing at the end lies inside").len(), u64::MIN);
-    assert_eq!(shard.borrow(BYTE, length - BYTE).expect("all but the first byte lies inside").len(), length - BYTE);
-    assert_eq!(shard.borrow(length - BYTE, BYTE).expect("the last byte lies inside").len(), BYTE);
-    assert_eq!(shard.borrow(BYTE, BYTE).expect("the second byte lies inside").len(), BYTE);
+    assert_eq!(shard.borrow(STEP, length - STEP).expect("all but the first byte lies inside").len(), length - STEP);
+    assert_eq!(shard.borrow(length - STEP, STEP).expect("the last byte lies inside").len(), STEP);
+    assert_eq!(shard.borrow(STEP, STEP).expect("the second byte lies inside").len(), STEP);
 }
 
 /// Checks that a borrow reaching past the end is refused, also where the end of the range does not fit a `u64`.
@@ -69,13 +69,13 @@ pub fn refuses_every_range_past_the_end<S: MemoryShard>(made: (&S, MemoryShardCo
     let (shard, _) = made;
     let length = shard.len();
     let outside = [
-        (u64::MIN, length + BYTE),
-        (length, BYTE),
-        (length + BYTE, u64::MIN),
-        (BYTE, length),
-        (length - BYTE, BYTE + BYTE),
-        (u64::MAX, BYTE),
-        (BYTE, u64::MAX),
+        (u64::MIN, length + STEP),
+        (length, STEP),
+        (length + STEP, u64::MIN),
+        (STEP, length),
+        (length - STEP, STEP + STEP),
+        (u64::MAX, STEP),
+        (STEP, u64::MAX),
         (u64::MAX, u64::MAX),
         (u64::MAX, u64::MIN),
         (u64::MIN, u64::MAX),
@@ -92,31 +92,31 @@ pub fn refuses_every_range_past_the_end<S: MemoryShard>(made: (&S, MemoryShardCo
 pub fn shares_bytes_between_borrows<S: MemoryShard>(made: (&S, MemoryShardConfig)) {
     let (shard, _) = made;
     let length = length_of(shard);
-    let bytes = numbered(length);
+    let bytes = number_bytes(length);
     let whole = shard.borrow(u64::MIN, shard.len()).expect("a shard lends all its bytes");
     assert_eq!(whole.write(&bytes), length);
-    let tail = shard.borrow(BYTE, shard.len() - BYTE).expect("all but the first byte lies inside");
-    let mut read = vec![WRITTEN; length - 1];
+    let tail = shard.borrow(STEP, shard.len() - STEP).expect("all but the first byte lies inside");
+    let mut read = vec![MARK; length - 1];
     assert_eq!(tail.read(&mut read), read.len());
     assert_eq!(read[..], bytes[1..]);
-    assert_eq!(tail.write(&[WRITTEN]), size_of::<u8>());
+    assert_eq!(tail.write(&[MARK]), size_of::<u8>());
     let mut second = [u8::MIN; 2];
     assert_eq!(whole.read(&mut second), second.len());
-    assert_eq!(second, [bytes[0], WRITTEN]);
+    assert_eq!(second, [bytes[0], MARK]);
 }
 
 /// Checks that bytes written through one borrow are read back through a later borrow, once the first is gone.
 pub fn keeps_bytes_between_borrows<S: MemoryShard>(made: (&S, MemoryShardConfig)) {
     let (shard, _) = made;
     let length = length_of(shard);
-    let bytes = numbered(length);
+    let bytes = number_bytes(length);
     {
         let whole = shard.borrow(u64::MIN, shard.len()).expect("a shard lends all its bytes");
         assert_eq!(whole.write(&bytes), length);
     }
     assert_eq!(read_whole(shard), bytes);
-    let last = shard.borrow(shard.len() - BYTE, BYTE).expect("the last byte lies inside");
-    let mut read = [WRITTEN];
+    let last = shard.borrow(shard.len() - STEP, STEP).expect("the last byte lies inside");
+    let mut read = [MARK];
     assert_eq!(last.read(&mut read), size_of::<u8>());
     assert_eq!(read[0], bytes[length - 1]);
 }

@@ -580,17 +580,6 @@ fn take(entries: &mut Entries) -> (list: Vec<Entry>)
     list
 }
 
-// Returns the entries of a list that stands for the map.
-fn wrap(list: Vec<Entry>, held: Ghost<Map<u64, SharedCellsMemoryShard>>) -> (entries: Entries)
-    requires
-        holds(list@, held@),
-    ensures
-        entries.list@ == list@,
-        entries.held@ == held@,
-{
-    Entries { list, held }
-}
-
 // Holds the entry beside shards it is apart from.
 fn insert(entries: &mut Entries, entry: Entry)
     requires
@@ -614,7 +603,7 @@ fn insert(entries: &mut Entries, entry: Entry)
         lemma_push(list@, held, entry);
     }
     list.push(entry);
-    *entries = wrap(list, Ghost(held.insert(pushed.address, pushed.shard)));
+    *entries = Entries { list, held: Ghost(held.insert(pushed.address, pushed.shard)) };
 }
 
 // Stops holding the entry at the index.
@@ -631,7 +620,7 @@ fn remove(entries: &mut Entries, index: usize)
         lemma_remove(list@, held, index as int);
     }
     let _ = list.remove(index);
-    *entries = wrap(list, Ghost(held.remove(address)));
+    *entries = Entries { list, held: Ghost(held.remove(address)) };
 }
 
 // Holds a shard no longer than the one at the index in its place.
@@ -657,7 +646,7 @@ fn replace(entries: &mut Entries, index: usize, shard: SharedCellsMemoryShard)
         lemma_replace(list@, held, index as int, shard);
     }
     list[index] = Entry { address, shard };
-    *entries = wrap(list, Ghost(held.insert(address, placed)));
+    *entries = Entries { list, held: Ghost(held.insert(address, placed)) };
 }
 
 
@@ -979,7 +968,7 @@ fn range(window: &Window, offset: u64, buffer: usize) -> (range: (usize, usize))
 impl Default for SharedCellsMemoryCapabilityTable {
     // Returns a table holding no memory.
     fn default() -> (table: Self) {
-        SharedCellsMemoryCapabilityTable { entries: wrap(Vec::new(), Ghost(Map::empty())) }
+        SharedCellsMemoryCapabilityTable { entries: Entries { list: Vec::new(), held: Ghost(Map::empty()) } }
     }
 }
 
