@@ -12,8 +12,8 @@ use vstd::predicate::Predicate;
 use vstd::prelude::*;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
-use wcontainers_memory_shard::{BorrowError, MemoryAllocationIdentity, MemoryPermissions, MemoryShard};
-use wcontainers_volatile_bytes::{VolatileBytes, copied};
+use wcontainers_memory_shard::{BorrowError, MemoryPermissions, MemoryShard};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 verus! {
 
@@ -169,8 +169,8 @@ impl MemoryShard for SharedAllocationMemoryShard {
         self.length
     }
 
-    closed spec fn spec_viewed_allocation(&self) -> MemoryAllocationIdentity {
-        MemoryAllocationIdentity(self.allocation.identity@)
+    closed spec fn spec_viewed_allocation(&self) -> wcontainers_memory_shard::MemoryAllocationIdentity {
+        wcontainers_memory_shard::MemoryAllocationIdentity(self.allocation.identity@)
     }
 
     closed spec fn spec_view_start(&self) -> nat {
@@ -214,7 +214,7 @@ impl<'shard> SharedBytes<'shard> {
 // Returns how many bytes a copy at the offset moves for a buffer of the length.
 fn count_copied(length: u64, offset: u64, buffer: usize) -> (count: usize)
     ensures
-        count == copied(length as nat, offset, buffer as nat),
+        count == wcontainers_volatile_bytes::copied(length as nat, offset, buffer as nat),
         count > 0 ==> offset + count <= length,
 {
     if offset >= length {
@@ -250,7 +250,7 @@ impl VolatileBytes for SharedBytes<'_> {
         let mut index: usize = 0;
         while index < count
             invariant
-                count == copied(self.spec_len(), offset, old(into)@.len()),
+                count == wcontainers_volatile_bytes::copied(self.spec_len(), offset, old(into)@.len()),
                 first + count <= self.allocation.bytes@.len(),
                 self.allocation.bytes@.len() <= usize::MAX,
                 count <= old(into)@.len(),

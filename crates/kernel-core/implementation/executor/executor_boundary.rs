@@ -38,8 +38,6 @@ pub trait ExecutorBoundary: Sized {
     fn copy_processor_state(processor: &Self::ProcessorState) -> Self::ProcessorState;
 }
 
-} // verus!
-
 #[verifier::external]
 impl<E: Executor> ExecutorBoundary for E {
     type ProcessorState = ProcessorStateOf<E>;
@@ -85,6 +83,8 @@ impl<E: Executor> ExecutorBoundary for E {
         processor.clone()
     }
 }
+
+} // verus!
 
 /// A trap handler that ends the execution at its first trap and keeps why.
 struct FirstTrap {
