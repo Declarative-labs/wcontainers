@@ -25,7 +25,7 @@ verify = true
 [dev-dependencies]
 wcontainers-volatile-bytes-conformance = { path = "../../conformance" }
 
-# A low-level primitive: it denies unsafe code, so that each of its 7 uses is marked (README.md).
+# A low-level primitive: it denies unsafe code, so that each of its 11 uses is marked (README.md).
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"

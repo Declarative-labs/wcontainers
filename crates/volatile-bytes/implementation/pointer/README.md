@@ -8,7 +8,7 @@ was, `write_at` counts exactly `copied`, and every copy stays inside the view. E
 `unsafe fn PointerAndLength::new`, so the promise is made once and `new` stays safe. It does NOT keep the memory alive,
 map it, or free it: the caller does.
 
-## The unsafe items (7)
+## The unsafe items (11)
 
 1. implementation.rs:30, `unsafe fn PointerAndLength::new`: the promise. Rests on its caller: while the value and every
    view made from it live, the bytes are valid for reads and writes from any thread, never trap, and no one forms a
@@ -16,13 +16,16 @@ map it, or free it: the caller does.
 2. implementation.rs:77, the copy out in `read_at`. Rests on: the promise, and `at + count <= length`, which Verus
    proves at the call (the copy's `requires`).
 3. implementation.rs:91, the copy in in `write_at`. Rests on the same.
-4. implementation.rs:193, `unsafe fn copy_out`: a call to `memcpy`, through a pointer read by a volatile load so the
-   compiler cannot swap in its own copy. Rests on: the view's pointer and length, `at + into.len() <= length`, and
-   `into` not over the view.
-5. implementation.rs:216, `unsafe fn copy_in`: the same, writing the view from `bytes`.
-6. and 7. implementation.rs:152 and 166, the two `assume_specification`s of the assumption below. They exist only when
-   Verus builds the crate: Verus turns each into an unsafe function that calls the function it specifies. The ordinary
-   build drops them.
+4. implementation.rs:183, `unsafe fn copy_out`. Rests on: the view's pointer and length, `at + into.len() <= length`,
+   and `into` not over the view. It takes the length as a plain argument, which only a debug build reads, to check
+   the bound.
+5. implementation.rs:191, in `copy_out`, the volatile load of `memcpy`'s pointer, so the compiler cannot swap in its
+   own copy. Rests on `MEMCPY` being a static holding a valid function pointer.
+6. implementation.rs:196, in `copy_out`, the call to `memcpy`. Rests on what item 4 rests on.
+7. to 9. implementation.rs:209, 217 and 221: the same three for `copy_in`, writing the view from `bytes`.
+10. and 11. implementation.rs:153 and 162, the two `assume_specification`s of the assumption below. They exist only
+   when Verus builds the crate: Verus turns each into an unsafe function that calls the function it specifies. The
+   ordinary build drops them.
 
 ## What is assumed, not proved
 
@@ -43,8 +46,6 @@ it copies from a source that changes meanwhile is some value that byte held duri
   named, or the workspace's `feature(register_tool)` meets Verus's own in a dependency)
 - Kani (the range arithmetic, proofs.rs): `RUSTFLAGS="-Zcrate-attr=register_tool(reviewable)" cargo kani -p
   wcontainers-volatile-bytes-pointer`
-- Plants (a wrong form of each bound and copy, each caught by a named test): `crates/volatile-bytes/implementation/pointer/plants.sh`
-  from the workspace root
 
 ## Open questions
 

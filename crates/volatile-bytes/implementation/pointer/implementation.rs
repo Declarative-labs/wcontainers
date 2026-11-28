@@ -75,7 +75,7 @@ impl VolatileBytes for PointerBytes {
         // `at + count <= length` here (the copy's `requires`, from `range`), and the promise keeps any reference, so
         // `into`, off the view.
         unsafe {
-            copy_out(&self.pointer, Ghost(self.length), at, &mut into[..count]);
+            copy_out(&self.pointer, self.length, at, &mut into[..count]);
         }
         count
     }
@@ -89,7 +89,7 @@ impl VolatileBytes for PointerBytes {
         // `at + count <= length` here (the copy's `requires`, from `range`), and the promise keeps any reference, so
         // `bytes`, off the view.
         unsafe {
-            copy_in(&self.pointer, Ghost(self.length), at, &bytes[..count]);
+            copy_in(&self.pointer, self.length, at, &bytes[..count]);
         }
         count
     }
@@ -150,28 +150,18 @@ verus! {
 
 #[verus::trusted]
 #[expect(unsafe_code, reason = "Verus makes each specification an unsafe function that calls the function it specifies")]
-assume_specification[ copy_out ](
-    pointer: &AtomicPtr<u8>,
-    length: Ghost<usize>,
-    at: usize,
-    into: &mut [u8],
-)
+assume_specification[ copy_out ](pointer: &AtomicPtr<u8>, length: usize, at: usize, into: &mut [u8])
     requires
-        at + old(into)@.len() <= length@,
+        at + old(into)@.len() <= length,
     ensures
         final(into)@.len() == old(into)@.len(),
 ;
 
 #[verus::trusted]
 #[expect(unsafe_code, reason = "Verus makes each specification an unsafe function that calls the function it specifies")]
-assume_specification[ copy_in ](
-    pointer: &AtomicPtr<u8>,
-    length: Ghost<usize>,
-    at: usize,
-    bytes: &[u8],
-)
+assume_specification[ copy_in ](pointer: &AtomicPtr<u8>, length: usize, at: usize, bytes: &[u8])
     requires
-        at + bytes@.len() <= length@,
+        at + bytes@.len() <= length,
 ;
 
 /// The C library's `memcpy`, which the copies read back by a volatile load so that the compiler cannot know which
@@ -186,21 +176,24 @@ static MEMCPY: unsafe extern "C" fn (*mut c_void, *const c_void, usize) -> *mut 
 ///
 /// # Safety
 /// `pointer` and `length` are those of a view `PointerAndLength::new` promised, `at + into.len() <= length`, and
-/// `into` is not over the view.
+/// `into` is not over the view. `length` is used only to check the bound in a debug build.
 #[verus::trusted]
 #[verifier::external]
-#[expect(unsafe_code, reason = "the foreign call, to the C library's memcpy, that copies out of the bytes")]
-unsafe fn copy_out(pointer: &AtomicPtr<u8>, _length: Ghost<usize>, at: usize, into: &mut [u8]) {
+#[expect(unsafe_code, reason = "the copy out, whose caller promises the view, the bound and no overlap")]
+unsafe fn copy_out(pointer: &AtomicPtr<u8>, length: usize, at: usize, into: &mut [u8]) {
+    debug_assert!(at + into.len() <= length, "the copy out stays inside the view");
     if into.is_empty() {
         return;
     }
     let from = pointer.load(Relaxed).wrapping_add(at);
-    // SAFETY: `MEMCPY` is a static that lives for the whole program and holds a valid function pointer, so the
-    // volatile load reads a valid value; `at + into.len() <= length`, so `from` lies in the view and is readable for
-    // `into.len()` bytes by the promise, and does not wrap; `into` is writable for as many and not over the view.
-    // What `memcpy` does with a source another party changes meanwhile is the assumption above.
+    #[expect(unsafe_code, reason = "the volatile load of the C library's memcpy")]
+    // SAFETY: `MEMCPY` is a static that lives for the whole program and holds a valid function pointer.
+    let memcpy = unsafe { addr_of!(MEMCPY).read_volatile() };
+    #[expect(unsafe_code, reason = "the call to the C library's memcpy")]
+    // SAFETY: `at + into.len() <= length`, so `from` lies in the view and is readable for `into.len()` bytes by the
+    // promise, and does not wrap; `into` is writable for as many and not over the view. What `memcpy` does with a
+    // source another party changes meanwhile is the assumption above.
     unsafe {
-        let memcpy = addr_of!(MEMCPY).read_volatile();
         memcpy(into.as_mut_ptr().cast(), from.cast_const().cast(), into.len());
     }
 }
@@ -209,20 +202,23 @@ unsafe fn copy_out(pointer: &AtomicPtr<u8>, _length: Ghost<usize>, at: usize, in
 ///
 /// # Safety
 /// `pointer` and `length` are those of a view `PointerAndLength::new` promised, `at + bytes.len() <= length`, and
-/// `bytes` is not over the view.
+/// `bytes` is not over the view. `length` is used only to check the bound in a debug build.
 #[verus::trusted]
 #[verifier::external]
-#[expect(unsafe_code, reason = "the foreign call, to the C library's memcpy, that copies into the bytes")]
-unsafe fn copy_in(pointer: &AtomicPtr<u8>, _length: Ghost<usize>, at: usize, bytes: &[u8]) {
+#[expect(unsafe_code, reason = "the copy in, whose caller promises the view, the bound and no overlap")]
+unsafe fn copy_in(pointer: &AtomicPtr<u8>, length: usize, at: usize, bytes: &[u8]) {
+    debug_assert!(at + bytes.len() <= length, "the copy in stays inside the view");
     if bytes.is_empty() {
         return;
     }
     let to = pointer.load(Relaxed).wrapping_add(at);
-    // SAFETY: `MEMCPY` is a static that lives for the whole program and holds a valid function pointer, so the
-    // volatile load reads a valid value; `at + bytes.len() <= length`, so `to` lies in the view and is writable for
-    // `bytes.len()` bytes by the promise, and does not wrap; `bytes` is readable for as many and not over the view.
+    #[expect(unsafe_code, reason = "the volatile load of the C library's memcpy")]
+    // SAFETY: `MEMCPY` is a static that lives for the whole program and holds a valid function pointer.
+    let memcpy = unsafe { addr_of!(MEMCPY).read_volatile() };
+    #[expect(unsafe_code, reason = "the call to the C library's memcpy")]
+    // SAFETY: `at + bytes.len() <= length`, so `to` lies in the view and is writable for `bytes.len()` bytes by the
+    // promise, and does not wrap; `bytes` is readable for as many and not over the view.
     unsafe {
-        let memcpy = addr_of!(MEMCPY).read_volatile();
         memcpy(to.cast(), bytes.as_ptr().cast(), bytes.len());
     }
 }
