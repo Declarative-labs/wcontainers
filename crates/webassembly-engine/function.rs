@@ -3,6 +3,7 @@ use thiserror::Error;
 use crate::WebAssemblyEngine;
 
 /// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [function instances](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances).
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait FunctionStore {
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [function instance](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances).
     type FunctionAddress: Clone;
@@ -11,6 +12,7 @@ pub trait FunctionStore {
 }
 
 /// An engine that binds functions of one [function type](https://webassembly.github.io/spec/core/syntax/types.html#:~:text=Function%20types%20classify%20the%20signature%20of%20functions) to a Rust signature.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait FunctionTypeBinder<Parameters, Results>: WebAssemblyEngine {
     type Function: BoundFunction<Self, Parameters, Results>;
 
@@ -27,6 +29,7 @@ pub trait FunctionTypeBinder<Parameters, Results>: WebAssemblyEngine {
     ) -> Self::FunctionAddress;
 }
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait BoundFunction<Engine: WebAssemblyEngine, Parameters, Results> {
     /// Runs the [invocation](https://webassembly.github.io/spec/core/exec/modules.html#invocation) of the function.
     fn invoke(

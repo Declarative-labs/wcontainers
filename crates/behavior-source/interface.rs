@@ -12,6 +12,7 @@ use wcontainers_processor_architecture::{
 };
 
 /// Something whose behavior can be measured one instruction at a time, such as a live chip or a recording of one.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait BehaviorSource {
     type Architecture: ProcessorArchitecture;
     #[allow(
