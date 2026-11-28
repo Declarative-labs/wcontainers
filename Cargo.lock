@@ -4230,8 +4230,8 @@ dependencies = [
 name = "wcontainers-capability-table"
 version = "0.1.0"
 dependencies = [
+ "thiserror",
  "vstd",
- "wcontainers-kernel",
 ]
 
 [[package]]
@@ -4815,6 +4815,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-kernel-core"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+ "wcontainers-capability-table",
+ "wcontainers-memory-shard",
+]
+
+[[package]]
 name = "wcontainers-kernel-linux"
 version = "0.1.0"
 dependencies = [
@@ -4843,6 +4852,15 @@ dependencies = [
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-memory-shard"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "vstd",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5487,8 +5505,6 @@ dependencies = [
 name = "wcontainers-volatile-bytes-conformance"
 version = "0.1.0"
 dependencies = [
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-volatile-bytes",
 ]
 
@@ -5497,7 +5513,6 @@ name = "wcontainers-volatile-bytes-pointer"
 version = "0.1.0"
 dependencies = [
  "libc",
- "vstd",
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
  "wcontainers-volatile-bytes",
@@ -5512,7 +5527,6 @@ dependencies = [
  "memmap2",
  "rustix",
  "thiserror",
- "vstd",
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
  "wcontainers-volatile-bytes",
