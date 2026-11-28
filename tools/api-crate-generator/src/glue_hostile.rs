@@ -1455,7 +1455,8 @@ impl Shapes {
         if let Some((element, _)) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).and_then(|inner| inner.rsplit_once(';')) {
             return self.zero(element).map(|value| format!("core::array::from_fn(|_| {value})"));
         }
-        if self.values.contains_key(ty) || self.newtypes.contains(ty) {
+        // (An enumeration is a newtype of its integer too.)
+        if self.newtypes.contains(ty) {
             return Some(format!("{ty}(0)"));
         }
         let (fields, union) = self.structs.get(ty)?;
