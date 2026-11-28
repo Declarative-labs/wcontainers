@@ -4,7 +4,6 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use vstd::prelude::*;
-use wcontainers_capability_table::CapabilityTable;
 use wcontainers_kernel_core::execution::{Access, Interrupter, Stop};
 use wcontainers_kernel_core::memory::MemoryCapabilityTable;
 use wcontainers_memory_shard::MemoryShard;
@@ -59,7 +58,7 @@ fn fetch<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>>(
 ) -> (fetched: Option<u8>)
     ensures
         fetched is None ==> !crate::executor_boundary::permits(
-            memory.state(),
+            crate::disjoint_memory::to_shards(*memory),
             address,
             Access::Execute,
         ),
@@ -77,7 +76,7 @@ fn fetch<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>>(
                 Some(buffer[usize::MIN])
             } else {
                 proof {
-                    let shards = memory.state();
+                    let shards = crate::disjoint_memory::to_shards(*memory);
                     assert forall|other: u64| #[trigger]
                         shards.contains_key(other) && crate::disjoint_memory::contains_address(
                             shards,

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use vstd::prelude::*;
-use wcontainers_capability_table::{CapabilityConfig, CapabilityTable, CreateError, DuplicateError};
+use wcontainers_capability_table::{CapabilityTable, CreateError, DuplicateError};
 use wcontainers_kernel_core::memory::{
     MemoryCapabilityTable, MemoryError, SetPermissionsError, SplitError,
 };
@@ -55,7 +55,9 @@ pub open spec fn follows_create<Shard: MemoryShard>(
     match created {
         Ok(_) => !before.contains_key(identifier) && after.contains_key(identifier) && after.remove(
             identifier,
-        ) == before && config.describes(after.index(identifier)),
+        ) == before && <MemoryShardConfig as wcontainers_capability_table::CapabilityConfig<
+            Shard,
+        >>::describes(config, after.index(identifier)),
         Err(CreateError::IdentifierTaken) => before.contains_key(identifier) && after == before,
         Err(CreateError::Failed(_)) => !before.contains_key(identifier) && after == before,
     }
@@ -625,6 +627,13 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> Parts<Shard, Table
         }
         split
     }
+}
+
+/// Returns the shards a memory holds under their starts.
+pub open spec fn to_shards<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>>(
+    memory: DisjointMemory<Shard, Table>,
+) -> Map<u64, Shard> {
+    memory.state()
 }
 
 /// A task's memory: shards under their starts, which never share an address.

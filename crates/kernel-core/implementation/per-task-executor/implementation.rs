@@ -125,9 +125,8 @@ impl<'task, Shard: MemoryShard, Source: TaskSource<Shard>> Execution<
     }
 
     fn run(self) -> (stop: Stop) {
-        let PreparedExecution { task, interruption } = self;
-        let Task { memory, processor, runner } = task;
-        runner.run(memory, processor, interruption)
+        let task = self.task;
+        task.runner.run(&task.memory, &mut task.processor, self.interruption)
     }
 }
 

@@ -1,20 +1,22 @@
 //! The one place this core assumes anything: what an executor does when it runs a task.
 
 use vstd::prelude::*;
-use wcontainers_capability_table::CapabilityTable;
-use wcontainers_kernel_core::execution::{Access, Interrupter, Stop};
+use wcontainers_kernel_core::execution::{Interrupter, Stop};
 use wcontainers_kernel_core::memory::MemoryCapabilityTable;
-use wcontainers_memory_shard::{MemoryPermissions, MemoryShard};
+use wcontainers_memory_shard::MemoryShard;
 
 use crate::disjoint_memory::DisjointMemory;
 
 verus! {
 
-pub open spec fn allows(permissions: MemoryPermissions, access: Access) -> bool {
+pub open spec fn allows(
+    permissions: wcontainers_memory_shard::MemoryPermissions,
+    access: wcontainers_kernel_core::execution::Access,
+) -> bool {
     match access {
-        Access::Read => permissions.read,
-        Access::Write => permissions.write,
-        Access::Execute => permissions.execute,
+        wcontainers_kernel_core::execution::Access::Read => permissions.read,
+        wcontainers_kernel_core::execution::Access::Write => permissions.write,
+        wcontainers_kernel_core::execution::Access::Execute => permissions.execute,
     }
 }
 
@@ -22,7 +24,7 @@ pub open spec fn allows(permissions: MemoryPermissions, access: Access) -> bool 
 pub open spec fn permits<Shard: MemoryShard>(
     shards: Map<u64, Shard>,
     address: u64,
-    access: Access,
+    access: wcontainers_kernel_core::execution::Access,
 ) -> bool {
     exists|start: u64| #[trigger]
         shards.contains_key(start) && crate::disjoint_memory::contains_address(shards, start, address) && allows(
@@ -55,7 +57,7 @@ pub trait ExecutorBoundary<Shard: MemoryShard, Table: MemoryCapabilityTable<Shar
     ) -> (stop: Stop)
         ensures
             stop matches Stop::MemoryFault { address, access } ==> !permits(
-                memory.state(),
+                crate::disjoint_memory::to_shards(*memory),
                 address,
                 access,
             ),
@@ -80,7 +82,12 @@ pub trait TaskSource<Shard: MemoryShard> {
         Self::CreateError,
     >)
         ensures
-            created matches Ok(parts) ==> parts.0.state() == Map::<u64, Shard>::empty(),
+            created matches Ok(parts) ==> wcontainers_capability_table::CapabilityTable::<
+                u64,
+                Shard,
+                wcontainers_memory_shard::MemoryShardConfig,
+                wcontainers_kernel_core::memory::MemoryError,
+            >::state(&parts.0) == Map::<u64, Shard>::empty(),
     ;
 }
 
