@@ -195,6 +195,13 @@ enum Desc {
         bb: i64,
         cut: i64,
     },
+    ByteSwitch {
+        j: i64,
+        n: i64,
+        t: i64,
+        k: i64,
+        bb: i64,
+    },
 }
 
 /// compose.rs `needs_cut`.
@@ -228,7 +235,8 @@ impl Desc {
             | Desc::Own { bb, .. }
             | Desc::Mark { bb, .. }
             | Desc::StackAccess { bb, .. }
-            | Desc::StackProbes { bb, .. } => bb == base,
+            | Desc::StackProbes { bb, .. }
+            | Desc::ByteSwitch { bb, .. } => bb == base,
             Desc::Exit { .. } | Desc::DisplacedTableJump { .. } => base == 24,
             Desc::Call { .. } | Desc::Stop { .. } => true,
         }
@@ -257,7 +265,8 @@ impl Desc {
             | Desc::StackAt { j, .. }
             | Desc::TableJump { j, .. }
             | Desc::DisplacedTableJump { j, .. }
-            | Desc::ShiftThrough { j, .. } => j,
+            | Desc::ShiftThrough { j, .. }
+            | Desc::ByteSwitch { j, .. } => j,
         }
     }
 
@@ -390,6 +399,9 @@ impl Desc {
             } => format!(
                 "Desc::ShiftThrough {{ j: {j}, k: {k}, rt: {rt}, rt2: {rt2}, bytes: {bytes}, bb: {bb}, cut: {cut} }}"
             ),
+            Desc::ByteSwitch { j, n, t, k, bb } => {
+                format!("Desc::ByteSwitch {{ j: {j}, n: {n}, t: {t}, k: {k}, bb: {bb} }}")
+            }
         }
     }
 }
@@ -443,6 +455,12 @@ const UBFIZ_X23: u32 = 0xd37e_aef7;
 const BFXIL_X23: u32 = 0xb342_0ef7;
 const EOR_X23_TABLE: u32 = 0xd252_02f7;
 const BR_X23: u32 = 0xd61f_02e0;
+/// compose.rs `ADR_X23_12` and `add_x23_index`: `adr x23, #12`, `add x23, x23, xT, uxtx #2`.
+const ADR_X23_12: u32 = 0x1000_0077;
+
+fn add_x23_index(t: i64) -> u32 {
+    0x8b20_6af7 + ((t as u32) << 16)
+}
 
 /// branch.rs `ubfiz_x23`: `ubfiz x23, xN, #2, #32` (31: the zero register).
 fn ubfiz_x23(n: i64) -> u32 {
@@ -1026,6 +1044,30 @@ fn describe_with(
                         },
                         None,
                     ) if i64::from(b) == bb && (1..=16).contains(&bytes) => {
+                        // A switch on the byte loaded: register-only words keeping it, the base and the frame, then
+                        // `adr x23, #12`, `add x23, x23, xT, uxtx #2`, `br x23` and the table's 256 words.
+                        let keeps = |w: u32| {
+                            w != ADR_X23_12
+                                && matches!(decode(w), Step::Plain(w) if {
+                                    let (regs, sp) = general(&w);
+                                    !sp && regs.iter().all(|&r| r != rt && r != bb && r != 28)
+                                })
+                        };
+                        let k = words.iter().skip(j as usize + 1).take_while(|&&w| keeps(w)).count() as i64;
+                        let p = j + k + 1;
+                        if access.loads.as_slice() == [(Reg::X(rt as u8), Made::Range(0, 255))]
+                            && rt != 23
+                            && at(p) == Some(ADR_X23_12)
+                            && at(p + 1) == Some(add_x23_index(rt))
+                            && at(p + 2) == Some(BR_X23)
+                        {
+                            // compose.rs's `j + k + 4 + 256 <= len` needs no test: a table word past the piece is
+                            // refused where it is entered.
+                            let table: Vec<_> = (0..256).map(|v| (p + 3 + v, bb, 31)).collect();
+                            let n = i64::from(n);
+                            next(Desc::ByteSwitch { j, n, t: rt, k, bb }, &table);
+                            continue;
+                        }
                         next(
                             Desc::Own {
                                 j,
@@ -2166,8 +2208,98 @@ fn each_condition_of_compose_is_refused() {
         &cat(&[&[add_cut_into(31, 24, 23)], &tail(UBFIZ_X23)]),
         true,
     );
+    // The byte switch: `ldrb w11, [x24, w1, uxtw]`, words between, `adr x23, #12`, `add x23, x23, x11, uxtx #2`,
+    // `br x23`, then a table of `b`s to the exit after it (`entries` of them; the exit's first word is the table's 256th when there are 255).
+    const LDRB: u32 = 0x3861_4b0b;
+    let switch = |load: u32, between: &[u32], adr: u32, add: u32, br: u32, entries: i64| {
+        let table: Vec<u32> = (0..entries).map(|v| b_by(4 * (entries - v))).collect();
+        cat(&[&[load], between, &[adr, add, br], &table])
+    };
+    let usual = |between: &[u32]| switch(LDRB, between, ADR_X23_12, add_x23_index(11), BR_X23, 255);
+    w("ByteSwitch: described", &usual(&[]), true);
+    w(
+        "ByteSwitch: described, a word between",
+        &usual(&[0x8b0b_094a]),
+        true,
+    );
+    w(
+        "ByteSwitch: described, a word between writing x23",
+        &usual(&[0x9100_0417]),
+        true,
+    );
+    w(
+        "ByteSwitch: keeps_regs, xT kept between",
+        &usual(&[0x9100_056b]),
+        false,
+    );
+    w(
+        "ByteSwitch: keeps_regs, a word between is register-only",
+        &usual(&[0xf940_0780]),
+        false,
+    );
+    w(
+        "ByteSwitch: t != 23",
+        &switch(0x3861_4b17, &[], ADR_X23_12, add_x23_index(23), BR_X23, 255),
+        false,
+    );
+    w(
+        "ByteSwitch: t != bb",
+        &switch(0x3861_4b18, &[], ADR_X23_12, add_x23_index(24), BR_X23, 255),
+        false,
+    );
+    w(
+        "ByteSwitch: t != frame_register()",
+        &switch(0x3861_4b1c, &[], ADR_X23_12, add_x23_index(28), BR_X23, 255),
+        false,
+    );
+    w(
+        "ByteSwitch: loads_byte, one byte",
+        &switch(0x7861_4b0b, &[], ADR_X23_12, add_x23_index(11), BR_X23, 255),
+        false,
+    );
+    w(
+        "ByteSwitch: loads_byte, zero-extended",
+        &switch(0x38a1_4b0b, &[], ADR_X23_12, add_x23_index(11), BR_X23, 255),
+        false,
+    );
+    w(
+        "ByteSwitch: the load is an own access",
+        &switch(0x3940_02eb, &[], ADR_X23_12, add_x23_index(11), BR_X23, 255),
+        false,
+    );
+    w(
+        "ByteSwitch: instructions[j + k + 1] == ADR_X23_12",
+        &switch(LDRB, &[], 0x1000_0097, add_x23_index(11), BR_X23, 255),
+        false,
+    );
+    w(
+        "ByteSwitch: instructions[j + k + 2] == add_x23_index(t)",
+        &switch(LDRB, &[], ADR_X23_12, add_x23_index(12), BR_X23, 255),
+        false,
+    );
+    w(
+        "ByteSwitch: instructions[j + k + 3] == BR_X23",
+        &switch(LDRB, &[], ADR_X23_12, add_x23_index(11), 0xd61f_02c0, 255),
+        false,
+    );
+    w(
+        "ByteSwitch: accepts_run, the table's 256th word",
+        &switch(LDRB, &[], ADR_X23_12, add_x23_index(11), BR_X23, 254),
+        false,
+    );
+    let mut spoiled = usual(&[]);
+    spoiled[4 + 200] = LOAD;
+    w(
+        "ByteSwitch: accepts_run(j + k + 4, 256, bb)",
+        &spoiled,
+        false,
+    );
     // The piece's last words, with no exit after them: a block that goes on must have a word to go on to.
     let mut last = |clause, words: &[u32]| case(clause, words.to_vec(), false, false, None);
+    last(
+        "ByteSwitch: j + k + 4 + 256 <= len",
+        &switch(LDRB, &[], ADR_X23_12, add_x23_index(11), BR_X23, 200),
+    );
     last("Register: j + 1 < len", &[ADD]);
     last("Cut: j + 1 < len", &[CUT]);
     last("Either: j + 1 < len", &[ADD, bne(-4)]);
@@ -3133,6 +3265,11 @@ fn goes(d: &Desc) -> Vec<(i64, Vec<i64>)> {
         Desc::TableJump { j, link } | Desc::DisplacedTableJump { j, link, .. } => {
             line(j, 4 + if link { 3 } else { 0 }, true)
         }
+        Desc::ByteSwitch { j, k, .. } => {
+            let mut v = line(j, k + 3, false);
+            v.push((j + k + 3, (j + k + 4..j + k + 260).collect()));
+            v
+        }
         Desc::Register { j, .. }
         | Desc::Cut { j, .. }
         | Desc::Through { j, .. }
@@ -3285,6 +3422,16 @@ fn a_rank_exists_exactly_where_the_moves_make_no_loop() {
     );
     let call = Desc::Call { j: 1, code: 0 };
     assert_eq!(goes(&call).last(), Some(&(5, vec![])));
+    let switch = Desc::ByteSwitch {
+        j: 2,
+        n: 1,
+        t: 11,
+        k: 3,
+        bb: 24,
+    };
+    let mut moves: Vec<(i64, Vec<i64>)> = (2..8).map(|i| (i, vec![i + 1])).collect();
+    moves.push((8, (9..265).collect()));
+    assert_eq!(goes(&switch), moves);
     let table = Desc::TableJump { j: 0, link: true };
     assert_eq!(goes(&table).len(), 7);
     assert_eq!(goes(&table).last(), Some(&(6, vec![])));
@@ -3375,4 +3522,52 @@ fn no_piece_of_the_instruction_list_holds_a_loop() {
     println!("ranked (pieces, ranked, longest run, most words): {counts:?}");
     // Measured 2026-11-28 (eighth run), the same draws as the coverage test.
     assert_eq!(counts, [(35432, 35432, 47, 62), (35432, 35432, 44, 59)]);
+}
+
+/// interrupt.rs's pin of a byte switch: a hand-written switch (`ldrb w11, [x24, w1, uxtw]`, one word between, then the
+/// jump into a table of 255 `b`s to the exit), described and ranked as `describe` and `rank` find it.
+#[test]
+fn the_switch_pin_is_a_described_and_ranked_switch() {
+    let entries: Vec<u32> = (0..255).map(|v| b_by(4 * (255 - v))).collect();
+    let exit = exit_words(table(false) + (GUEST + 4) * 4);
+    let words = [
+        &[
+            0x3861_4b0b,
+            0x8b0b_094a,
+            ADR_X23_12,
+            add_x23_index(11),
+            BR_X23,
+        ][..],
+        &entries,
+        &exit,
+    ]
+    .concat();
+    let descs = describe(&words, false).expect("described");
+    assert!(descs.contains(&Desc::ByteSwitch {
+        j: 0,
+        n: 1,
+        t: 11,
+        k: 1,
+        bb: 24
+    }));
+    let ranks = rank(&descs, words.len()).expect("no loop");
+    let words: Vec<String> = words.iter().map(|w| format!("{w:#010x}u32")).collect();
+    let descs: Vec<String> = descs.iter().map(Desc::verus).collect();
+    let ranks: Vec<String> = ranks.iter().map(i64::to_string).collect();
+    let line = format!(
+        "proof fn pin_switch() {{ assert(described(seq![{}], pin_at(false), seq![{}]) && ranked(seq![{}], seq![{}], {})) by (compute); }}",
+        words.join(", "),
+        descs.join(", "),
+        descs.join(", "),
+        ranks.join(", "),
+        ranks.len()
+    );
+    let pinned: Vec<&str> = INTERRUPT
+        .lines()
+        .filter(|l| l.starts_with("proof fn pin_switch("))
+        .collect();
+    if pinned != [line.as_str()] {
+        println!("{line}");
+    }
+    assert_eq!(pinned, [line.as_str()]);
 }

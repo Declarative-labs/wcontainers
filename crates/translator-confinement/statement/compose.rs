@@ -29,8 +29,9 @@
 //! WHAT IS DESCRIBED (measured by `tests/compose.rs` over 8 drawn words of each of the 4,429 forms, look-ahead none;
 //! each figure rests on (1): the meaning of each word is a hypothesis taken from decode.rs, and `step` is still free):
 //! every piece, 35,432 of 35,432, both in the window and displaced. Over the 15 test programs zig builds, every piece of
-//! look-ahead none (100,584 both ways); of look-ahead bounded 16, 12,570 of 12,580: the rest are in-piece switch jumps
-//! (`adr x23`, `add x23, x23, xT, lsl #2`, `br x23` into a table of `b`s), whose index only a byte load bounds.
+//! look-ahead none (100,584 both ways); of look-ahead bounded 16, every piece (12,580 both ways), the in-piece switch
+//! jumps (`adr x23`, `add x23, x23, xT, uxtx #2`, `br x23` into a table of `b`s) by the byte switch's block, which
+//! carries the bound the byte load gives its index.
 
 use super::*;
 use super::meaning::*;
@@ -414,6 +415,10 @@ pub enum Desc {
     DisplacedTableJump { j: int, n: int, link: bool },
     /// `add/sub xc, xc, #k` of the cut, then an access of `bytes` at x[cut] loading `rt` and `rt2`.
     ShiftThrough { j: int, k: int, rt: int, rt2: int, bytes: nat, bb: int, cut: int },
+    /// A switch on a byte (look-ahead's jump through a table of `b`s): `ldrb wT, [xbb, wN, uxtw]`, `k` register-only
+    /// words keeping xT, the base and the frame, `adr x23, #12`, `add x23, x23, xT, uxtx #2`, `br x23`, then the
+    /// table's 256 words, each entered with the part's fact. Only the byte load bounds xT: below 256.
+    ByteSwitch { j: int, n: int, t: int, k: int, bb: int },
 }
 
 pub open spec fn entry_of(d: Desc) -> int {
@@ -440,6 +445,7 @@ pub open spec fn entry_of(d: Desc) -> int {
         Desc::TableJump { j, .. } => j,
         Desc::DisplacedTableJump { j, .. } => j,
         Desc::ShiftThrough { j, .. } => j,
+        Desc::ByteSwitch { j, .. } => j,
     }
 }
 
@@ -468,6 +474,7 @@ pub open spec fn iface_ok(d: Desc, bb: int, cut: int) -> bool {
         Desc::TableJump { .. } => bb == 24 && cut == 23,
         Desc::DisplacedTableJump { .. } => bb == 24,
         Desc::ShiftThrough { bb: b, cut: c, .. } => b == bb && c == cut,
+        Desc::ByteSwitch { bb: b, .. } => b == bb,
     }
 }
 
@@ -583,6 +590,20 @@ pub open spec fn shift_word(c: int, k: int) -> u32 {
     }
 }
 
+/// `adr x23, #12` and `add x23, x23, xT, uxtx #2`.
+pub const ADR_X23_12: u32 = 0x1000_0077;
+
+pub open spec fn add_x23_index(t: int) -> u32 {
+    (0x8b20_6af7u32 | ((t as u32) << 16u32)) as u32
+}
+
+/// Each of the `count` words from `from` is where a block is entered with the part's fact for `bb`.
+pub open spec fn accepts_run(descs: Seq<Desc>, from: int, count: int, bb: int) -> bool
+    decreases count,
+{
+    if count <= 0 { true } else { accepts(descs, from + count - 1, bb, 31) && accepts_run(descs, from, count - 1, bb) }
+}
+
 /// The words of `instructions` from `j` are `words`.
 pub open spec fn holds_at(instructions: Seq<u32>, j: int, words: Seq<u32>) -> bool {
     0 <= j && j + words.len() <= instructions.len() && instructions.subrange(j, j + words.len()) == words
@@ -662,6 +683,11 @@ pub open spec fn shape_ok(instructions: Seq<u32>, a: Allowed, descs: Seq<Desc>, 
             a.displaced && 0 <= n <= 31 && j + 3 + link_len(link) < len
             && holds_at(instructions, j, seq![ubfiz_x23(n as u32), BFXIL_X23, EOR_X23_TABLE])
             && instructions[j + 3 + link_len(link)] == BR_X23,
+        Desc::ByteSwitch { j, n, t, k, bb } =>
+            0 <= j && 0 <= k && j + k + 4 + 256 <= len && base_ok(bb) && 0 <= n < 31
+            && 0 <= t < 31 && t != bb && t != 23 && t != frame_register()
+            && instructions[j + k + 1] == ADR_X23_12 && instructions[j + k + 2] == add_x23_index(t)
+            && instructions[j + k + 3] == BR_X23 && accepts_run(descs, j + k + 4, 256, bb),
         Desc::ShiftThrough { j, k, rt, rt2, bytes, bb, cut } =>
             0 <= j && j + 2 < len && base_ok(bb) && 0 <= cut < 31 && cut != bb && cut != frame_register()
             && reg_ok(rt, bb) && reg_ok(rt2, bb) && -0x1_0000 <= k && 1 <= bytes && k + bytes <= 0x1_0000
@@ -816,10 +842,37 @@ pub open spec fn meant(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq
             &&& writes(step, ubfiz_x23(n as u32), 23, |m: Machine| low_of(m, n) << 2u64)
             &&& table_tail_means(step, instructions, j, link)
         },
+        Desc::ByteSwitch { j, n, t, k, bb } => {
+            &&& touches(step, instructions[j], t, 31, 31, |m: Machine| (m.x[bb] + (m.x[n] & 0xffff_ffffu64)) % two_to_64(), 1)
+            &&& loads_byte(step, instructions[j], t)
+            &&& forall|i: int| j < i <= j + k ==> keeps_regs(step, #[trigger] instructions[i], t, bb)
+            &&& writes(step, ADR_X23_12, 23, |m: Machine| (m.pc + 12) as u64)
+            &&& writes(step, add_x23_index(t), 23, |m: Machine| ((m.x[23] + 4 * m.x[t]) % two_to_64()) as u64)
+            &&& jumps(step, BR_X23, 23)
+        },
         Desc::ShiftThrough { j, k, rt, rt2, bytes, cut, .. } => {
             &&& writes(step, shift_word(cut, k), cut, |m: Machine| ((m.x[cut] + k) % two_to_64()) as u64)
             &&& touches(step, instructions[j + 1], rt, rt2, 31, |m: Machine| m.x[cut] as int, bytes)
         },
+    }
+}
+
+/// `word` is register-only and keeps xT, the base, the frame register and the stack pointer.
+pub open spec fn keeps_regs(step: spec_fn(Machine, u32) -> Stepped, word: u32, t: int, bb: int) -> bool {
+    forall|m: Machine| m.x.len() == 31 ==> {
+        let s = #[trigger] step(m, word);
+        &&& s.accesses.len() == 0 && !s.system_call && !s.after.ended
+        &&& s.after.unlisted == m.unlisted && s.after.pc == (m.pc + 4) as u64
+        &&& s.after.x.len() == 31 && s.after.sp == m.sp
+        &&& s.after.x[t] == m.x[t] && s.after.x[bb] == m.x[bb] && s.after.x[frame_register()] == m.x[frame_register()]
+    }
+}
+
+/// `word` loads one byte into xT, zero-extended: below 256 when the run goes on.
+pub open spec fn loads_byte(step: spec_fn(Machine, u32) -> Stepped, word: u32, t: int) -> bool {
+    forall|m: Machine| m.x.len() == 31 ==> {
+        let s = #[trigger] step(m, word);
+        !s.after.ended ==> s.after.x[t] < 256
     }
 }
 
@@ -931,6 +984,12 @@ pub open spec fn block_of(a: Allowed, d: Desc) -> Block {
             needs: |m: Machine| part(a, 24, 31, m),
             inv: |m: Machine| part(a, 24, 31, m) && displaced_table_at(a, j, m),
         },
+        Desc::ByteSwitch { j, t, k, bb, .. } => Block {
+            owns: |i: int| j <= i < j + k + 4,
+            entry: j,
+            needs: |m: Machine| part(a, bb, 31, m),
+            inv: |m: Machine| part(a, bb, 31, m) && switch_at(a, j, t, k, m),
+        },
         Desc::ShiftThrough { j, k, bb, cut, .. } => Block {
             owns: |i: int| j <= i < j + 2,
             entry: j,
@@ -939,6 +998,14 @@ pub open spec fn block_of(a: Allowed, d: Desc) -> Block {
                 && (index(a, m.pc) == j + 1 ==> part(a, bb, 31, m) && a.base + k <= m.x[cut] && m.x[cut] < a.base + WINDOW_BYTES + k),
         },
     }
+}
+
+/// Where the byte switch's run stands: xT below 256 after the load, then x23 the table's start, then its word.
+pub open spec fn switch_at(a: Allowed, j: int, t: int, k: int, m: Machine) -> bool {
+    let o = index(a, m.pc) - j;
+    &&& o >= 1 ==> m.x[t] < 256
+    &&& o == k + 2 ==> m.x[23] as int == a.code + 4 * (j + k + 4)
+    &&& o == k + 3 ==> m.x[23] as int == a.code + 4 * (j + k + 4 + m.x[t])
 }
 
 /// Where the table jump's run stands: the cut, then four times it, then its slot, then in the slot table.
@@ -2087,6 +2154,93 @@ proof fn lemma_shift_through(
     }
 }
 
+/// A word of the table is where a block is entered with the part's fact.
+proof fn lemma_accepts_run(descs: Seq<Desc>, from: int, count: int, bb: int, v: int)
+    requires
+        accepts_run(descs, from, count, bb),
+        0 <= v < count,
+    ensures
+        accepts(descs, from + v, bb, 31),
+    decreases count,
+{
+    if v < count - 1 {
+        lemma_accepts_run(descs, from, count - 1, bb, v);
+    }
+}
+
+/// THE BYTE SWITCH'S BLOCK HOLDS: the byte load bounds xT below 256, so `br x23` lands in the table.
+proof fn lemma_byte_switch(
+    step: spec_fn(Machine, u32) -> Stepped,
+    instructions: Seq<u32>,
+    a: Allowed,
+    descs: Seq<Desc>,
+    b: int,
+    j: int,
+    n: int,
+    t: int,
+    k: int,
+    bb: int,
+)
+    requires
+        placed(a, instructions),
+        0 <= b < descs.len() && descs[b] == (Desc::ByteSwitch { j, n, t, k, bb }),
+        shape_ok(instructions, a, descs, descs[b]),
+        meant(step, instructions, a, descs[b]),
+    ensures
+        block_holds(step, instructions, a, blocks_of(a, descs), b),
+{
+    let blocks = blocks_of(a, descs);
+    assert(blocks[b] == block_of(a, descs[b]));
+    let kb = blocks[b];
+    assert forall|m: Machine| runs(a, m) && (kb.owns)(index(a, m.pc)) && #[trigger] (kb.inv)(m) implies steps_within(step, instructions, a, blocks, b, m) by {
+        let i = index(a, m.pc);
+        let o = i - j;
+        assert(m.pc as int == a.code + 4 * i);
+        assert(word_at(instructions, a, m.pc) == instructions[i]);
+        let s = step(m, instructions[i]);
+        if o == 0 {
+            lemma_low_word(m.x[n]);
+            assert((m.x[bb] + (m.x[n] & 0xffff_ffffu64)) % two_to_64() == m.x[bb] + (m.x[n] & 0xffff_ffffu64));
+            lemma_in_slot(a, m.x[bb] + (m.x[n] & 0xffff_ffffu64), 1);
+            assert(touches_allowed(a, s.accesses[0].0, s.accesses[0].1));
+            lemma_not_table(instructions, a, s, j + 1);
+            if !s.after.ended {
+                assert(part(a, bb, 31, s.after));
+                assert(index(a, s.after.pc) == j + 1);
+                assert(switch_at(a, j, t, k, s.after));
+            }
+        } else if o <= k {
+            assert(keeps_regs(step, instructions[i], t, bb));
+            lemma_not_table(instructions, a, s, i + 1);
+            assert(part(a, bb, 31, s.after));
+            assert(index(a, s.after.pc) == i + 1);
+            assert(switch_at(a, j, t, k, s.after));
+        } else if o == k + 1 {
+            assert(instructions[i] == ADR_X23_12);
+            lemma_not_table(instructions, a, s, i + 1);
+            assert(part(a, bb, 31, s.after));
+            assert(index(a, s.after.pc) == i + 1);
+            assert(switch_at(a, j, t, k, s.after));
+        } else if o == k + 2 {
+            assert(instructions[i] == add_x23_index(t));
+            assert((m.x[23] + 4 * m.x[t]) % two_to_64() == a.code + 4 * (j + k + 4 + m.x[t]));
+            lemma_not_table(instructions, a, s, i + 1);
+            assert(part(a, bb, 31, s.after));
+            assert(index(a, s.after.pc) == i + 1);
+            assert(switch_at(a, j, t, k, s.after));
+        } else {
+            assert(instructions[i] == BR_X23);
+            let v = m.x[t] as int;
+            let to = j + k + 4 + v;
+            lemma_accepts_run(descs, j + k + 4, 256, bb, v);
+            let c = lemma_accepts(a, descs, to, bb, 31);
+            assert(s.after.pc as int == a.code + 4 * to);
+            assert(part(a, bb, 31, s.after));
+            lemma_goes_on(step, instructions, a, blocks, m, s, to, c, bb, 31);
+        }
+    }
+}
+
 /// Every block of a described piece holds alone.
 proof fn lemma_block(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, a: Allowed, descs: Seq<Desc>, b: int)
     requires
@@ -2178,6 +2332,9 @@ proof fn lemma_block(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u
         },
         Desc::DisplacedTableJump { j, n, link } => {
             lemma_displaced_table_jump(step, instructions, a, blocks, b, j, n, link);
+        },
+        Desc::ByteSwitch { j, n, t, k, bb } => {
+            lemma_byte_switch(step, instructions, a, descs, b, j, n, t, k, bb);
         },
         Desc::ShiftThrough { j, k, rt, rt2, bytes, bb, cut } => {
             let c = lemma_accepts(a, descs, j + 2, bb, 31);
