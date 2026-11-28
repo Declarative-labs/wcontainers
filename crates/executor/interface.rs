@@ -14,9 +14,9 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 
 use crate::memory_space::MemorySpace;
 
-/// The runner of guest threads.
 verus! {
 
+/// The runner of guest threads.
 pub trait Executor: BehaviorSource {
     type TranslatorConfig: Default;
     type GuestMemory: MemorySpace;

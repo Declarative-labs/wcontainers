@@ -6,9 +6,9 @@ use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::{ExecutionConfig, Kernel, ReplayDeterminism, StopReason, ThreadOrdering};
 use wcontainers_system::{ProcessTracer, StreamTransport, System};
 
-/// A maker of containers that run on one kind of executor for one kind of system.
 verus! {
 
+/// A maker of containers that run on one kind of executor for one kind of system.
 pub trait Runtime {
     type System: System;
     type Image: Image;

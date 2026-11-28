@@ -1,9 +1,9 @@
 use vstd::prelude::*;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
-/// The collector of what each kind of core of a machine shows for every instruction.
 verus! {
 
+/// The collector of what each kind of core of a machine shows for every instruction.
 pub trait ObservationCollector {
     type Architecture: ProcessorArchitecture;
     /// What a core says it is, read from the core itself.

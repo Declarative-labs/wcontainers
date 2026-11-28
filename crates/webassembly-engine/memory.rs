@@ -3,9 +3,9 @@ use vstd::prelude::*;
 
 use crate::{AddressType, Limits};
 
-/// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [memory instances](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances).
 verus! {
 
+/// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [memory instances](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances).
 pub trait MemoryStore {
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [memory instance](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances).
     type MemoryAddress: Clone;

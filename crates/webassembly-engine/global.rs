@@ -3,9 +3,9 @@ use vstd::prelude::*;
 
 use crate::function::FunctionStore;
 
-/// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [global instances](https://webassembly.github.io/spec/core/exec/runtime.html#global-instances).
 verus! {
 
+/// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [global instances](https://webassembly.github.io/spec/core/exec/runtime.html#global-instances).
 pub trait GlobalStore: FunctionStore {
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [global instance](https://webassembly.github.io/spec/core/exec/runtime.html#global-instances).
     type GlobalAddress: Clone;

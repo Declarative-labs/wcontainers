@@ -1,12 +1,12 @@
 #![no_std]
 
-/// The stateful parts and instructions of a processor that one privilege level has beyond the unprivileged ones.
-///
-/// An unprivileged instruction is expected to behave the same at every privilege level.
 use vstd::prelude::*;
 
 verus! {
 
+/// The stateful parts and instructions of a processor that one privilege level has beyond the unprivileged ones.
+///
+/// An unprivileged instruction is expected to behave the same at every privilege level.
 pub trait PrivilegeLevel {
     /// The stateful parts of the processor that only this level has.
     type PrivilegedProcessorSubset: Clone + Eq;

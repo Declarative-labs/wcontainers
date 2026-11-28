@@ -3,9 +3,9 @@
 use vstd::prelude::*;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
-/// One choice of behavior for every instruction of an architecture.
 verus! {
 
+/// One choice of behavior for every instruction of an architecture.
 pub trait PreciseInstructionSet<Architecture: ProcessorArchitecture>: Sized {
     fn from_measurements(
         measurements: &[(

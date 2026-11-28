@@ -12,9 +12,9 @@ use wcontainers_processor_architecture::{
     Simulator,
 };
 
-/// Something whose behavior can be measured one instruction at a time, such as a live chip or a recording of one.
 verus! {
 
+/// Something whose behavior can be measured one instruction at a time, such as a live chip or a recording of one.
 pub trait BehaviorSource {
     type Architecture: ProcessorArchitecture;
     #[allow(

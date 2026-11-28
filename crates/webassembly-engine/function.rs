@@ -3,9 +3,9 @@ use vstd::prelude::*;
 
 use crate::WebAssemblyEngine;
 
-/// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [function instances](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances).
 verus! {
 
+/// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [function instances](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances).
 pub trait FunctionStore {
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [function instance](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances).
     type FunctionAddress: Clone;

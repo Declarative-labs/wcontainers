@@ -3,9 +3,9 @@ use std::thread;
 
 use vstd::prelude::*;
 
-/// The cores of the machine's processors.
 verus! {
 
+/// The cores of the machine's processors.
 pub trait ProcessorCores: Sync {
     type Core: Sync;
     /// What a core says it is, read from the core itself.

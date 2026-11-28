@@ -28,9 +28,9 @@ use crate::state::{
     TcpErrorQueueEntry, TcpListenerQuery, TcpListenerReading, TcpQuery, TcpReading,
 };
 
-/// Sockets for [TCP](https://man7.org/linux/man-pages/man7/tcp.7.html) connections.
 verus! {
 
+/// Sockets for [TCP](https://man7.org/linux/man-pages/man7/tcp.7.html) connections.
 pub trait TcpSockets: TcpConnections + TcpListeners {}
 
 #[allow(

@@ -4,9 +4,9 @@ use vstd::prelude::*;
 use crate::function::FunctionStore;
 use crate::{AddressType, Limits};
 
-/// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [table instances](https://webassembly.github.io/spec/core/exec/runtime.html#table-instances).
 verus! {
 
+/// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [table instances](https://webassembly.github.io/spec/core/exec/runtime.html#table-instances).
 pub trait TableStore: FunctionStore {
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [table instance](https://webassembly.github.io/spec/core/exec/runtime.html#table-instances).
     type TableAddress: Clone;
