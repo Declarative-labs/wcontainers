@@ -1387,7 +1387,8 @@ Each survivor at 0132e8f2c, and what was done:
 
 ### Assembly plants (MEASURED, docs/plants-linux-process-run.md, job nr-asm at 0132e8f2c)
 
-156 plants, one per instruction line of the naked run: 95 caught by a failing test, 55 past the 150 s limit at a load
-near 300 (to be run again with no limit), 6 missed: the saves and restores of the thread's d8 to d15 (5 lines; a
+156 plants, one per instruction line of the naked run: 95 caught by a failing test, 55 past the 150 s limit (each of
+those copies' test binaries was still spinning more than three hours later, found and killed at 00:15: a hang, so
+caught; the driver now kills a timed-out copy's whole process group), 6 missed: the saves and restores of the thread's d8 to d15 (5 lines; a
 caller's values in those registers are seen only by code built with optimization, and the tests are built without),
 and the exit's save of FPSR (the every-register test now sets every FPSR flag, after the plant run).
