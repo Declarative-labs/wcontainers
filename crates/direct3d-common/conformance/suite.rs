@@ -468,10 +468,13 @@ pub fn every_answer_and_argument_equals_the_reference<
         if without_extra == *wanted_line {
             continue;
         }
-        if refused.contains(&place.as_str())
-            || refused.iter().any(|entry| {
-                got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])
-            })
+        // Only what the implementation received may differ by design: every answer must be the implementation's.
+        let received = got_line.contains(": the implementation received ");
+        if received
+            && (refused.contains(&place.as_str())
+                || refused.iter().any(|entry| {
+                    got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])
+                }))
         {
             accepted.push(place);
         } else {

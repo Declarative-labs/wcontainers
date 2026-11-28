@@ -12640,9 +12640,8 @@ impl<A: System> direct3d_11::Device for SystemDevice<A> {
         }
         #[expect(unsafe_code, reason = "ID3D11Device::SetExceptionMode, called out")]
         // SAFETY: a live object whose table holds `ID3D11Device::SetExceptionMode` where the metadata orders it; every pointer passed is ours for the call.
-        let returned = unsafe {
-            (self.object.entry_points().device_set_exception_mode)(self.object.raw(), raise_flags)
-        };
+        let returned =
+            unsafe { (self.object.entry_points().device_set_exception_mode)(self.object.raw(), 0) };
         succeeded(returned)?;
         Ok(())
     }
@@ -19809,7 +19808,7 @@ impl<A: System> direct3d_11::InfoQueue for SystemInfoQueue<A> {
             (self.object.entry_points().info_queue_set_break_on_category)(
                 self.object.raw(),
                 category.0,
-                i32::from(b_enable),
+                0,
             )
         };
         succeeded(returned)?;
@@ -19833,7 +19832,7 @@ impl<A: System> direct3d_11::InfoQueue for SystemInfoQueue<A> {
             (self.object.entry_points().info_queue_set_break_on_severity)(
                 self.object.raw(),
                 severity.0,
-                i32::from(b_enable),
+                0,
             )
         };
         succeeded(returned)?;
@@ -19851,11 +19850,7 @@ impl<A: System> direct3d_11::InfoQueue for SystemInfoQueue<A> {
         #[expect(unsafe_code, reason = "ID3D11InfoQueue::SetBreakOnID, called out")]
         // SAFETY: a live object whose table holds `ID3D11InfoQueue::SetBreakOnID` where the metadata orders it; every pointer passed is ours for the call.
         let returned = unsafe {
-            (self.object.entry_points().info_queue_set_break_on_id)(
-                self.object.raw(),
-                id.0,
-                i32::from(b_enable),
-            )
+            (self.object.entry_points().info_queue_set_break_on_id)(self.object.raw(), id.0, 0)
         };
         succeeded(returned)?;
         Ok(())
@@ -30898,7 +30893,7 @@ impl direct3d_11::Direct3D11 for SystemDirect3D11 {
             (self.library.d_3d11_create_device)(
                 adapter.map_or(null_mut(), |held| held.raw()),
                 driver_type.0,
-                software.0,
+                0,
                 flags.0,
                 if feature_levels_c.is_empty() {
                     null()
@@ -30997,7 +30992,7 @@ impl direct3d_11::Direct3D11 for SystemDirect3D11 {
             (self.library.d_3d11_create_device_and_swap_chain)(
                 adapter.map_or(null_mut(), |held| held.raw()),
                 driver_type.0,
-                software.0,
+                0,
                 flags.0,
                 if feature_levels_c.is_empty() {
                     null()

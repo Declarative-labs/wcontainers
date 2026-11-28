@@ -15115,7 +15115,7 @@ pub fn drive_where(
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_category(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS, true);
+        let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_category(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS, false);
         true
         });
     }
@@ -15123,7 +15123,7 @@ pub fn drive_where(
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, true);
+        let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, false);
         true
         });
     }
@@ -15142,7 +15142,7 @@ pub fn drive_where(
                     data4: core::array::from_fn(|_| 105_u8),
                 },
                 101_i32,
-                true,
+                false,
             );
             true
         });
@@ -16421,7 +16421,7 @@ pub fn drive_where(
             let Some(this) = o.k74.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::SwapChain::get_buffer(this, 72_u32);
+            let _ = directx_graphics_infrastructure::SwapChain::get_buffer(this, 0_u32);
             true
         });
     }

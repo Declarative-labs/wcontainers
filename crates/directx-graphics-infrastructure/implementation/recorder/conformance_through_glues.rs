@@ -11,25 +11,23 @@ wcontainers_directx_graphics_infrastructure_conformance::tests!(
     wcontainers_directx_graphics_infrastructure_recorder::arguments_logged,
     wcontainers_directx_graphics_infrastructure_recorder::arguments_since,
     &[
-        "IDXGIInfoQueue::SetBreakOnCategory",
-        "IDXGIInfoQueue::SetBreakOnSeverity",
-        "IDXGIInfoQueue::SetBreakOnID",
-        "ID3D11InfoQueue::SetBreakOnCategory",
-        "ID3D11InfoQueue::SetBreakOnSeverity",
-        "ID3D11InfoQueue::SetBreakOnID",
-        "ID3D11Device::SetExceptionMode",
         "ID3D11VideoContext3::DecoderBeginFrame1",
         "ID3D11Device::GetImmediateContext",
         "ID3D11Device1::GetImmediateContext1",
         "ID3D11Device2::GetImmediateContext2",
         "ID3D11Device3::GetImmediateContext3",
-        "ID3D11Device1::CreateDeviceContextState",
         "ID3D11DeviceChild::GetDevice",
-        "ID3D11ClassInstance::GetClassLinkage",
-        "D3D11CreateDevice",
-        "D3D11CreateDeviceAndSwapChain"
+        "ID3D11ClassInstance::GetClassLinkage"
     ],
     &[
+        (
+            "D3D11CreateDevice",
+            "ID3D11Multithread::SetMultithreadProtected(b_mt_protect=true)"
+        ),
+        (
+            "D3D11CreateDeviceAndSwapChain",
+            "ID3D11Multithread::SetMultithreadProtected(b_mt_protect=true)"
+        ),
         ("ID3D11DeviceContext::Map", "ID3D11Buffer::GetDesc()"),
         (
             "ID3D11DeviceContext::UpdateSubresource",

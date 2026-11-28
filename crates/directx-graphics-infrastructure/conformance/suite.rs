@@ -8807,7 +8807,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_category(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS, true); answers.push(format!("IDXGIInfoQueue::SetBreakOnCategory -> {}", format!("{:?}", &answer))); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_category(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS, false); answers.push(format!("IDXGIInfoQueue::SetBreakOnCategory -> {}", format!("{:?}", &answer))); answer })
     });
     answers.not_called_since(noted, "IDXGIInfoQueue::SetBreakOnCategory on InfoQueue");
     // IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue
@@ -8815,7 +8815,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, true); answers.push(format!("IDXGIInfoQueue::SetBreakOnSeverity -> {}", format!("{:?}", &answer))); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, false); answers.push(format!("IDXGIInfoQueue::SetBreakOnSeverity -> {}", format!("{:?}", &answer))); answer })
     });
     answers.not_called_since(noted, "IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue");
     // IDXGIInfoQueue::SetBreakOnID on InfoQueue
@@ -8835,7 +8835,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     data4: core::array::from_fn(|_| 105_u8),
                 },
                 101_i32,
-                true,
+                false,
             );
             answers.push(format!(
                 "IDXGIInfoQueue::SetBreakOnID -> {}",
@@ -10896,7 +10896,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             return false;
         };
         failure_is_negative({
-            let answer = directx_graphics_infrastructure::SwapChain::get_buffer(this, 72_u32);
+            let answer = directx_graphics_infrastructure::SwapChain::get_buffer(this, 0_u32);
             answers.push(format!(
                 "IDXGISwapChain::GetBuffer -> {}",
                 match &answer {
@@ -11482,10 +11482,13 @@ pub fn every_answer_and_argument_equals_the_reference<
         if without_extra == *wanted_line {
             continue;
         }
-        if refused.contains(&place.as_str())
-            || refused.iter().any(|entry| {
-                got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])
-            })
+        // Only what the implementation received may differ by design: every answer must be the implementation's.
+        let received = got_line.contains(": the implementation received ");
+        if received
+            && (refused.contains(&place.as_str())
+                || refused.iter().any(|entry| {
+                    got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])
+                }))
         {
             accepted.push(place);
         } else {

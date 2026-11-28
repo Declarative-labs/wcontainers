@@ -108,6 +108,32 @@ HRESULT exact_map(void *context, void *resource, uint32_t subresource, int32_t m
 
 uint32_t exact_release(void *object) { return SLOT(object, 2, CountFunction)(object); }
 
+/* The values the calling glue's pins never pass, handed to the serving glue directly: it passes them on (the pins are
+   the calling glue's, for the system). Slots: ID3D11Device SetExceptionMode 41; ID3D11InfoQueue SetBreakOnCategory 30,
+   SetBreakOnSeverity 31, SetBreakOnID 32; ID3D11Device OpenSharedResource 28. */
+typedef HRESULT (*SetExceptionModeFunction)(void *, uint32_t);
+typedef HRESULT (*SetBreakFunction)(void *, int32_t, int32_t);
+
+HRESULT exact_set_exception_mode(void *device, uint32_t flags) {
+    return SLOT(device, 41, SetExceptionModeFunction)(device, flags);
+}
+
+/* ID3D11Device::OpenSharedResource (slot 28) of the handle `handle`, for the interface whose 16 bytes `iid` holds. */
+typedef HRESULT (*OpenSharedFunction)(void *, uintptr_t, const void *, void **);
+HRESULT exact_open_shared(void *device, uintptr_t handle, const void *iid, void **out) {
+    return SLOT(device, 28, OpenSharedFunction)(device, handle, iid, out);
+}
+
+HRESULT exact_set_break(void *queue, uint32_t slot, int32_t value, int32_t enable) {
+    return SLOT(queue, slot, SetBreakFunction)(queue, value, enable);
+}
+
+/* D3D11CreateDevice with the software rasterizer module `module` (D3D_DRIVER_TYPE_SOFTWARE, 4). */
+HRESULT exact_create_device_with_module(uintptr_t create, uintptr_t module, void **device, void **context) {
+    int32_t level = 0xb000, made = 0;
+    return ((CreateDeviceFunction)create)(NULL, 4, (void *)module, 0, &level, 1, 7, device, &made, context);
+}
+
 /* ---- The stand-in system. ---- */
 
 enum {

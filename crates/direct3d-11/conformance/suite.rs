@@ -2486,7 +2486,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 let answer = {
                     let o = &*o;
                     made(|| {
-                        let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 15_u32, height: 22_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 36_u32, denominator: 43_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 22_u32, quality: 29_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 29_u32, output_window: component_object_model::structures::Hwnd(36), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, flags: 57_u32 }));
+                        let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 64_u32, height: 32_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 60_u32, denominator: 1_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(1), scaling: directx_graphics_infrastructure::enumerations::ModeScaling(1) }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 2_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::Usage(32), buffer_count: 2_u32, output_window: component_object_model::structures::Hwnd(29), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::SwapEffect(3), flags: 2_u32 }));
                         answer.ok()
                     })
                 };
@@ -17864,7 +17864,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = direct3d_11::Device1::create_device_context_state(
                 this,
-                31_u32,
+                2_u32,
                 &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
                 124_u32,
                 &component_object_model::structures::Guid {
@@ -18841,7 +18841,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_11::Device::set_exception_mode(this, 24_u32);
+            let answer = direct3d_11::Device::set_exception_mode(this, 0_u32);
             answers.push(format!(
                 "ID3D11Device::SetExceptionMode -> {}",
                 format!("{:?}", &answer)
@@ -23954,7 +23954,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             let answer = direct3d_11::InfoQueue::set_break_on_category(
                 this,
                 direct3d_11::enumerations::D3D11_MESSAGE_CATEGORY_MISCELLANEOUS,
-                true,
+                false,
             );
             answers.push(format!(
                 "ID3D11InfoQueue::SetBreakOnCategory -> {}",
@@ -23975,7 +23975,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             let answer = direct3d_11::InfoQueue::set_break_on_severity(
                 this,
                 direct3d_11::enumerations::D3D11_MESSAGE_SEVERITY_ERROR,
-                true,
+                false,
             );
             answers.push(format!(
                 "ID3D11InfoQueue::SetBreakOnSeverity -> {}",
@@ -23996,7 +23996,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             let answer = direct3d_11::InfoQueue::set_break_on_id(
                 this,
                 direct3d_11::enumerations::D3D11_MESSAGE_ID_DEVICE_IASETVERTEXBUFFERS_HAZARD,
-                true,
+                false,
             );
             answers.push(format!(
                 "ID3D11InfoQueue::SetBreakOnID -> {}",
@@ -33899,7 +33899,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_category(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS, true); answers.push(format!("IDXGIInfoQueue::SetBreakOnCategory -> {}", format!("{:?}", &answer))); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_category(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS, false); answers.push(format!("IDXGIInfoQueue::SetBreakOnCategory -> {}", format!("{:?}", &answer))); answer })
     });
     answers.not_called_since(noted, "IDXGIInfoQueue::SetBreakOnCategory on InfoQueue");
     // IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue
@@ -33907,7 +33907,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, true); answers.push(format!("IDXGIInfoQueue::SetBreakOnSeverity -> {}", format!("{:?}", &answer))); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, false); answers.push(format!("IDXGIInfoQueue::SetBreakOnSeverity -> {}", format!("{:?}", &answer))); answer })
     });
     answers.not_called_since(noted, "IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue");
     // IDXGIInfoQueue::SetBreakOnID on InfoQueue
@@ -33927,7 +33927,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data4: core::array::from_fn(|_| 105_u8),
                 },
                 101_i32,
-                true,
+                false,
             );
             answers.push(format!(
                 "IDXGIInfoQueue::SetBreakOnID -> {}",
@@ -35988,7 +35988,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = directx_graphics_infrastructure::SwapChain::get_buffer(this, 72_u32);
+            let answer = directx_graphics_infrastructure::SwapChain::get_buffer(this, 0_u32);
             answers.push(format!(
                 "IDXGISwapChain::GetBuffer -> {}",
                 match &answer {
@@ -36395,7 +36395,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        failure_is_negative({ let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 15_u32, height: 22_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 36_u32, denominator: 43_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 22_u32, quality: 29_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 29_u32, output_window: component_object_model::structures::Hwnd(36), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, flags: 57_u32 })); answers.push(format!("D3D11CreateDeviceAndSwapChain -> {}", match &answer { Ok(v0) => format!("Ok({})", { let (t1_0, t1_1, t1_2, t1_3) = v0; format!("({}, {}, {}, {})", "an object".to_string(), "an object".to_string(), format!("{:?}", t1_2), "an object".to_string()) }), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 64_u32, height: 32_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 60_u32, denominator: 1_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(1), scaling: directx_graphics_infrastructure::enumerations::ModeScaling(1) }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 2_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::Usage(32), buffer_count: 2_u32, output_window: component_object_model::structures::Hwnd(29), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::SwapEffect(3), flags: 2_u32 })); answers.push(format!("D3D11CreateDeviceAndSwapChain -> {}", match &answer { Ok(v0) => format!("Ok({})", { let (t1_0, t1_1, t1_2, t1_3) = v0; format!("({}, {}, {}, {})", "an object".to_string(), "an object".to_string(), format!("{:?}", t1_2), "an object".to_string()) }), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "D3D11CreateDeviceAndSwapChain");
     driven
@@ -36546,10 +36546,13 @@ pub fn every_answer_and_argument_equals_the_reference<
         if without_extra == *wanted_line {
             continue;
         }
-        if refused.contains(&place.as_str())
-            || refused.iter().any(|entry| {
-                got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])
-            })
+        // Only what the implementation received may differ by design: every answer must be the implementation's.
+        let received = got_line.contains(": the implementation received ");
+        if received
+            && (refused.contains(&place.as_str())
+                || refused.iter().any(|entry| {
+                    got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])
+                }))
         {
             accepted.push(place);
         } else {

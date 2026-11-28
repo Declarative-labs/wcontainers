@@ -4999,7 +4999,7 @@ impl<A: System> directx_graphics_infrastructure::InfoQueue for SystemInfoQueue<A
                 self.object.raw(),
                 component_object_model_direct::GuidAbi::of(&producer),
                 category.0,
-                i32::from(b_enable),
+                0,
             )
         };
         succeeded(returned)?;
@@ -5022,7 +5022,7 @@ impl<A: System> directx_graphics_infrastructure::InfoQueue for SystemInfoQueue<A
                 self.object.raw(),
                 component_object_model_direct::GuidAbi::of(&producer),
                 severity.0,
-                i32::from(b_enable),
+                0,
             )
         };
         succeeded(returned)?;
@@ -5045,7 +5045,7 @@ impl<A: System> directx_graphics_infrastructure::InfoQueue for SystemInfoQueue<A
                 self.object.raw(),
                 component_object_model_direct::GuidAbi::of(&producer),
                 id,
-                i32::from(b_enable),
+                0,
             )
         };
         succeeded(returned)?;

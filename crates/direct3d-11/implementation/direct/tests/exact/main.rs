@@ -71,6 +71,15 @@ unsafe extern "C" {
         touched: *mut u64,
     ) -> i32;
     fn exact_release(object: usize) -> u32;
+    fn exact_set_exception_mode(device: usize, flags: u32) -> i32;
+    fn exact_open_shared(device: usize, handle: usize, iid: *const u8, out: *mut usize) -> i32;
+    fn exact_set_break(queue: usize, slot: u32, value: i32, enable: i32) -> i32;
+    fn exact_create_device_with_module(
+        create: usize,
+        module: usize,
+        device: *mut usize,
+        context: *mut usize,
+    ) -> i32;
     fn exact_system_answer(kind: u32, iids: *const u8, count: usize);
     fn exact_system_expect(lengths: *const u64, count: usize);
     fn exact_system_map_with(row_pitch: u32, depth_pitch: u32, length: u64);
@@ -1098,4 +1107,114 @@ fn touch_one_past_the_lent_memory() {
         )
     };
     assert!(status >= 0, "{resource:?}: mapped: {status:#x}");
+}
+
+/// The last call of `place` the recorder behind the serving glue received.
+fn last_call(place: &str) -> String {
+    wcontainers_direct3d_11_recorder::calls(place)
+        .pop()
+        .unwrap_or_default()
+}
+
+/// The calling glue's pins hold for the system only: the serving glue passes on what a C caller gives, so that our own
+/// implementation sees the program's values. D3D11_RAISE_FLAG_DRIVER_INTERNAL_ERROR (1), a break turned on (TRUE) for
+/// a category, a severity and a message, and a software module (0x1000) each reach the recorder as given.
+#[test]
+fn the_serving_glue_passes_what_the_calling_glue_pins() {
+    let library = exports(Recorder);
+    let (mut device, mut context) = (0_usize, 0_usize);
+    #[expect(
+        unsafe_code,
+        reason = "exact.c's caller, given the serving glue's own D3D11CreateDevice"
+    )]
+    // SAFETY: `create` is the serving glue's export, which takes what d3d11.h declares; the two outs are ours.
+    let status = unsafe {
+        exact_create_device(
+            library.d_3d11_create_device as usize,
+            &mut device,
+            &mut context,
+        )
+    };
+    assert!(
+        status >= 0,
+        "a device through the serving glue: {status:#x}"
+    );
+    #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+    // SAFETY: `device` is the serving glue's device.
+    let status = unsafe { exact_set_exception_mode(device, 1) };
+    assert!(status >= 0, "SetExceptionMode: {status:#x}");
+    assert_eq!(
+        last_call("ID3D11Device::SetExceptionMode"),
+        "ID3D11Device::SetExceptionMode(raise_flags=1)"
+    );
+    let iid = id_bytes(&[ids::IID_ID3D11_INFO_QUEUE]);
+    let mut queue = 0_usize;
+    #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+    // SAFETY: `device` is the serving glue's device; the handle is a number it passes on; `iid` holds 16 bytes; the out
+    // is ours.
+    let status = unsafe { exact_open_shared(device, 68, iid.as_ptr(), &mut queue) };
+    assert!(
+        status >= 0 && queue != 0,
+        "the device's info queue: {status:#x}"
+    );
+    for (slot, place, value, shown) in [
+        (
+            30,
+            "ID3D11InfoQueue::SetBreakOnCategory",
+            3,
+            "category=MessageCategory(3), b_enable=true",
+        ),
+        (
+            31,
+            "ID3D11InfoQueue::SetBreakOnSeverity",
+            1,
+            "severity=MessageSeverity(1), b_enable=true",
+        ),
+        (
+            32,
+            "ID3D11InfoQueue::SetBreakOnID",
+            7,
+            "id=MessageId(7), b_enable=true",
+        ),
+    ] {
+        #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+        // SAFETY: `queue` is the serving glue's info queue; the slot is that method's in d3d11sdklayers.h's table.
+        let status = unsafe { exact_set_break(queue, slot, value, 1) };
+        assert!(status >= 0, "{place}: {status:#x}");
+        assert_eq!(last_call(place), format!("{place}({shown})"));
+    }
+    let (mut soft_device, mut soft_context) = (0_usize, 0_usize);
+    #[expect(
+        unsafe_code,
+        reason = "exact.c's caller, given the serving glue's own D3D11CreateDevice"
+    )]
+    // SAFETY: as above; the module is a number the serving glue passes on, never loads.
+    let status = unsafe {
+        exact_create_device_with_module(
+            library.d_3d11_create_device as usize,
+            0x1000,
+            &mut soft_device,
+            &mut soft_context,
+        )
+    };
+    assert!(
+        status >= 0,
+        "a device of a software module through the serving glue: {status:#x}"
+    );
+    assert!(
+        last_call("D3D11CreateDevice").contains("software=Hmodule(4096)"),
+        "{}",
+        last_call("D3D11CreateDevice")
+    );
+    #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+    // SAFETY: references the serving glue handed out, each released once.
+    let _ = unsafe {
+        (
+            exact_release(queue),
+            exact_release(soft_context),
+            exact_release(soft_device),
+            exact_release(context),
+            exact_release(device),
+        )
+    };
 }
