@@ -803,7 +803,7 @@ Defects found by it and fixed in the generator: the end of a destroyed EGL handl
 display parameter), so removing one left the other; a library answering a huge extension count kept the glue asking
 for ever (now at most 4096, `MOST_EXTENSIONS`; the fuzzing's lying library answers up to 2^31).
 
-`tools/api-crate-generator/plant-khronos.py` removes each check in turn (a per-site plant for every check a generated
+`plant-khronos.py` (then in tools/api-crate-generator/, now kept with the evidence outside the repository) removes each check in turn (a per-site plant for every check a generated
 method makes, a plant for each part of a shared helper) and runs the suite. MEASURED at 4ae8cb6e2 (x86-64 job gac-h,
 log graphics-api-crates/ac10h/claim-4ae8cb6e2.log): **156 CAUGHT, 15 MISSED, 0 BROKEN, 202 LISTED.** The 15 not
 caught, each with its reason:
@@ -1707,6 +1707,70 @@ this run's new Khronos code (an unreached small-number arm and an unreached offs
 tested), after which src/khronos/write.rs alone: 279 mutants, 277 caught, 0 missed, 2 unviable. Survivors 0.
 The previous check's own 13 plants (G1 to G7 and its control, M1 to M4, E1) rerun here: 13 caught, each by a named
 test (every_cap_reaches_mesas_screen, declarations_right, every_argument_reaches_the_library).
+
+## The check of ae89f7d99 fixed: what the glue gives back, the EGL glue's plants, the flattening's facts; only source kept (2026-11-28; logs wcontainers-scratch/graphics-api-crates/evidence/)
+
+His main b9cab24fe merged first (23714e88c, a normal merge; Cargo.lock's one conflict kept both sides' packages, then
+put in cargo's order, 270caa47e). The baseline after the merge passed whole (x86-64 job gac-i/20261128-085128-830733).
+
+**Only source in the repository** (the owner's rule of 2026-11-28). One commit (d994530c2) removes every plant list and
+plant runner the branch held: crates/gallium/implementation/direct/{caps-plants,plants}.txt,
+crates/mesa-compiler/implementation/direct/plants.txt, crates/opengl-es/implementation/direct/plants.txt,
+tools/api-crate-generator/plants.txt, tools/plants/run-plants.py and tools/api-crate-generator/plant-khronos.py. They
+are kept in wcontainers-scratch/graphics-api-crates/evidence/ (lists/, runner/, superseded/). The generator writes its
+plant lists to `<output folder>/plants/` (gallium-caps.txt, egl-calls.txt, opengl-es-calls.txt), never into a crate,
+and its report gives each list's plant count and FNV-1a hash (src/plants.rs), so tests/written.rs, which compares the
+report with reports/, holds every list as written.
+
+**What the OpenGL ES and EGL glue gives back.** The check's C1 to C3 (get_integerv copying back one value,
+get_shader_info_log answering 0, get_uniform_location making -1 a 0) survived because the stand-in logged a pointer as
+`p` and the test dropped every answer. Now, in a logged run, the stand-in logs what each pointer reaches (the values
+read, a float as its bits; a byte range's count and FNV-1a hash; the texts; a handle as `h` and its place), writes a
+pattern of its own into every out region (every third byte zero, so a flag reads both ways) and logs it, and returns a
+value of its own (a number with its top bit set, so a signed one is negative; each handle the next; the texts) and
+logs it. tests/arguments.rs gives every pointer values of its own and compares, for each of the 156 methods, the line
+logged, every value written with what the caller got back (a copy of several values given four to receive), and every
+answer with what the library returned; glDeleteSync's second delete must not reach the library. EGL is tested by hand
+in the same test (`every_egl_method`, the 15 methods): two contexts (one sharing), a surface to draw and one to read,
+the third of three configurations, the attribute lists with the forced pair; then each method again while the
+stand-in refuses (a file beside the log), and each handle destroyed and then refused by the glue before the library.
+
+The generator's plant lists of both calling glues now plant, for each method: every argument as zero or null (none
+where it already is: EGL_DEFAULT_DISPLAY), every pointer argument pointing at other memory of its type, every
+statement after the call dropped (a copy of several values also copying one), and the answer as its default, each
+part of what it carries as its default, a refusal read as success, a signed number made non-negative.
+
+**The flattening's facts.** program_facts_right (the Mesa compiler's suite, now 12 tests): a compute program's
+workgroup sizes 2, 3, 5 each from its own dimension; early fragment tests 1 where declared and 0 where not; a control
+program's one read of control point 2 kept over 3 and 4 points and made a zero over 2 (counted as the intrinsics
+reaching an arrayed input variable: [1, 1, 0]).
+
+MEASURED (x86-64, each plant alone, logs in evidence/r19-c/ and evidence/r19-final/):
+
+| List | Plants | Caught | Named |
+|---|---|---|---|
+| the check's own C1 to C5 (OpenGL ES, EGL) | 5 | 5 | 5 (every_argument_reaches_the_library) |
+| the check's own C6 to C8 (flat.c) | 3 | 3 | 3 (program_facts_right) |
+| egl-calls.txt (new) | 109 | 109 | 109 |
+| opengl-es-calls.txt (was 468) | 590 | 590 | 590 |
+| gallium-caps.txt | 799 | 799 | 799 |
+| gallium-serve.txt | 270 | 270 | 270 |
+| mesa-compiler.txt (with the 3 above) | 137 | 137 | 137 |
+| generator.txt | 1 | 1 | 1 |
+
+At the tip (job gac-i/20261128-092411-1853030, evidence/r19-final/): the generator's 56 unit, 2 Win32 and 3 written
+tests, clippy 0; gallium's crates clippy 0, the direct crate's 2 + 5 + 5 tests; the Khronos crates generated twice
+identical and SAME AS WRITTEN, check (Linux, wasm32) and clippy 0, the suite 17 + 1 + 1 by default and under
+AddressSanitizer; `ARGUMENTS 198 methods checked, 0 received otherwise; GIVEN BACK 75 checked`; the fuzz reaching 156
+of 156 and 15 of 15; the Mesa compiler's suite 12 of 12, `DECLARATIONS 10 checked`.
+
+cargo-mutants 27.1.0 over the generator's lines changed this run (`--in-diff` against 270caa47e; job
+gac-i/20261128-092135-1751625): 140 mutants, 138 caught, 0 missed, 2 unviable (a first run missed one, `&&` in
+answer_changes, whose two conditions said the same: one kept).
+
+Next, AC8 step 2 continued under the same bar, as before: the other 82 pointers, the `nir_shader` entry taken as a
+Received of its stage, the hostile C caller over every pointer each alone in its process, fuzzing 12 x 100,000 under
+AddressSanitizer, the conformance suite, then G4 and G9. Waits on nothing.
 
 ## The merge of graphics-layout (asked for AC4): stopped
 
