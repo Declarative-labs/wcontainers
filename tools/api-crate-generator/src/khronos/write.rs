@@ -938,10 +938,7 @@ fn own_value(scalar: &Scalar, index: usize, at: usize) -> (String, String) {
     match scalar.rust {
         "bool" => ("true".to_string(), "1".to_string()),
         "f32" | "f64" => (format!("{number}.5"), format!("{number}.5")),
-        "u8" | "i8" | "u16" | "i16" => {
-            let small = 1 + number % 100;
-            (small.to_string(), small.to_string())
-        }
+        // The set's plain values are 32 and 64 bits wide (no byte or short is a value parameter of its commands).
         _ => (number.to_string(), number.to_string()),
     }
 }
@@ -1278,13 +1275,16 @@ fn fake_method(method: &Method) -> String {
     // The call's line in the log: each argument as tests/arguments.rs expects it (`logged`).
     let mut format = name.clone();
     let mut logged_values = Vec::new();
-    for (at, (part, ty)) in method.parts.iter().zip(&types).enumerate() {
-        let (spec, value) = match part {
-            Part::ArrayBufferOffset | Part::ElementBufferOffset => ("%lld", format!("(long long)(intptr_t)p{at}")),
-            _ if ty.contains('*') => ("%s", format!("FAKE_ADDRESS(p{at})")),
-            _ if ty == "float" => ("%.9g", format!("(double)p{at}")),
-            _ if ty == "uint64_t" => ("%llu", format!("(unsigned long long)p{at}")),
-            _ => ("%lld", format!("(long long)p{at}")),
+    // (The commands taking an offset into a bound buffer are the template's own, which log it as a number.)
+    for (at, ty) in types.iter().enumerate() {
+        let (spec, value) = if ty.contains('*') {
+            ("%s", format!("FAKE_ADDRESS(p{at})"))
+        } else if ty == "float" {
+            ("%.9g", format!("(double)p{at}"))
+        } else if ty == "uint64_t" {
+            ("%llu", format!("(unsigned long long)p{at}"))
+        } else {
+            ("%lld", format!("(long long)p{at}"))
         };
         format.push(' ');
         format.push_str(spec);
@@ -1379,7 +1379,7 @@ mod tests {
     use super::super::classify::{Method, Part, Return};
     use super::super::registry::{Command, Param};
     use super::super::sets::{EGL, OPENGL_ES};
-    use super::{count_of, value_text};
+    use super::{count_of, slice_length, value_text};
 
     fn method(parts: Vec<Part>) -> Method {
         let param = |name: &str| Param { name: name.to_string(), ptype: "GLsizei".to_string(), pointers: 0, is_const: false, inner_const: false, len: None };
@@ -1394,6 +1394,7 @@ mod tests {
         let counted = method(vec![Part::CountOf { slice: 2, multiplier: 1 }, Part::CountOf { slice: 3, multiplier: 4 }, Part::SliceIn { elem }, Part::SliceIn { elem }]);
         assert_eq!(count_of(&counted, 2), Some((0, 1)));
         assert_eq!(count_of(&counted, 3), Some((1, 4)));
+        assert_eq!((slice_length(&counted, 2), slice_length(&counted, 3)), (2, 8));
         let sized = method(vec![Part::SizeOf { data: 1 }, Part::CompressedUnpack, Part::SizeOf { data: 3 }, Part::CompressedUnpack]);
         assert_eq!(count_of(&sized, 1), Some((0, 1)));
         assert_eq!(count_of(&sized, 3), Some((2, 1)));

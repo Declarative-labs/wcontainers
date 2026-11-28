@@ -1696,13 +1696,17 @@ MEASURED, plant lists (each plant alone, x86-64):
 | List | Plants | Caught | Named |
 |---|---|---|---|
 | gallium caps-plants.txt (new) | 799 | 799 | 799 |
-| gallium plants.txt | 270 | 270 | 263 (7 by a crash; served cases now run alone, rerun pending) |
+| gallium plants.txt | 270 | 270 | 270 (served cases now run alone, so a crash is told by name) |
 | mesa-compiler plants.txt | 134 | 134 | 134 |
 | opengl-es plants.txt (new) | 468 | 468 | 468 |
 
-MEASURED, cargo-mutants 27.1.0: gallium direct (held.rs, registry.rs, implementation.rs) 74 mutants, 60 caught, 0
-missed, 14 unviable; the generator, at the tree before e569dad64's last fixes, 1,520 mutants, 1,478 caught, 3 missed
-(is_count's `&&`, count_of's two guards: each now tested), 5 timeouts, 34 unviable.
+MEASURED, cargo-mutants 27.1.0 (ARM64, the x86-64 machine having gone; r18/final/mutants-arm64.log and
+mutants-write-arm64.log): gallium direct (held.rs, registry.rs, implementation.rs) 74 mutants, 60 caught, 0 missed,
+14 unviable; the generator at 04f4f7332, 1,602 mutants, 1,526 caught, 7 missed, 8 timeouts, 61 unviable: the 7 all in
+this run's new Khronos code (an unreached small-number arm and an unreached offset arm, removed; slice_length's guard,
+tested), after which src/khronos/write.rs alone: 279 mutants, 277 caught, 0 missed, 2 unviable. Survivors 0.
+The previous check's own 13 plants (G1 to G7 and its control, M1 to M4, E1) rerun here: 13 caught, each by a named
+test (every_cap_reaches_mesas_screen, declarations_right, every_argument_reaches_the_library).
 
 ## The merge of graphics-layout (asked for AC4): stopped
 
