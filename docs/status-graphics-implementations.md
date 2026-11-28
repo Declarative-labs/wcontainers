@@ -2170,3 +2170,8 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   (22), d3dcommon direct 29 (3); the fronts moved unchanged (direct3d-12 translated 495, directx 1,054, as before the
   move). New dependencies: none from outside the workspace beyond what the merged API crates already carried
   (Cargo.lock 0f50904f49f90483 on both machines). No hostile-guest suite exists, none was run.
+- Nineteenth run (f55d7a712 to 826e17be8): the track's crates hold the same 424 lines (MEASURED with count-unsafe.sh
+  at e5912688d and 4edcadfc8: webgpu 19, shaders 71, shader-converters 5, nir 56, opengl 261, test-window 12, the rest
+  0; the run's diff adds no line naming `unsafe`; queries.rs holds none). No marked exception written here. New
+  dependencies: none (the merged lock's new packages are the owner's verus crates). Tools on the machines only:
+  cargo-mutants 27.1.0. No hostile-guest suite exists, none was run.
