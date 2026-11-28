@@ -414,18 +414,18 @@ impl VolatileBytes for InProcessBytes<'_> {
         self.addresses.end - self.addresses.start
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        let count = into.len().min(self.len() as usize);
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let count = copied(self.len(), offset, into.len());
         self.window
             .borrow()
-            .read(self.addresses.start, &mut into[..count])
+            .read(self.addresses.start + offset, &mut into[..count])
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        let count = bytes.len().min(self.len() as usize);
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let count = copied(self.len(), offset, bytes.len());
         self.window
             .borrow()
-            .write(self.addresses.start, &bytes[..count])
+            .write(self.addresses.start + offset, &bytes[..count])
     }
 
     /// The bytes are copied out first, so the sink is given them in one write.
@@ -673,6 +673,13 @@ fn host_protection(allowed: Permissions) -> ProtFlags {
 /// A change to the window's host mappings, which the host refuses only when out of memory or mappings.
 fn host_change<T>(changed: Result<T, Errno>) -> T {
     changed.unwrap_or_else(|error| panic!("the host refused a change to a guest memory ({error})"))
+}
+
+/// How many bytes a copy at the offset moves: the shorter of the buffer and what lies from the offset to the end.
+fn copied(length: u64, offset: u64, buffer: usize) -> usize {
+    length.checked_sub(offset).map_or(usize::MIN, |left| {
+        buffer.min(usize::try_from(left).unwrap_or(usize::MAX))
+    })
 }
 
 fn length(range: &Range<u64>) -> usize {

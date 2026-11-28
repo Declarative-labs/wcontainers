@@ -1,23 +1,23 @@
-//! Kani's harnesses for the range arithmetic, over every length, count and offset.
+//! Kani's harnesses for the range arithmetic, over every length, offset and buffer length.
 
-use super::{inside, part};
+use super::range;
 
 #[kani::proof]
-fn inside_accepts_exactly_the_bytes_inside() {
-    let (length, count): (usize, usize) = kani::any();
-    assert_eq!(inside(length, count), (count as u128 <= length as u128).then_some(count));
+fn a_range_lies_exactly_inside_its_view() {
+    let (length, offset, buffer): (usize, u64, usize) = kani::any();
+    let (length_wide, offset_wide) = (length as u128, offset as u128);
+    match range(length, offset, buffer) {
+        Some((at, count)) => {
+            assert_eq!(at as u128, offset_wide);
+            assert_eq!(count as u128, (buffer as u128).min(length_wide - offset_wide));
+            assert!(at as u128 + count as u128 <= length_wide);
+        }
+        None => assert!(offset_wide > length_wide),
+    }
 }
 
 #[kani::proof]
-fn a_part_lies_exactly_inside_its_view() {
-    let (length, from, to): (usize, u64, u64) = kani::any();
-    match part(length, from..to) {
-        Some((at, count)) => {
-            assert!(from <= to && to <= length as u64);
-            assert_eq!(at as u64, from);
-            assert_eq!(count as u64, to - from);
-            assert!(at as u128 + count as u128 <= length as u128);
-        }
-        None => assert!(from > to || to > length as u64),
-    }
+fn a_range_is_refused_only_past_the_end() {
+    let (length, offset, buffer): (usize, u64, usize) = kani::any();
+    assert_eq!(range(length, offset, buffer).is_none(), offset as u128 > length as u128);
 }

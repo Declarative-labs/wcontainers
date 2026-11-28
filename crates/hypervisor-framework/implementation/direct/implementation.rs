@@ -37,6 +37,9 @@ use applevisor_sys::{
     hv_vm_config_set_ipa_granule, hv_vm_config_set_ipa_size, hv_vm_config_t, hv_vm_create,
     hv_vm_destroy, hv_vm_get_max_vcpu_count, hv_vm_map, hv_vm_protect, hv_vm_unmap, os_release,
 };
+use memmap2::{MmapOptions, MmapRaw};
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_hypervisor_framework::{
     CACHE_LEVELS, CacheSizes, CacheType, Failure, FeatureReg, GicDistributorReg, GicIccReg,
     GicIchReg, GicIcvReg, GicIntId, GicMsiReg, GicRedistributorReg, HypervisorFramework,
@@ -45,7 +48,6 @@ use wcontainers_hypervisor_framework::{
 };
 use wcontainers_volatile_bytes::{StandaloneVolatileBytes, VolatileBytes};
 use wcontainers_volatile_bytes_pointer::{PointerAndLength, PointerBytes};
-use wcontainers_volatile_bytes_shared_mapping::{MapError, Mapped, SharedMapping};
 
 // The framework takes a vector register's value in a vector register, as C passes a 16-byte vector, and applevisor-sys
 // declares it as a `u128`, which Rust passes in two general registers: the call is made in C.
@@ -88,9 +90,37 @@ pub struct HvfVcpu {
     _thread: PhantomData<*const ()>,
 }
 
-/// The process's VM, destroyed once nothing of it lives, and a view of each memory mapped into it with its address.
+/// The process's VM, destroyed once nothing of it lives, and each memory mapped into it with its address.
 struct Machine {
-    mapped: Mutex<Vec<(u64, SharedMapping)>>,
+    mapped: Mutex<Vec<(u64, Arc<MmapRaw>)>>,
+}
+
+/// Anonymous memory mapped for the VM, and a view of it; every VM it is mapped into keeps the mapping.
+pub struct HvfMemory {
+    bytes: PointerBytes,
+    mapping: Arc<MmapRaw>,
+}
+
+impl VolatileBytes for HvfMemory {
+    fn len(&self) -> u64 {
+        self.bytes.len()
+    }
+
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        self.bytes.read_at(offset, into)
+    }
+
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        self.bytes.write_at(offset, bytes)
+    }
+
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        self.bytes.read_to(sink)
+    }
+
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        self.bytes.write_from(source)
+    }
 }
 
 /// Returns the framework's return code as a result.
@@ -211,7 +241,7 @@ impl HypervisorFramework for DirectHypervisorFramework {
     type GicState = HvfGicState;
     type Vm = HvfVm;
     type Vcpu = HvfVcpu;
-    type Memory = SharedMapping;
+    type Memory = HvfMemory;
 
     fn vm_config_create(&self) -> Result<HvfVmConfig, Failure> {
         #[expect(
@@ -258,31 +288,45 @@ impl HypervisorFramework for DirectHypervisorFramework {
         })))
     }
 
-    fn create_user_memory(&self, length: usize) -> Result<SharedMapping, Failure> {
-        let mapped = Mapped::anonymous(length).map_err(|error| match error {
-            MapError::Refused(_) => no_resources(),
-            _ => bad_argument(),
-        })?;
-        Ok(SharedMapping::new(mapped))
+    fn create_user_memory(&self, length: usize) -> Result<HvfMemory, Failure> {
+        if length == usize::MIN {
+            return Err(bad_argument());
+        }
+        let mapping = MmapRaw::from(
+            MmapOptions::new()
+                .len(length)
+                .map_anon()
+                .map_err(|_| no_resources())?,
+        );
+        #[expect(
+            unsafe_code,
+            reason = "the promise of anonymous memory, which the view and every VM it is mapped into keep mapped"
+        )]
+        // SAFETY: the mapping lives while the view or any VM's list holds its `Arc`, and the framework holds its
+        // addresses only while a VM's list does; `MmapRaw` maps it readable and writable and hands out only the address;
+        // anonymous memory never traps.
+        let pointer = unsafe { PointerAndLength::new(mapping.as_mut_ptr(), mapping.len()) };
+        Ok(HvfMemory {
+            bytes: PointerBytes::new(pointer),
+            mapping: Arc::new(mapping),
+        })
     }
 
     fn vm_map(
         &self,
         vm: &HvfVm,
-        memory: &SharedMapping,
+        memory: &HvfMemory,
         ipa: u64,
         flags: MemoryFlags,
     ) -> Result<(), Failure> {
         let mut mapped = vm.0.mapped.lock().unwrap_or_else(PoisonError::into_inner);
-        let kept = memory
-            .part(u64::MIN..memory.len())
-            .ok_or_else(bad_argument)?;
-        let length = usize::try_from(kept.len()).map_err(|_| bad_argument())?;
+        let kept = Arc::clone(&memory.mapping);
+        let length = kept.len();
         #[expect(
             unsafe_code,
             reason = "hv_vm_map keeps the host addresses, whose view the VM keeps until a vm_unmap covers them"
         )]
-        let code = unsafe { hv_vm_map(kept.address() as *const c_void, ipa, length, flags) };
+        let code = unsafe { hv_vm_map(kept.as_ptr().cast::<c_void>(), ipa, length, flags) };
         done(code)?;
         mapped.push((ipa, kept));
         Ok(())
@@ -298,7 +342,7 @@ impl HypervisorFramework for DirectHypervisorFramework {
         let code = unsafe { hv_vm_unmap(ipa, size) };
         done(code)?;
         let end = ipa.saturating_add(size as u64);
-        mapped.retain(|(at, memory)| *at < ipa || at.saturating_add(memory.len()) > end);
+        mapped.retain(|(at, memory)| *at < ipa || at.saturating_add(memory.len() as u64) > end);
         Ok(())
     }
 

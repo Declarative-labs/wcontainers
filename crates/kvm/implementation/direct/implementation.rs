@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_ulong, c_void};
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -24,13 +24,14 @@ use vmm_sys_util::ioctl::{
     _IOC_NONE, _IOC_READ, _IOC_WRITE, ioctl, ioctl_expr, ioctl_with_mut_ref, ioctl_with_ptr,
     ioctl_with_ref,
 };
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_kvm::{
     CreateGuestMemfd, EnableCap, Errno, GuestDebug, IrqRoutingEntry, Kvm, MTE_GRANULE_BYTES,
     MemoryAttributes, MpState, Msi, PreFaultMemory, VcpuEvents, VcpuInit,
 };
 use wcontainers_volatile_bytes::{StandaloneVolatileBytes, VolatileBytes};
 use wcontainers_volatile_bytes_pointer::{PointerAndLength, PointerBytes};
-use wcontainers_volatile_bytes_shared_mapping::{MapError, Mapped, SharedMapping};
 
 /// The number of `KVM_RUN`, which kvm-ioctls keeps to itself.
 ///
@@ -192,10 +193,38 @@ struct Machine {
     dirty_ring_bytes: Mutex<Option<usize>>,
 }
 
-/// A slot's length and a view of the memory it holds.
+/// A slot's length and the mapping of the memory it holds.
 struct Slot {
     length: u64,
-    _memory: SharedMapping,
+    _memory: Arc<MmapRaw>,
+}
+
+/// A memory file's pages mapped shared, for slots, and a view of them; every slot given them keeps the mapping.
+pub struct UserMemory {
+    bytes: PointerBytes,
+    mapping: Arc<MmapRaw>,
+}
+
+impl VolatileBytes for UserMemory {
+    fn len(&self) -> u64 {
+        self.bytes.len()
+    }
+
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        self.bytes.read_at(offset, into)
+    }
+
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        self.bytes.write_at(offset, bytes)
+    }
+
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        self.bytes.read_to(sink)
+    }
+
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        self.bytes.write_from(source)
+    }
 }
 
 /// Pages of a vCPU's file that KVM writes while they are mapped, and a view of them; the view ends first.
@@ -350,16 +379,19 @@ impl Machine {
         &self,
         slot: u32,
         memory_size: u64,
-        memory: Option<&SharedMapping>,
+        memory: Option<&UserMemory>,
         set: impl FnOnce(u64) -> Result<(), kvm_ioctls::Error>,
     ) -> Result<(), Errno> {
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         let kept = match memory {
-            Some(memory) => Some(memory.part(u64::MIN..memory_size).ok_or(Errno::INVAL)?),
+            Some(memory) if memory_size <= memory.len() => Some(Arc::clone(&memory.mapping)),
             None if memory_size == u64::MIN => None,
-            None => return Err(Errno::INVAL),
+            _ => return Err(Errno::INVAL),
         };
-        set(kept.as_ref().map_or(u64::MIN, |kept| kept.address() as u64)).map_err(errno)?;
+        set(kept
+            .as_ref()
+            .map_or(u64::MIN, |kept| kept.as_mut_ptr().addr() as u64))
+        .map_err(errno)?;
         match kept {
             Some(kept) if memory_size > u64::MIN => slots.insert(
                 slot,
@@ -379,7 +411,7 @@ impl Kvm for DirectKvm {
     type Vm = KvmVm;
     type Vcpu = KvmVcpu;
     type Device = KvmDevice;
-    type UserMemory = SharedMapping;
+    type UserMemory = UserMemory;
     type RunPage = PointerBytes;
     type DirtyRing = PointerBytes;
 
@@ -413,7 +445,7 @@ impl Kvm for DirectKvm {
     }
 
     /// Makes a memory file of the length, sealed against shrinking, and maps all of it shared.
-    fn create_user_memory(&self, length: usize) -> Result<SharedMapping, Errno> {
+    fn create_user_memory(&self, length: usize) -> Result<UserMemory, Errno> {
         if length == usize::MIN || !length.is_multiple_of(rustix::param::page_size()) {
             return Err(Errno::INVAL);
         }
@@ -423,11 +455,23 @@ impl Kvm for DirectKvm {
         )?;
         ftruncate(&file, length as u64)?;
         fcntl_add_seals(&file, SealFlags::SHRINK)?;
-        let mapped = Mapped::file(file.as_fd(), u64::MIN, length).map_err(|error| match error {
-            MapError::Refused(error) => io_errno(&error),
-            _ => Errno::INVAL,
-        })?;
-        Ok(SharedMapping::new(mapped))
+        let mapping = MmapOptions::new()
+            .len(length)
+            .map_raw(&file)
+            .map_err(|error| io_errno(&error))?;
+        #[expect(
+            unsafe_code,
+            reason = "the promise of a memory file's pages, which every view and slot of them keeps mapped"
+        )]
+        // SAFETY: the mapping lives while the view or any slot holds its `Arc`, and KVM is given its address only while a
+        // slot holds it; `MmapRaw` maps the pages readable and writable and hands out only the address; the file is this
+        // call's own memory file, not on the huge-page file system, sized to the length and sealed against shrinking before
+        // it was mapped, so reaching any of its pages never traps.
+        let pointer = unsafe { PointerAndLength::new(mapping.as_mut_ptr(), mapping.len()) };
+        Ok(UserMemory {
+            bytes: PointerBytes::new(pointer),
+            mapping: Arc::new(mapping),
+        })
     }
 
     fn set_user_memory_region(
@@ -436,7 +480,7 @@ impl Kvm for DirectKvm {
         slot: u32,
         flags: u32,
         guest_phys_addr: u64,
-        memory: Option<&SharedMapping>,
+        memory: Option<&UserMemory>,
     ) -> Result<(), Errno> {
         let memory_size = memory.map_or(u64::MIN, VolatileBytes::len);
         vm.0.set_slot(slot, memory_size, memory, |userspace_addr| {
@@ -468,7 +512,7 @@ impl Kvm for DirectKvm {
         flags: u32,
         guest_phys_addr: u64,
         memory_size: u64,
-        memory: Option<&SharedMapping>,
+        memory: Option<&UserMemory>,
         guest_memfd: Option<BorrowedFd<'_>>,
         guest_memfd_offset: u64,
     ) -> Result<(), Errno> {

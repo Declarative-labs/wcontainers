@@ -877,33 +877,38 @@ impl KvmSingleStepMachine {
         self.write_bytes(table, entries.as_bytes());
     }
 
-    /// Returns the view of guest memory at the guest-physical address, for the length.
-    fn view(&self, at: u64, length: u64) -> GuestMemory {
+    /// Returns the offset in guest memory of the guest-physical address, whose `length` bytes on all lie in it.
+    fn offset(&self, at: u64, length: u64) -> u64 {
         let offset = at
             .checked_sub(MEMORY_BASE)
             .unwrap_or_else(|| panic!("{at:#x} lies below guest memory"));
-        match self.memory.part(offset..offset + length) {
-            Some(view) => view,
-            None => panic!("{at:#x} and {length:#x} bytes on lie past guest memory"),
+        if offset
+            .checked_add(length)
+            .is_none_or(|end| end > self.memory.len())
+        {
+            panic!("{at:#x} and {length:#x} bytes on lie past guest memory");
         }
+        offset
     }
 
     fn read_entry(&self, at: u64) -> u64 {
         let mut entry = [0; size_of::<u64>()];
-        self.view(at, ENTRY_BYTES).read(&mut entry);
+        self.read_bytes(at, &mut entry);
         u64::from_le_bytes(entry)
     }
 
     fn write_entry(&self, at: u64, entry: u64) {
-        self.view(at, ENTRY_BYTES).write(&entry.to_le_bytes());
+        self.write_bytes(at, &entry.to_le_bytes());
     }
 
     fn read_bytes(&self, at: u64, into: &mut [u8]) {
-        self.view(at, into.len() as u64).read(into);
+        self.memory
+            .read_at(self.offset(at, into.len() as u64), into);
     }
 
     fn write_bytes(&self, at: u64, bytes: &[u8]) {
-        self.view(at, bytes.len() as u64).write(bytes);
+        self.memory
+            .write_at(self.offset(at, bytes.len() as u64), bytes);
     }
 
     fn read_slot(&self, slot: u64) -> Slot {

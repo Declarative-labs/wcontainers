@@ -20,8 +20,11 @@ wcontainers-hypervisor-framework = { path = "../.." }
 wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 # The exit records' bytes, whose pointer and length this crate promises.
 wcontainers-volatile-bytes-pointer = { path = "../../../volatile-bytes/implementation/pointer" }
-# The memory given to the VM: an anonymous mapping, kept while any view of it lives.
-wcontainers-volatile-bytes-shared-mapping = { path = "../../../volatile-bytes/implementation/shared-mapping" }
+# The sink and source the memory's view forwards to its bytes.
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
+# The memory given to the VM: an anonymous mapping with a safe call; the raw mapping hands out the address and nothing else.
+memmap2 = "0.9.12"
 # The framework's functions, declared from its headers.
 applevisor-sys = "1.0.0"
 

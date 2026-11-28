@@ -1,4 +1,4 @@
-//! The tests of what the unsafe code relies on: ranges refused, copies at page edges, copies while another thread or
+//! The tests of what the unsafe code relies on: copies at page edges, copies while another thread or
 //! process writes, and every check of a file mapping.
 #![cfg(target_os = "linux")]
 
@@ -29,30 +29,6 @@ fn page() -> usize {
 }
 
 #[test]
-fn refuses_parts_outside_the_view() {
-    let view = anonymous(64).part(8..40).expect("inside");
-    #[expect(clippy::reversed_empty_ranges, reason = "a start after the end is one of the cases refused")]
-    for offsets in [0..33, 33..33, 9..8, 0..u64::MAX, u64::MAX..u64::MAX, 1 << 63..1 << 63] {
-        assert!(view.part(offsets.clone()).is_none(), "{offsets:?}");
-    }
-    assert!(view.part(32..32).is_some_and(|part| part.is_empty()));
-}
-
-#[test]
-fn reads_and_writes_only_the_bytes_of_a_part() {
-    let whole = anonymous(64);
-    let part = whole.part(8..40).and_then(|view| view.part(8..16)).expect("inside");
-    assert_eq!(part.write(&[u8::MAX; 64]), 8);
-    let mut all = [0; 64];
-    assert_eq!(whole.read(&mut all), 64);
-    for (index, byte) in all.iter().enumerate() {
-        assert_eq!(*byte, if (16..24).contains(&index) { u8::MAX } else { 0 }, "{index}");
-    }
-    let empty = whole.part(64..64).expect("inside");
-    assert_eq!((empty.write(&[1]), empty.read(&mut all)), (0, 0));
-}
-
-#[test]
 fn copies_across_page_edges_exactly() {
     let page = page();
     let whole = anonymous(4 * page);
@@ -62,12 +38,11 @@ fn copies_across_page_edges_exactly() {
             for before in [0, 1, 7, 8, count / 2, count].into_iter().filter(|&before| before + 16 <= edge) {
                 let start = edge - before;
                 // The bytes copied and 16 on either side, which start as zero and must stay so.
-                let window = whole.part((start - 16) as u64..(start + count + 16) as u64).expect("inside");
-                window.write(&vec![0; count + 32]);
-                let part = whole.part(start as u64..(start + count) as u64).expect("inside");
-                assert_eq!(part.write(&pattern[..count]), count);
+                let window = (start - 16) as u64;
+                assert_eq!(whole.write_at(window, &vec![0; count + 32]), count + 32);
+                assert_eq!(whole.write_at(start as u64, &pattern[..count]), count);
                 let mut all = vec![0; count + 32];
-                window.read(&mut all);
+                assert_eq!(whole.read_at(window, &mut all), count + 32);
                 assert_eq!(all[16..16 + count], pattern[..count], "{count} at {start}");
                 assert!(all[..16].iter().chain(&all[16 + count..]).all(|&byte| byte == 0), "{count} at {start}");
             }
@@ -77,11 +52,10 @@ fn copies_across_page_edges_exactly() {
 
 /// Writes the other party's bytes, each of the two values in turn, until the stop byte is set.
 fn write_until_stopped(memory: &SharedMapping) {
-    let (other, stop) = (memory.part(0..OTHER as u64).expect("inside"), memory.part(STOP..STOP + 1).expect("inside"));
     let mut byte = [0];
     for round in 0.. {
-        other.write(&[WRITTEN[round % 2]; OTHER]);
-        stop.read(&mut byte);
+        memory.write_at(0, &[WRITTEN[round % 2]; OTHER]);
+        memory.read_at(STOP, &mut byte);
         if byte[0] != 0 {
             return;
         }
@@ -91,21 +65,19 @@ fn write_until_stopped(memory: &SharedMapping) {
 /// Copies this thread's bytes in and back while the other party writes the bytes before them, checks that each byte of
 /// the other party's it reads holds a value written, and then stops the other party.
 fn copy_while_another_writes(memory: &SharedMapping) {
-    let other = memory.part(0..OTHER as u64).expect("inside");
-    let mine = memory.part(OTHER as u64..(OTHER + MINE) as u64).expect("inside");
     let (mut read, mut seen) = (vec![0; OTHER.max(MINE)], [false; 2]);
     for round in 0..ROUNDS {
         let value = 0x10 + (round % 16) as u8;
-        mine.write(&[value; MINE]);
-        assert_eq!(mine.read(&mut read), MINE);
+        memory.write_at(OTHER as u64, &[value; MINE]);
+        assert_eq!(memory.read_at(OTHER as u64, &mut read[..MINE]), MINE);
         assert!(read[..MINE].iter().all(|&byte| byte == value), "the other party's copies changed this thread's bytes");
-        assert_eq!(other.read(&mut read), OTHER);
+        assert_eq!(memory.read_at(0, &mut read[..OTHER]), OTHER);
         for &byte in &read[..OTHER] {
             assert!(byte == 0 || WRITTEN.contains(&byte), "{byte:#x} was never written");
             seen.iter_mut().zip(WRITTEN).for_each(|(seen, written)| *seen |= byte == written);
         }
     }
-    memory.part(STOP..STOP + 1).expect("inside").write(&[1]);
+    memory.write_at(STOP, &[1]);
     assert_eq!(seen, [true; 2], "the other party's writes were never seen");
 }
 
@@ -223,6 +195,22 @@ mod file {
         let mut read = vec![0; page()];
         assert_eq!(map(&file, offset as u64, page()).expect("inside").read(&mut read), page());
         assert_eq!(read, every[offset..offset + page()]);
+    }
+
+    /// Reads the file itself, not through a view, so that an address off by a byte for every offset shows.
+    #[test]
+    fn writes_at_an_offset_reach_the_files_bytes_at_that_offset() {
+        let length = 2 * page();
+        let file = memory_file(length as u64, SealFlags::SHRINK);
+        let memory = map(&file, 0, length).expect("inside");
+        let (mut expected, written) = (vec![0; length], [u8::MAX, u8::MAX - 1]);
+        for offset in [0, 1, page() - 1, page(), length - 1] {
+            assert_eq!(memory.write_at(offset as u64, &written), written.len().min(length - offset), "{offset}");
+            expected[offset..].iter_mut().zip(written).for_each(|(byte, written)| *byte = written);
+            let mut read = vec![0; length];
+            assert_eq!(rustix::io::pread(&file, &mut read, 0), Ok(length));
+            assert_eq!(read, expected, "{offset}");
+        }
     }
 
     #[test]

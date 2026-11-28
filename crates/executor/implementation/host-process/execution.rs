@@ -386,10 +386,14 @@ impl VolatileBytes for HostProcessBytes<'_> {
     }
 
     /// A host refusal to read the stub's memfd reads none, counted and warned as "guest bytes refused".
-    fn read(&self, into: &mut [u8]) -> usize {
-        let count = into.len().min(self.len() as usize);
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let count = copied(self.len(), offset, into.len());
         let mut executor = self.held.lock();
-        match executor.read_guest(self.held.id, self.addresses.start, &mut into[..count]) {
+        match executor.read_guest(
+            self.held.id,
+            self.addresses.start + offset,
+            &mut into[..count],
+        ) {
             Ok(()) => count,
             Err(error) => {
                 executor.guest_bytes_refused(error);
@@ -399,10 +403,10 @@ impl VolatileBytes for HostProcessBytes<'_> {
     }
 
     /// A host refusal to write the stub's memfd writes none, counted and warned as "guest bytes refused".
-    fn write(&self, bytes: &[u8]) -> usize {
-        let count = bytes.len().min(self.len() as usize);
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let count = copied(self.len(), offset, bytes.len());
         let mut executor = self.held.lock();
-        match executor.write(self.held.id, self.addresses.start, &bytes[..count]) {
+        match executor.write(self.held.id, self.addresses.start + offset, &bytes[..count]) {
             Ok(()) => count,
             Err(error) => {
                 executor.guest_bytes_refused(error);
@@ -1123,4 +1127,11 @@ fn word_at(executor: &HostProcessExecutor, id: MemoryId, pc: u64) -> u32 {
 /// Linux sets it).
 fn untagged(address: u64) -> u64 {
     address & !super::native::TAG
+}
+
+/// How many bytes a copy at the offset moves: the shorter of the buffer and what lies from the offset to the end.
+fn copied(length: u64, offset: u64, buffer: usize) -> usize {
+    length.checked_sub(offset).map_or(usize::MIN, |left| {
+        buffer.min(usize::try_from(left).unwrap_or(usize::MAX))
+    })
 }

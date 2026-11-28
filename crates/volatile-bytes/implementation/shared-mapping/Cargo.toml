@@ -21,6 +21,10 @@ wcontainers-volatile-bytes-pointer = { path = "../pointer" }
 memmap2 = "0.9.12"
 # The magic number of the huge-page file system.
 libc = { version = "0.2.191", default-features = false }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+
+[package.metadata.verus]
+verify = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The memory file's seals, size and file system, all with safe calls.
