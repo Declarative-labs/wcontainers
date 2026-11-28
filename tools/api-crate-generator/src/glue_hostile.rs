@@ -684,8 +684,17 @@ impl Writer<'_, '_> {
         if let Some(inner) = t.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
             // An object the suite holds, or a known value of plain data, so that dropping it on the way is seen.
             let inner = inner.trim();
-            if let Shape::Object { kind, by_ref: true } = self.shape(inner, scope) {
-                return Some(format!("o.k{kind}.as_ref()"));
+            match self.shape(inner, scope) {
+                Shape::Object { kind, by_ref: true } => return Some(format!("o.k{kind}.as_ref()")),
+                // One of the objects a reference of several kinds may name: the first held, or none.
+                Shape::Ref { path, kinds } if !kinds.is_empty() => {
+                    *counter += 1;
+                    let var = format!("v{counter}");
+                    let arms: Vec<String> = kinds.iter().map(|&k| format!("if let Some(x) = o.k{k}.as_ref() {{ Some({path}::{}(x)) }}", self.g.kinds[k].name)).collect();
+                    let _ = writeln!(prelude, "        let {var} = {} else {{ None }};", arms.join(" else "));
+                    return Some(var);
+                }
+                _ => {}
             }
             if let Some(data) = inner.strip_prefix('&')
                 && let Some(value) = codecs.shapes.known(data, super::record::salt_of(name), true).filter(|value| value != "None")

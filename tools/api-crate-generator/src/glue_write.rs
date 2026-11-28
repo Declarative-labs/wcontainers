@@ -1420,7 +1420,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         std::fs::write(folder.join(name), text).map_err(|error| format!("{name}: {error}"))?;
     }
     // A caller under `forbid` reaching the system's library through `system()` (Windows only), with hostile arguments.
-    if let Some(test) = system_test(spec.folder).filter(|_| spec.library.is_some() && !system_entries.is_empty()) {
+    if let Some(test) = system_test(spec.folder) {
         std::fs::create_dir_all(folder.join("tests")).map_err(|error| error.to_string())?;
         std::fs::write(folder.join("tests").join("system.rs"), format!("//! {HEADER}\n//!\n{test}")).map_err(|error| format!("tests/system.rs: {error}"))?;
     }
@@ -1531,11 +1531,8 @@ fn without_unused_codecs(data: &str, users: &str) -> String {
             let Some(end) = lines[at..].iter().position(|line| *line == "}").map(|offset| at + offset) else { continue };
             codecs.push((name.to_string(), at - 1, end));
         }
-        let named = |name: &str, text: &str| text.match_indices(name).any(|(at, _)| {
-            let before = text[..at].chars().next_back().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
-            let after = text[at + name.len()..].chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
-            before && after
-        });
+        // A name is named where it is a whole identifier of the text.
+        let named = |name: &str, text: &str| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|word| word == name);
         let unused = codecs.iter().find(|(name, start, end)| {
             let others: String = lines.iter().enumerate().filter(|(at, _)| at < start || at > end).map(|(_, line)| *line).collect::<Vec<_>>().join("\n");
             !named(name, users) && !named(name, &others)

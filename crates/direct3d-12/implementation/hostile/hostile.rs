@@ -4558,9 +4558,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
                     );
@@ -4578,9 +4601,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
                     );
@@ -4598,9 +4644,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
                     );
@@ -4618,9 +4687,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_DEVICE,
                     );
@@ -4638,9 +4730,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_FENCE,
                     );
@@ -4658,9 +4773,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
                     );
@@ -4678,9 +4816,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
                     );
@@ -4698,9 +4859,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
                     );
@@ -4718,9 +4902,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_RESOURCE,
                     );
@@ -4738,9 +4945,32 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
+                    let v1 = if let Some(x) = o.k51.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandAllocator(x))
+                    } else if let Some(x) = o.k52.as_ref() {
+                        Some(direct3d_12::UnknownRef::CommandQueue(x))
+                    } else if let Some(x) = o.k53.as_ref() {
+                        Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+                    } else if let Some(x) = o.k54.as_ref() {
+                        Some(direct3d_12::UnknownRef::Device(x))
+                    } else if let Some(x) = o.k55.as_ref() {
+                        Some(direct3d_12::UnknownRef::Fence(x))
+                    } else if let Some(x) = o.k56.as_ref() {
+                        Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+                    } else if let Some(x) = o.k57.as_ref() {
+                        Some(direct3d_12::UnknownRef::PipelineState(x))
+                    } else if let Some(x) = o.k58.as_ref() {
+                        Some(direct3d_12::UnknownRef::QueryHeap(x))
+                    } else if let Some(x) = o.k59.as_ref() {
+                        Some(direct3d_12::UnknownRef::Resource(x))
+                    } else if let Some(x) = o.k60.as_ref() {
+                        Some(direct3d_12::UnknownRef::RootSignature(x))
+                    } else {
+                        None
+                    };
                     let answer = direct3d_12::Direct3D12::create_device(
                         &o.api,
-                        None,
+                        v1,
                         direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                         &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
                     );
@@ -5258,9 +5488,32 @@ pub fn drive_where(
     // D3D12CreateDevice
     if wanted(D_3D12_CREATE_DEVICE) {
         driven.attempt(|| {
+            let v1 = if let Some(x) = o.k51.as_ref() {
+                Some(direct3d_12::UnknownRef::CommandAllocator(x))
+            } else if let Some(x) = o.k52.as_ref() {
+                Some(direct3d_12::UnknownRef::CommandQueue(x))
+            } else if let Some(x) = o.k53.as_ref() {
+                Some(direct3d_12::UnknownRef::DescriptorHeap(x))
+            } else if let Some(x) = o.k54.as_ref() {
+                Some(direct3d_12::UnknownRef::Device(x))
+            } else if let Some(x) = o.k55.as_ref() {
+                Some(direct3d_12::UnknownRef::Fence(x))
+            } else if let Some(x) = o.k56.as_ref() {
+                Some(direct3d_12::UnknownRef::GraphicsCommandList(x))
+            } else if let Some(x) = o.k57.as_ref() {
+                Some(direct3d_12::UnknownRef::PipelineState(x))
+            } else if let Some(x) = o.k58.as_ref() {
+                Some(direct3d_12::UnknownRef::QueryHeap(x))
+            } else if let Some(x) = o.k59.as_ref() {
+                Some(direct3d_12::UnknownRef::Resource(x))
+            } else if let Some(x) = o.k60.as_ref() {
+                Some(direct3d_12::UnknownRef::RootSignature(x))
+            } else {
+                None
+            };
             let _ = direct3d_12::Direct3D12::create_device(
                 &o.api,
-                None,
+                v1,
                 direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
                 &component_object_model::structures::Guid {
                     data1: 3_u32,
