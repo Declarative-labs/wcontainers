@@ -6,9 +6,12 @@
 //! meaning, written out by hand), so a proof here holds for every `step` meeting those hypotheses, the model's one
 //! included only once it is shown to meet them. Binding `step` to the model waits on its decode tables
 //! (`to_branch_operation`, `to_integer_operation`, `to_load_store_operation`) moving inside `verus!`: all three are
-//! outside it at instruction-proof `c6e2bda01` (still its tip when fetched again on 2026-11-27, fourth run), where
-//! only the branch family's meaning (`branch_outcome`) is inside; that track's PROOF.md tests the tables against Arm's
-//! decode rather than proving them.
+//! outside it at instruction-proof `ad936546b` (its tip when fetched on 2026-11-27, fifth run), where only the branch
+//! family's meaning (`branch_outcome`) is inside; that track's PROOF.md tests the tables against Arm's decode rather
+//! than proving them.
+//!
+//! [`compose::described_is_confined`] is the general theorem: a piece described by blocks that each hold alone is
+//! confined, whatever its shape; the other modules prove whole pieces one shape at a time.
 
 #![no_std]
 
@@ -172,5 +175,7 @@ mod rest;
 mod withheld_access;
 #[cfg(verus_keep_ghost)]
 mod look_ahead;
+#[cfg(verus_keep_ghost)]
+mod compose;
 #[cfg(verus_keep_ghost)]
 mod plants;

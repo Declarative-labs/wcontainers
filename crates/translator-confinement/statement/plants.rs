@@ -1,6 +1,6 @@
 //! Wrong translators the statement refuses, one for each clause of [`confined_step`]: each output is one wrong word and
-//! `udf`, under a semantics of those words taken from the Arm ARM. With the clause dropped or weakened (`plants.txt`),
-//! its refusal no longer verifies: the clause carries weight.
+//! `udf`, under a semantics of those words taken from the Arm ARM. With the clause dropped or weakened (a plant, kept
+//! outside the repository), its refusal no longer verifies: the clause carries weight.
 
 use super::*;
 
