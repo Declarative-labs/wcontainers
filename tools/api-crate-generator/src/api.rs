@@ -445,7 +445,7 @@ const DIRECT3D_11_EXCEPTIONS: &[Exception] = &[
     Exception::Recorded { getter: "ID3D11Texture1D::GetDesc", made_by: &[("ID3D11Device::CreateTexture1D", "pDesc")], resolve: Some("resolved_texture_1d") },
     Exception::Recorded { getter: "ID3D11Texture2D::GetDesc", made_by: &[("ID3D11Device::CreateTexture2D", "pDesc")], resolve: Some("resolved_texture_2d") },
     Exception::Recorded { getter: "ID3D11Texture3D::GetDesc", made_by: &[("ID3D11Device::CreateTexture3D", "pDesc")], resolve: Some("resolved_texture_3d") },
-    Exception::Recorded { getter: "ID3D11Query::GetDesc", made_by: &[("ID3D11Device::CreateQuery", "pQueryDesc")], resolve: None },
+    Exception::Recorded { getter: "ID3D11Query::GetDesc", made_by: &[("ID3D11Device::CreateQuery", "pQueryDesc"), ("ID3D11Device::CreatePredicate", "pPredicateDesc")], resolve: None },
     // A swap chain's description is what it was made with.
     Exception::Recorded { getter: "IDXGISwapChain::GetDesc", made_by: &[("D3D11CreateDeviceAndSwapChain", "pSwapChainDesc")], resolve: None },
     // https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgisurface-getdesc: a texture's surface describes

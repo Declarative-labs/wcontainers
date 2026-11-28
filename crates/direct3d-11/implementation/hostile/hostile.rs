@@ -250,6 +250,18 @@ pub fn reached(place: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// The last call of each place that reached the implementation, with the values passed by value.
+static LAST: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// Returns the last call of `place` that reached the implementation, with the values it passed by value (empty: none).
+pub fn last_call(place: &str) -> String {
+    LAST.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(place)
+        .cloned()
+        .unwrap_or_default()
+}
+
 /// Calls that reached the implementation whose arguments were not those a row answers with, by place.
 static REACHED_OTHERWISE: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 
@@ -278,8 +290,11 @@ fn record(call: String) {
     *REACHED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .entry(place)
+        .entry(place.clone())
         .or_default() += 1;
+    LAST.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(place, call.clone());
     lie(Site::Method, &call);
 }
 

@@ -42,6 +42,7 @@ unsafe extern "C" {
     fn exact_set_break(queue: usize, slot: u32, value: i32, enable: i32) -> i32;
     fn exact_create_device_with_module(create: usize, module: usize, device: *mut usize, context: *mut usize) -> i32;
     fn exact_query(object: usize, iid: *const u8, out: *mut usize) -> i32;
+    fn exact_deferred(device: usize, slot: u32, flags: u32, out: *mut usize) -> i32;
     fn exact_offer(device: usize, resource: usize, priority: i32) -> i32;
     fn exact_reclaim(device: usize, resource: usize, discarded: *mut i32) -> i32;
     fn exact_offer1(device: usize, resource: usize, priority: i32, flags: u32) -> i32;
@@ -657,4 +658,29 @@ fn the_serving_glue_passes_dxgis_calls_the_calling_glue_never_makes() {
     let status = unsafe { exact_software_adapter(factory.addr(), 0x2000, &mut adapter) };
     let calls = wcontainers_directx_graphics_infrastructure_recorder::calls("IDXGIFactory::CreateSoftwareAdapter");
     assert!(calls.last().is_some_and(|call| call.contains("module=Hmodule(8192)")), "{status:#x} {calls:?}");
+}
+
+/// CreateDeferredContext of each device version, which the calling glue never calls of the system (a deferred context is
+/// not free threaded), made by C on our implementation through the serving glue: the flags (1, which d3d11.h reserves;
+/// the implementation judges them) reach the recorder as given.
+#[test]
+fn the_serving_glue_passes_a_deferred_contexts_flags() {
+    let library = exports(Recorder);
+    let (mut device, mut context) = (0_usize, 0_usize);
+    #[expect(unsafe_code, reason = "exact.c's caller, given the serving glue's own D3D11CreateDevice")]
+    // SAFETY: `create` is the serving glue's export, which takes what d3d11.h declares; the two outs are ours.
+    let status = unsafe { exact_create_device(library.d_3d11_create_device as usize, &mut device, &mut context) };
+    assert!(status >= 0, "a device through the serving glue: {status:#x}");
+    for (slot, place) in [
+        (27, "ID3D11Device::CreateDeferredContext"),
+        (44, "ID3D11Device1::CreateDeferredContext1"),
+        (51, "ID3D11Device2::CreateDeferredContext2"),
+        (62, "ID3D11Device3::CreateDeferredContext3"),
+    ] {
+        let mut deferred = 0_usize;
+        #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+        // SAFETY: `device` is the serving glue's device, whose table holds every device version's slots; the out is ours.
+        let _ = unsafe { exact_deferred(device, slot, 1, &mut deferred) };
+        assert_eq!(last_call(place), format!("{place}(context_flags=1)"));
+    }
 }

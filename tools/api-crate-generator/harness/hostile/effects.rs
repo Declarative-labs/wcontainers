@@ -135,3 +135,60 @@ fn a_feature_level_not_asked_is_refused_and_what_was_made_given_back() {
     let one = api.create_device(None, DriverType(1), Hmodule(0), CreateDeviceFlag(0), &levels[..1], 7);
     assert_eq!(one.map(|(_, level, _)| level).ok(), Some(levels[0]));
 }
+
+/// A mapping the serving glue refuses after the implementation made it (a pitch past the largest resource: the hostile
+/// implementation's pitches turn through 0, u32::MAX and 1) is ended by the glue's own Unmap of the same resource: every
+/// Map the implementation answered is unmapped, by the test or by the glue.
+#[test]
+fn a_mapping_the_serving_glue_refuses_is_unmapped() {
+    use wcontainers_component_object_model::structures::Hmodule;
+    use wcontainers_direct3d_11::Direct3D11 as _;
+    use wcontainers_direct3d_11::enumerations::CreateDeviceFlag;
+    use wcontainers_direct3d_common::enumerations::{DriverType, FeatureLevel};
+    hostile::plan(None);
+    let api = wcontainers_direct3d_11_direct::served(hostile::HostileLibrary);
+    let (device, _, context) = api.create_device(None, DriverType(1), Hmodule(0), CreateDeviceFlag(0), &[FeatureLevel(0xb000)], 7).expect("a device");
+    let buffer = device.create_buffer(&buffer_desc(), None).expect("a buffer");
+    let (maps, unmaps) = (hostile::reached("ID3D11DeviceContext::Map"), hostile::reached("ID3D11DeviceContext::Unmap"));
+    let mut refused = 0;
+    for _ in 0..8 {
+        match context.map(ResourceRef::Buffer(&buffer), 0, Map(3), 0) {
+            Ok(mapped) => {
+                drop(mapped);
+                context.unmap(ResourceRef::Buffer(&buffer), 0);
+            }
+            Err(_) => refused += 1,
+        }
+    }
+    let mapped = hostile::reached("ID3D11DeviceContext::Map") - maps;
+    assert!(refused > 0 && mapped > 0, "some mappings refused ({refused}), all made by the implementation ({mapped})");
+    assert_eq!(hostile::reached("ID3D11DeviceContext::Unmap") - unmaps, mapped, "every Map the implementation made is unmapped");
+    // The second slice of a 2D texture: a refused mapping is unmapped at the subresource it was made at.
+    let desc = wcontainers_direct3d_11::structures::Texture2DDesc {
+        width: 4,
+        height: 4,
+        mip_levels: 1,
+        array_size: 2,
+        format: wcontainers_directx_graphics_infrastructure::enumerations::Format(28),
+        sample_desc: wcontainers_directx_graphics_infrastructure::structures::SampleDesc { count: 1, quality: 0 },
+        usage: Usage(3),
+        bind_flags: 0,
+        cpu_access_flags: 0x3_0000,
+        misc_flags: 0,
+    };
+    let texture = device.create_texture_2d(&desc, &[]).expect("a texture");
+    let mut refused_at_one = 0;
+    for _ in 0..8 {
+        match context.map(ResourceRef::Texture2D(&texture), 1, Map(3), 0) {
+            Ok(mapped) => {
+                drop(mapped);
+                context.unmap(ResourceRef::Texture2D(&texture), 1);
+            }
+            Err(_) => {
+                refused_at_one += 1;
+                assert_eq!(hostile::last_call("ID3D11DeviceContext::Unmap"), "ID3D11DeviceContext::Unmap(subresource=1)");
+            }
+        }
+    }
+    assert!(refused_at_one > 0, "some mappings of the second slice refused");
+}

@@ -8848,8 +8848,11 @@ pub unsafe extern "system" fn device_create_predicate<V: direct3d_11::Device>(
             let predicate_value = found.value().create_predicate(&predicate_desc)?;
             let this_weak = found.weak();
             drop(found);
-            let predicate_record =
+            let mut predicate_record =
                 this_weak.map_or_else(record, |weak| record_related("Device", weak));
+            if let Some(value) = Some(predicate_desc) {
+                predicate_record.push(Box::new(Recorded(value)));
+            }
             let predicate_served = serve(
                 KEY,
                 predicate_value,

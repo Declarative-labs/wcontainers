@@ -770,6 +770,10 @@ fn every_recorded_answer_is_its_own_creations() {
             d3d11::QueryObject::Predicate(_) => panic!("the recorder makes a query"),
         })
         .collect();
+    // Predicates (D3D11_QUERY_OCCLUSION_PREDICATE 5, D3D11_QUERY_SO_OVERFLOW_PREDICATE 7): a predicate's description too,
+    // and its data, a BOOL: 4.
+    let predicates = [d3d11::structures::QueryDesc { query: QueryKind(5), misc_flags: 0 }, d3d11::structures::QueryDesc { query: QueryKind(7), misc_flags: 1 }];
+    let made_predicates: Vec<_> = predicates.iter().map(|desc| device.create_predicate(desc).expect("a predicate")).collect();
     let before = recorder::logged() + dxgi_recorder::logged();
     for (made, desc) in made_buffers.iter().zip(&buffers) {
         assert_eq!(d3d11::Buffer::get_desc(made), *desc);
@@ -795,6 +799,10 @@ fn every_recorded_answer_is_its_own_creations() {
     for ((made, desc), size) in made_queries.iter().zip(&queries).zip([8, 88]) {
         assert_eq!(d3d11::Query::get_desc(made), *desc);
         assert_eq!(d3d11::Asynchronous::get_data_size(made), size);
+    }
+    for (made, desc) in made_predicates.iter().zip(&predicates) {
+        assert_eq!(d3d11::Query::get_desc(made), *desc);
+        assert_eq!(d3d11::Asynchronous::get_data_size(made), 4);
     }
     assert_eq!(recorder::logged() + dxgi_recorder::logged(), before, "every answer above comes from the glue's record");
 }
@@ -825,4 +833,17 @@ fn a_swap_chain_answers_its_own_description_and_buffers() {
         assert_eq!(dxgi::SwapChain::get_buffer(swap_chain, desc.buffer_count).err(), Some(wcontainers_component_object_model::constants::E_INVALIDARG));
         assert_eq!((calls(desc.buffer_count), recorder::logged() + dxgi_recorder::logged()), past, "an index past the count is refused before the implementation");
     }
+}
+
+/// A DXGI surface of a resource's subresource (IDXGIResource1::CreateSubresourceSurface) is no texture the serving glue
+/// recorded: its description is what the implementation answers, read through both glues (the recorder's known
+/// answer, which the same call made on it directly gives).
+#[test]
+fn a_subresource_surface_answers_the_implementations_description() {
+    let (device, _) = device();
+    let buffer = device.create_buffer(&buffer_desc(64), None).expect("a buffer");
+    let surface = dxgi::Resource1::create_subresource_surface(&buffer, 0).expect("a surface");
+    let direct = dxgi::Surface::get_desc(&dxgi_recorder::RecordedSurface::<Recorder>::new());
+    assert!(direct.is_ok());
+    assert_eq!(dxgi::Surface::get_desc(&surface), direct);
 }

@@ -156,6 +156,13 @@ HRESULT exact_software_adapter(void *factory, uintptr_t module, void **adapter) 
     return SLOT(factory, 11, SoftwareAdapterFunction)(factory, module, adapter);
 }
 
+/* CreateDeferredContext of each device version (ID3D11Device 27, ID3D11Device1 44, ID3D11Device2 51, ID3D11Device3 62:
+   d3d11.h, d3d11_1.h, d3d11_2.h, d3d11_3.h), which the calling glue never calls, with the flags `flags`. */
+typedef HRESULT (*DeferredFunction)(void *, uint32_t, void **);
+HRESULT exact_deferred(void *device, uint32_t slot, uint32_t flags, void **out) {
+    return SLOT(device, slot, DeferredFunction)(device, flags, out);
+}
+
 /* D3D11CreateDevice with the software rasterizer module `module` (D3D_DRIVER_TYPE_SOFTWARE, 4). */
 HRESULT exact_create_device_with_module(uintptr_t create, uintptr_t module, void **device, void **context) {
     int32_t level = 0xb000, made = 0;
