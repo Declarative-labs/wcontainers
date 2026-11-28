@@ -1327,7 +1327,7 @@ impl Shapes {
         if *union {
             return self.union_known(ty, salt);
         }
-        let parts: Option<Vec<String>> = fields.iter().enumerate().map(|(at, (name, field))| self.known(field, salt + KNOWN_STEP * (at + 1), valid).map(|value| format!("{name}: {value}"))).collect();
+        let parts: Option<Vec<String>> = fields.iter().enumerate().map(|(at, (name, field))| self.known(field, salt.saturating_add(KNOWN_STEP.saturating_mul(at + 1)), valid).map(|value| format!("{name}: {value}"))).collect();
         parts.map(|parts| format!("{ty} {{ {} }}", parts.join(", ")))
     }
 

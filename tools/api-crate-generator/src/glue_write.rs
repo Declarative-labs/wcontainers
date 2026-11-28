@@ -1561,7 +1561,8 @@ fn without_unused_codecs(data: &str, users: &str) -> String {
     let mut named = words(users);
     named.extend(words(&lines.iter().enumerate().filter(|(at, _)| !in_codec(*at)).map(|(_, line)| *line).collect::<Vec<_>>().join("\n")));
     let mut reached: BTreeSet<&str> = BTreeSet::new();
-    loop {
+    // Each round reaches at least one more codec or ends: at most one round per codec, and one more that finds none.
+    for _ in 0..=codecs.len() {
         let before = reached.len();
         for (name, start, end) in &codecs {
             if named.contains(name) && reached.insert(name.as_str()) {
