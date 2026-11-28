@@ -1888,8 +1888,39 @@ mod tests {
         );
         assert_eq!(registers.pc, target);
         let (exit, registers) = run(&mut memory, CODE, target + 1, 0, SLICE);
-        assert_eq!(exit, Exit::AlignmentFault { address: target + 1 });
+        assert_eq!(
+            exit,
+            Exit::AlignmentFault {
+                address: target + 1
+            }
+        );
         assert_eq!(registers.pc, target + 1);
+        // An upper-half target, aligned or not, faults as a lower-half one does.
+        for (target, exit) in [
+            (
+                UPPER | target,
+                Exit::MemoryFault {
+                    address: UPPER | target,
+                    access: Access::Execute,
+                },
+            ),
+            (
+                UPPER | target | 2,
+                Exit::AlignmentFault {
+                    address: UPPER | target | 2,
+                },
+            ),
+        ] {
+            let mut memory = with_code::<Direct>(&[BRANCH_TO_X0]);
+            for count in [1, SLICE] {
+                let (stopped, registers) = run(&mut memory, CODE, target, 0, count);
+                assert_eq!(stopped, exit, "a branch to {target:#x}, a slice of {count}");
+                assert_eq!(
+                    registers.pc, target,
+                    "a branch to {target:#x}, a slice of {count}"
+                );
+            }
+        }
     }
 
     #[test]
