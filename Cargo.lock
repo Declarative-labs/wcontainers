@@ -4802,7 +4802,6 @@ name = "wcontainers-kernel"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
- "vstd",
  "wcontainers-abi",
  "wcontainers-executor",
 ]
@@ -4821,6 +4820,24 @@ dependencies = [
  "vstd",
  "wcontainers-memory-capability-table",
  "wcontainers-memory-shard",
+]
+
+[[package]]
+name = "wcontainers-kernel-core-executor"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+ "wcontainers-abi",
+ "wcontainers-behavior-source",
+ "wcontainers-capability-table",
+ "wcontainers-executor",
+ "wcontainers-kernel-core",
+ "wcontainers-memory-capability-table",
+ "wcontainers-memory-capability-table-list",
+ "wcontainers-memory-shard",
+ "wcontainers-memory-shard-shared-allocation",
+ "wcontainers-processor-architecture",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4865,12 +4882,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-memory-capability-table-list"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+ "wcontainers-capability-table",
+ "wcontainers-memory-capability-table",
+ "wcontainers-memory-shard",
+ "wcontainers-memory-shard-shared-allocation",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
 name = "wcontainers-memory-shard"
 version = "0.1.0"
 dependencies = [
  "thiserror",
  "vstd",
  "wcontainers-capability-table",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-memory-shard-shared-allocation"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-memory-shard",
  "wcontainers-volatile-bytes",
 ]
 
