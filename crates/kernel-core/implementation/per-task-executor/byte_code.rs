@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use vstd::prelude::*;
 use wcontainers_kernel_core::execution::{Access, Interrupter, Stop};
-use wcontainers_kernel_core::memory::MemoryCapabilityTable;
+use wcontainers_memory_capability_table::MemoryCapabilityTable;
 use wcontainers_memory_shard::MemoryShard;
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -14,18 +14,14 @@ use crate::executor_boundary::ExecutorBoundary;
 
 verus! {
 
-/// The instructions; any other byte does nothing.
+/// The instructions, each one byte; a byte not named here does nothing, as `Nothing` does.
 pub enum Instruction {
+    Nothing,
     /// Makes a system call, which returns to the next instruction.
     SystemCall,
     /// Adds one to the counter.
     Count,
-    /// Runs itself again, until something stops the run.
-    Spin,
 }
-
-/// How many instructions one run executes at most before it ends as if interrupted, which bounds every run.
-pub const STEP_LIMIT: u64 = u32::MAX as u64;
 
 /// How many bytes an instruction takes.
 ///
@@ -39,6 +35,8 @@ pub struct ByteCodeProcessor {
 }
 
 /// Runs byte code one instruction at a time, fetching each from a shard that allows executing it.
+///
+/// Every instruction moves the program counter up and no shard holds the last address, so every run ends.
 pub struct ByteCodeExecutor;
 
 pub struct FlagInterrupter {
@@ -62,6 +60,7 @@ fn fetch<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>>(
             address,
             Access::Execute,
         ),
+        fetched is Some ==> address < u64::MAX,
 {
     proof {
         DisjointMemory::lemma_shards_are_disjoint(*memory);
@@ -127,9 +126,8 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> ExecutorBoundary<
         processor: &mut ByteCodeProcessor,
         interruption: Arc<AtomicBool>,
     ) -> (stop: Stop) {
-        let mut steps = u64::MIN;
-        while steps < STEP_LIMIT
-            decreases STEP_LIMIT - steps,
+        loop
+            decreases u64::MAX - processor.program_counter,
         {
             if interruption.load(Ordering::SeqCst) {
                 return Stop::Interrupt;
@@ -141,18 +139,13 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> ExecutorBoundary<
                     return Stop::MemoryFault { address, access: Access::Execute };
                 },
             };
+            processor.program_counter = address + INSTRUCTION_LENGTH;
             if instruction == Instruction::SystemCall as u8 {
-                processor.program_counter = to_next(address);
                 return Stop::SystemCall;
             } else if instruction == Instruction::Count as u8 {
                 processor.counter = to_next(processor.counter);
-                processor.program_counter = to_next(address);
-            } else if instruction != Instruction::Spin as u8 {
-                processor.program_counter = to_next(address);
             }
-            steps += 1;
         }
-        Stop::Interrupt
     }
 }
 
