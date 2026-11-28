@@ -58,10 +58,10 @@ const EQUAL: &str = "#version 300 es
 precision highp float;
 uniform highp uint word;
 uniform highp float depth;
-out highp uvec4 o;
+out highp uint o;
 void main() {
     gl_FragDepth = depth;
-    o = uvec4(word, 0u, 0u, 0u);
+    o = word;
 }
 ";
 
@@ -142,7 +142,7 @@ void main() {
 /// The direction from a cube's centre to the centre of texel `t` of face `at.z` (GL's face order
 /// and texel axes), for programs sampling a cube `src` towards a texel.
 pub(crate) const TOWARDS: &str = "vec3 towards(ivec2 t) {
-    vec2 c = (vec2(t) + 0.5) / float(textureSize(src, 0).x) * 2.0 - 1.0;
+    vec2 c = (vec2(t) + 0.5) / vec2(textureSize(src, 0)) * 2.0 - 1.0;
     switch (at.z) {
         case 0: return vec3(1.0, -c.y, -c.x);
         case 1: return vec3(-1.0, -c.y, c.x);
@@ -194,11 +194,11 @@ precision highp int;
 uniform highp {sampler} src;
 uniform ivec3 at;
 uniform uint scale;
-out highp uvec4 o;
+out highp uint o;
 {unorm24}{towards}void main() {{
     ivec2 p = ivec2(gl_FragCoord.xy) + at.xy;
     {fetch}
-    o = uvec4({value}, 0u, 0u, 0u);
+    o = {value};
 }}
 ",
         towards = if matches!(shape, Shape::Cube) {

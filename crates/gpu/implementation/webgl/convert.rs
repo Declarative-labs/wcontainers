@@ -166,14 +166,14 @@ pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String>
             },
         ),
         // v / (2^24 - 1) is v 2^-24 (exact) and a remainder of more than half and at most one of
-        // that float's steps, so the nearest float is v 2^-24's bits plus one (zero stays zero). In
-        // integers, so that no compiler regroups the sum below (Mesa makes v (2^-24 + 2^-48) of it,
-        // whose sum rounds to 2^-24, one step low).
+        // that float's steps, so the nearest float is v 2^-24's bits plus one; for zero that is the
+        // smallest denormal, which is stored as zero too. In integers, so that no compiler regroups
+        // the sum below (Mesa makes v (2^-24 + 2^-48) of it, whose sum rounds to 2^-24, one step
+        // low).
         Kind::Depth(Format::UNORM24_BITS) => (
             "",
             format!(
-                "uintBitsToFloat(floatBitsToUint(float(r.x & {max}u) * unit.x) \
-                 + uint((r.x & {max}u) != 0u))",
+                "uintBitsToFloat(floatBitsToUint(float(r.x & {max}u) * unit.x) + 1u)",
                 max = (1u64 << Format::UNORM24_BITS) - 1
             ),
         ),
