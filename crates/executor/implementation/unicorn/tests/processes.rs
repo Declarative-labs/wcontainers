@@ -12,8 +12,9 @@ fn processes_match_reference() {
     assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
 }
 
-/// SIGTERM to the first process with no handler for it, which its first thread blocks and its second
-/// does not: whether it ends the first process, as Linux decides.
+/// SIGTERM to the first process, blocked by its first thread only, ends it as on Linux.
+///
+/// It has no handler for the signal, and its second thread does not block it.
 #[test]
 fn a_signal_the_first_process_blocks_in_one_thread_matches_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");

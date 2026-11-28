@@ -245,8 +245,9 @@ fn identification_registers_and_capabilities_match_reference() {
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 
-/// On a machine of several processors /proc/cpuinfo has one block for each processor online, each
-/// with the first's Features line, which the test above checks: the guest's exit code 0.
+/// With several processors, /proc/cpuinfo has one block for each, all with the first's Features.
+///
+/// The test above checks the first's line; the guest exits 0 when this holds.
 #[test]
 fn every_processor_shows_the_same_features() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
