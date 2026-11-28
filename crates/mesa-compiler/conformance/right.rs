@@ -640,3 +640,83 @@ pub fn declarations_right<M: MesaCompiler>(compiler: M) {
     checked += 1;
     println!("DECLARATIONS {checked} checked");
 }
+
+/// A compute program of a workgroup whose three sizes differ.
+const SIZED_COMPUTE_SOURCE: &str = "#version 450
+layout(local_size_x = 2, local_size_y = 3, local_size_z = 5) in;
+layout(std430, binding = 0) buffer Results { uint values[]; };
+void main() {
+    values[gl_LocalInvocationIndex] = gl_LocalInvocationIndex;
+}
+";
+/// Its workgroup's sizes, x, y and z.
+const SIZED_WORKGROUP: [u32; 3] = [2, 3, 5];
+
+/// `SHADED_FRAGMENT_SOURCE` with its fragment tests asked for before it runs.
+const EARLY_FRAGMENT_SOURCE: &str = "#version 450
+layout(early_fragment_tests) in;
+layout(location = 0) in vec4 shaded;
+layout(location = 0) out vec4 colour;
+void main() {
+    colour = shaded;
+}
+";
+
+/// A control program reading control point `READ_POINT` of its input patch at a constant index.
+const POINT_READING_CONTROL_SOURCE: &str = "#version 450
+layout(vertices = 3) out;
+layout(location = 0) out vec4 handed[];
+void main() {
+    gl_out[gl_InvocationID].gl_Position = gl_in[2].gl_Position;
+    handed[gl_InvocationID] = vec4(1.0);
+    gl_TessLevelOuter[0] = 2.0;
+    gl_TessLevelOuter[1] = 2.0;
+    gl_TessLevelOuter[2] = 2.0;
+    gl_TessLevelOuter[3] = 2.0;
+    gl_TessLevelInner[0] = 2.0;
+    gl_TessLevelInner[1] = 2.0;
+}
+";
+/// The control point `POINT_READING_CONTROL_SOURCE` reads.
+const READ_POINT: u32 = 2;
+
+/// The flat form's facts of a compute and a fragment program, and the read of a missing control point: a compute
+/// program's workgroup sizes, each from its own dimension (bridge/flat.c's `workgroup_size`); a fragment program's
+/// early fragment tests, 1 where declared and 0 where not; a control program's read of control point 2 kept when the
+/// patch has 3 or 4 points, and made a zero (no stage read left) when it has 2 (bridge/flat.c's
+/// `missing_point_reads_zero`: only a point at or past the patch's own is missing).
+pub fn program_facts_right<M: MesaCompiler>(compiler: M) {
+    let compiler = &compiler;
+    let program = compiled(compiler, [None, None, Some(SIZED_COMPUTE_SOURCE), None, None, None]);
+    let prepared = compiler.received_compute_prepare(program.compute.expect("a compute stage")).shader.expect("prepared");
+    let variant = made(compiler, compiler.prepared_compute_variant(&prepared, settings(), &[], &[]));
+    let flat = variant.flat.unwrap_or_else(|| panic!("the compute program: a flat form (result {})", variant.result));
+    assert_eq!((flat.workgroup_size, flat.early_fragment_tests), (SIZED_WORKGROUP, 0), "the compute program");
+    let mut checked = 1;
+    for (source, early) in [(EARLY_FRAGMENT_SOURCE, 1), (SHADED_FRAGMENT_SOURCE, 0)] {
+        let program = compiled(compiler, [Some(POINTS_VERTEX_SOURCE), Some(source), None, None, None, None]);
+        let prepared = compiler.received_fragment_prepare(program.fragment.expect("a fragment stage")).shader.expect("prepared");
+        let variant = made(compiler, compiler.prepared_fragment_variant(&prepared, settings(), &[], &[]));
+        let flat = variant.flat.unwrap_or_else(|| panic!("the fragment program: a flat form (result {})", variant.result));
+        assert_eq!(flat.early_fragment_tests, early, "the fragment program declaring early tests {early}");
+        checked += 1;
+    }
+    let evaluation = DECLARING_EVALUATION_SOURCE.replace("LAYOUT", "triangles");
+    let program = compiled(compiler, [Some(POINTS_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, None, Some(POINT_READING_CONTROL_SOURCE), Some(&evaluation)]);
+    let prepared = compiler.received_tess_control_prepare(program.tess_control.expect("a control stage")).shader.expect("prepared");
+    let stage_reads = |points_in: u32| {
+        let form = compiler.prepared_tess_control_variant(&prepared, settings(), &[], &[]);
+        let result = form.result;
+        let flat = form.shader.and_then(|variant| compiler.variant_flatten(variant, points_in)).unwrap_or_else(|| panic!("the control program over {points_in} points: a flat form (result {result})"));
+        // A stage read of a control point: an intrinsic reaching an arrayed input variable (bridge/flat.c's io_access).
+        let inputs = |instr: &&wcontainers_mesa_compiler::FlatInstr| {
+            usize::try_from(instr.value[0]).ok().and_then(|at| flat.vars.get(at)).is_some_and(|var| var.mode == constants::VAR_INPUT)
+        };
+        flat.instrs.iter().filter(|instr| instr.kind == constants::FLAT_INTRINSIC && instr.arrayed == 1).filter(inputs).count()
+    };
+    // The program's one read of a control point: kept over 3 and 4 points, a zero over 2.
+    let reads = [READ_POINT + 1, READ_POINT + 2, READ_POINT].map(stage_reads);
+    assert_eq!(reads, [1, 1, 0], "the control program's reads of control point {READ_POINT} over 3, 4 and 2 points");
+    checked += 1;
+    println!("PROGRAM FACTS {checked} checked");
+}
