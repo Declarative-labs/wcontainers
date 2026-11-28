@@ -1992,6 +1992,92 @@ webgpu on lavapipe 176 passed, the 3 known failures, 4 ignored; shaders 158 pass
 fmt 0 diffs (wip5). The x86-64 machine was replaced twice during the run; the final plants, mutants, clippy and
 linter runs were lost with it and are owed.
 
+## The nineteenth run (2026-11-28): the owed measures at e5912688d, every shader program of webgpu and webgl planted, opengl's queries on the Gallium trait
+
+Owner's main b9cab24fe merged (f55d7a712; the lock kept one entry a package, b7147bc85; the suite's `Drifting`
+takes the volatile bytes trait's `read_at` and `write_at`, d62e2312e). From this run on nothing but source is in
+the repository: the plant lists and their runner left it in one commit (72b2c1977) and live in scratch
+graphics-implementations/evidence/r19 (with the generator that writes the shader lists, the job script and the
+logs). All MEASURED on the x86-64 machine unless marked.
+
+- Owed at e5912688d: plant lists webgpu 41 of 41 and webgl 35 of 35 caught; cargo-mutants 27.1.0 over the whole of
+  webgpu fill.rs (ARM64) 157 mutants, 138 caught, 0 missed, 19 unviable; clippy `-D warnings` over the gpu crates
+  failed with the check's three findings (fixed in b4f3e20d1, clippy 0 since); rustfmt 0; linter 119,926 in all.
+- The shader text, planted whole: a generator (scratch) writes one plant per operator, constant, swizzle and chosen
+  built-in of every WGSL and GLSL program of webgpu fill.rs and packed.rs (clear, stencil, present, resolve, cover,
+  depth programs, reads, comparison pass, packing, rounding) and webgl depth.rs and convert.rs (reads, comparison
+  pass, cube direction, probes, copies), each plant the exact line around it; the runner first runs the test command
+  unplanted and counts a plant whose shader fails to compile as not built. A constant whose larger value is the same
+  program (a covering triangle made larger, a colour of one or more stored as one) is planted downward, and a clip
+  depth of 0 to 2 (1 is still inside), each said in the generator.
+- What the survivors of the rounds below showed, and what was done:
+  - Reached code with no test that told it apart, now tested with the right value: a resolve of samples that differ
+    and differ by place; a frame of texels that all differ presented by a draw; infinities and the NaNs next to them
+    copied into depth32float from r32float, r32uint, r32sint and a buffer; a 3D packed target rounded at slice 1 (which
+    also found the rounding drew through a 2D view of a 3D texture, now a 3D view); every cube face of two levels read
+    and copied texel for texel; every sRGB byte copied into its linear twin and back; half floats and R11G11B10 of
+    every kind drawn into float targets and read back as bits; every half-float word and 2,048 R11G11B10 words
+    written and read back; copies within typeless groups of every value (signed into unsigned, unorm into sint, snorm
+    sources, every 16-bit depth word into r16uint and r16unorm); every converted format's buffer copies against the
+    host's widening and packing at an off-origin region; three-channel twins copied word for word; bgr5a1unorm's
+    rounding; the 16-bit depth read run on every word under both conversions (unit_tests/unorm16_read.rs).
+  - Code nothing could tell apart, removed: the three zero channels every one-channel program wrote (webgpu's reads,
+    comparison pass and packing; webgl's reads and comparison pass); the resolve's `<` (a load past the last sample
+    may give any sample), now `!=`; the cube divisor's `.x` (a cube face is square), now the whole size; the 24-bit
+    write's zero guard (word 0 plus one bit is a denormal, stored as 0); a 16-bit cap no sampled depth reaches; the
+    cube reads' level of detail (the draw leaves one level); the 24-bit and bias probes' own copy of the covering
+        triangle (they take the full-screen one); the comments inside the copy program's GLSL; webgpu's packing
+    `round` (a held 8-bit value k sampled as the nearest float to k / 255 or as k times the nearest to
+    1 / 255, times 255, is never below k: every k checked on the processor) and its repeat loop (two copies
+    fill 8 bits for 4 to 8, one bit is all eight: every code checked equal to the loop and to the host's
+    `widen`); the 16-bit widening's red, green and blue defaults (every such format sets them).
+  - A generator defect, fixed: a plant's text was made unique by a count of non-overlapping matches, so three
+    plants on repeated lines landed on the line above theirs; uniqueness now counts overlapping matches.
+- Rounds (each list run whole on the tree named; a plant whose shader does not compile is not counted caught):
+
+| list | tree | plants | caught | survived | not built |
+|---|---|---|---|---|---|
+| webgl | 72b2c1977 + wip3 | 295 | 168 | 127 | 0 |
+| webgpu | 72b2c1977 + wip3 (stopped after 213 of 314) | 213 | 181 | 29 | 3 |
+| webgl | 93a2d93f9 + wip6 | 285 | 252 | 33 | 0 |
+| webgpu | 93a2d93f9 + wip6 | 314 | 294 | 19 | 1 |
+| webgl | 4edcadfc8 | 268 | 247 | 21 | 0 |
+| webgl | 6d41feb83 + wip9 (= 67124d106's shader text) | 267 | 252 | 15 | 0 |
+| webgpu | 4edcadfc8 + wip8 (= 6d41feb83's shader text) | 313 | 310 | 3 | 0 |
+| webgpu, those 3 and the one plant whose line rustfmt moved | 850265f7e | 4 | 4 | 0 | 0 |
+
+- webgpu: every plant of its 313 caught, each by named tests (MEASURED on the trees in the table; the tip only
+  adds tests since, so INFERRED caught there too).
+- What still survives, all on webgl, each reached by no draw on this host (MEASURED: they survive every
+  run; READ: the conditions in implementation.rs), so the part is not reached yet: the stencil fetch's `.r`
+  (depth.rs fragment, 1 plant; taken only with WEBGL_stencil_texturing, implementation.rs:2130 to 2140); the
+  edge-rule probe (EDGE_PROBE, 9; drawn only with EXT_clip_control, implementation.rs:808); the decode from a
+  signed normalised source (convert.rs, 4; Mesa reads such textures by readPixels as stored, so no copy draws
+  from one); the encode into a half float (convert.rs `unhalf`, 1; only a multisampled half-float copy draws
+  into one, implementation.rs:1447). Next: the browser suite (Chromium, ANGLE) runs these 15 plants with the
+  suite tests that reach them, and a multisampled half-float copy test.
+- GI8 part B, queries (93a2d93f9, compile-only like the earlier parts): crates/opengl/src/queries.rs puts
+  occlusion predicates (the pass tracker's interface queries, paused and resumed for st/mesa's own draws),
+  exact sample counts (the occlusion counter) and times elapsed on the trait's `Query` and `ActiveQuery`
+  (one state, the begun query handed back by `end_query`), timestamps on `EndOnlyQuery`, `get_timestamp`, and
+  the render condition (clears skipped while it holds, waiting for the answer). A refused begin or end hands
+  back a second handle on the same query. MEASURED, x86-64 with Mesa: opengl's check 1,413 errors (1,404 the
+  unsafe lint in the old files), as at e5912688d; none in queries.rs or driver.rs. Not yet moved: counts of
+  primitives streamed and made (they need the draw), stream output, draw, blit, present.
+- D1: the Direct3D branch now has the safe constructors (READ, origin/graphics-api-crates-direct3d 63badaa79:
+  `system()` in each direct crate's serve.rs); moving webgpu's 19 and shaders' 71 lines onto them is next, with
+  the Windows SDK question of graphics-test/build.rs still open.
+
+Claim at 6d41feb83 (x86-64, evidence/r19/logs/claim-at-6d41feb83-x86.log): check `--all-targets` exit 0 for the
+fifteen listed packages; nir 47 errors (D7, as before), opengl 1,413 (as before); no-Mesa nir, opengl and the Mesa
+compiler's direct crate 0. Tests: webgl 106 passed; opengl-es direct 18; recording 371; webgpu on lavapipe 192
+passed, the 3 known failures, 4 ignored (67124d106 + wip); shaders 158 passed, 5 ignored; clippy 0; rustfmt 0. Linter
+(the track's build): 90,959 in all; ours 20,705 (gpu 1,254, conformance 4,080, recording 854, trace 109, webgl
+6,295, webgpu 2,550, nir 584, opengl 1,189, shaders 3,564, shader-converters 192, test-window 34), from 23,949 at
+e5912688d (INFERRED: the owner's merged reviewable-answers.toml); queries.rs adds only text rules and the
+`stray_source` every moved opengl file has. Cargo.lock 686dbd1e2d382be0, 9fe5bd53a137b664 after `cargo metadata`
+(the owner's verus packages; not committed).
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
