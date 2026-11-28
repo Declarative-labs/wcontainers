@@ -1003,3 +1003,29 @@ fn a_copy_across_a_window_the_other_space_never_placed_lands_the_pages_after_it(
         "the gap"
     );
 }
+
+#[test]
+fn a_copy_of_more_bytes_than_one_read_takes_lands_every_word() {
+    // Three MiB of data in one run, more than the copy reads at once.
+    let executor = executor();
+    let (memory, mut table) = executor.create_guest_memory().expect("a space");
+    let (other, mut other_table) = executor.create_guest_memory().expect("a space");
+    let length = 3 << 20;
+    let from = 2 * WINDOW + 7 * PAGE_SIZE;
+    writable(&mut other_table, from..from + length);
+    fill(&other, from..from + length, STORED);
+    let at = 3 * WINDOW + 5 * PAGE_SIZE;
+    table
+        .copy_from(at..at + length, &other_table, from)
+        .expect("a copy");
+    for offset in (0..length).step_by(PAGE_SIZE as usize * 16) {
+        for within in [u64::MIN, PAGE_SIZE * 16 - WORD] {
+            let address = at + offset + within;
+            assert_eq!(
+                read_word(&memory, address),
+                filled(from + offset + within, STORED),
+                "at {address:#x}"
+            );
+        }
+    }
+}
