@@ -1191,13 +1191,62 @@ struct Maker {
 
 /// A drive's call with each object of a kind it names a second time or more (`o.k<n>.as_ref()`, the receiver first) the
 /// suite's second object of that kind where it has one: the same call made with two objects of one kind, so that a glue
-/// passing one for the other is seen.
+/// passing one for the other is seen. A reference of several kinds (`if let Some(x) = o.k<n>.as_ref() { .. } else ..`)
+/// whose kinds were all named before takes a second object of any of them first, then an object of another kind than
+/// the first reference took (its kinds turned by one).
 fn with_second_objects(prelude: &str, call: &str) -> (String, String) {
     const SEPARATOR: char = '\u{0}';
+    const ARM: &str = "if let Some(x) = o.k";
+    const LAST: &str = " else { None })";
     let text = format!("{prelude}{SEPARATOR}{call}");
-    let mut out = String::new();
     let mut met: Vec<String> = Vec::new();
-    let mut rest = text.as_str();
+    // The references of several kinds first: (start, end, kinds and their variants).
+    let mut chains: Vec<(usize, usize, Vec<(String, String)>)> = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find(&format!("({ARM}")) {
+        let start = from + found;
+        let Some(length) = text[start..].find(LAST) else { break };
+        let end = start + length + LAST.len();
+        let arms: Vec<(String, String)> = text[start + 1..end - LAST.len()]
+            .split(" else ")
+            .filter_map(|arm| {
+                let rest = arm.strip_prefix(ARM)?;
+                let (kind, rest) = rest.split_once(".as_ref() { Some(")?;
+                let variant = rest.strip_suffix("(x)) }")?;
+                Some((kind.to_string(), variant.to_string()))
+            })
+            .collect();
+        chains.push((start, end, arms));
+        from = end;
+    }
+    let mut out = String::new();
+    let mut at = 0;
+    for (start, end, arms) in &chains {
+        out.push_str(&single_objects(&text[at..*start], &mut met));
+        if !arms.is_empty() && arms.iter().all(|(kind, _)| met.contains(kind)) {
+            let seconds = arms.iter().map(|(kind, variant)| format!("if let Some(x) = o.s{kind}.as_ref() {{ Some({variant}(x)) }}"));
+            let turned = arms.iter().cycle().skip(1).take(arms.len()).map(|(kind, variant)| format!("if let Some(x) = o.k{kind}.as_ref() {{ Some({variant}(x)) }}"));
+            let _ = write!(out, "({}{LAST}", seconds.chain(turned).collect::<Vec<_>>().join(" else "));
+        } else {
+            for (kind, _) in arms {
+                if !met.contains(kind) {
+                    met.push(kind.clone());
+                }
+            }
+            out.push_str(&text[*start..*end]);
+        }
+        at = *end;
+    }
+    out.push_str(&single_objects(&text[at..], &mut met));
+    let (prelude, call) = out.split_once(SEPARATOR).unwrap_or((&out, ""));
+    (prelude.to_string(), call.to_string())
+}
+
+/// `text` with each object of a kind already `met` (`o.k<n>.as_ref()`) the second of that kind where there is one; the
+/// kinds it names first are met from then on.
+fn single_objects(text: &str, met: &mut Vec<String>) -> String {
+    let mut out = String::new();
+    let mut rest = text;
     while let Some(at) = rest.find("o.k") {
         out.push_str(&rest[..at]);
         let after = &rest[at + 3..];
@@ -1217,8 +1266,7 @@ fn with_second_objects(prelude: &str, call: &str) -> (String, String) {
         rest = &after[digits + ".as_ref()".len()..];
     }
     out.push_str(rest);
-    let (prelude, call) = out.split_once(SEPARATOR).unwrap_or((&out, ""));
-    (prelude.to_string(), call.to_string())
+    out
 }
 
 /// Splits a tuple's types at their top-level commas.
