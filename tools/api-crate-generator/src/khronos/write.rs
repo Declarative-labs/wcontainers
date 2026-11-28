@@ -1308,7 +1308,8 @@ fn answer_changes(line: &str, signed: bool) -> Vec<(String, String)> {
     let payload = if prefix.is_empty() { payload } else { payload.strip_suffix(')').unwrap_or(payload) };
     let close = if prefix.is_empty() { "" } else { ")" };
     let parts = match payload.strip_prefix('(').and_then(|inner| inner.strip_suffix(')')) {
-        Some(inner) if !payload.contains("then") && !payload.contains("is_null") => split_arguments(inner),
+        // (A handle made only when not null, `(!result.is_null()).then(..)`, carries no parts.)
+        Some(inner) if !payload.contains(".then(") => split_arguments(inner),
         _ => Vec::new(),
     };
     for place in 0..parts.len() {
