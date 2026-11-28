@@ -1041,6 +1041,11 @@ const STOPPED_RUNS: usize = 20_000;
 const STOPS_WANTED: usize = 2_000;
 #[cfg(target_arch = "aarch64")]
 const STORM_LONGEST: std::time::Duration = std::time::Duration::from_secs(30);
+/// The pauses between stops, in spins: a linear congruential sequence (Numerical Recipes' multiplier) below a bound.
+#[cfg(target_arch = "aarch64")]
+const PAUSE_MULTIPLIER: u32 = 1_664_525;
+#[cfg(target_arch = "aarch64")]
+const LONGEST_PAUSE: u32 = 20_000;
 #[cfg(target_arch = "aarch64")]
 const STOP_STORM_SEARCH_START: usize = SEARCH_START * 19;
 
@@ -1093,9 +1098,15 @@ where
             (stops, wrong)
         });
         let thread = tid.recv().expect("the runner's thread");
-        // The runner's thread may end between the last look and a stop, which is then refused.
+        // The runner's thread may end between the last look and a stop, which is then refused. Between stops a pause
+        // of a varying length, so that they land all over a run and the runner still finishes runs.
+        let mut pause = 1_u32;
         while !done.load(Ordering::Acquire) {
             let _ = linux.tgkill(own_process(), thread, RUN_STOP_SIGNAL);
+            pause = pause.wrapping_mul(PAUSE_MULTIPLIER).wrapping_add(1);
+            for _ in 0..pause % LONGEST_PAUSE {
+                std::hint::spin_loop();
+            }
         }
         runner.join().expect("the runner ends")
     });
