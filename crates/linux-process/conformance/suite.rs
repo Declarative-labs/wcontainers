@@ -39,6 +39,8 @@ const RUN_SEARCH_START: usize = SEARCH_START * 5;
 const EVERY_REGISTER_SEARCH_START: usize = SEARCH_START * 15;
 #[cfg(target_arch = "aarch64")]
 const REFUSED_RUN_SEARCH_START: usize = SEARCH_START * 17;
+#[cfg(target_arch = "aarch64")]
+const KEPT_FLOATS_SEARCH_START: usize = SEARCH_START * 21;
 /// The pages of instructions mapped.
 const CODE_PAGES: usize = 2;
 /// No window: instructions mapped displaced, whose stack pointer is their own wherever it points.
@@ -1220,6 +1222,84 @@ pub fn finds_the_predicates_a_system_call_leaves(linux: impl LinuxProcess) {
     }
 }
 
+/// Values of the thread's own, which this thread keeps in the registers a call keeps (d8 to d15), and how many runs
+/// they are kept through.
+#[cfg(target_arch = "aarch64")]
+const KEPT_FLOATS: [f64; 8] = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5];
+#[cfg(target_arch = "aarch64")]
+const KEPT_FLOAT_RUNS: usize = 16;
+
+/// The floats a thread keeps across a call (d8 to d15, [AAPCS64, 6.1.2](https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst))
+/// are its own after each run, whatever the instructions' vector registers held.
+#[cfg(target_arch = "aarch64")]
+pub fn keeps_the_floats_a_call_keeps(linux: impl LinuxProcess) {
+    use std::hint::black_box;
+    use wcontainers_linux_process::{RunEnd, RunFrame};
+    let (address, mapping) = code_of(
+        &linux,
+        KEPT_FLOATS_SEARCH_START,
+        &[CODE_TO_EXIT[0], CODE_TO_EXIT[CODE_TO_EXIT.len() - 1]],
+    );
+    let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
+    let [a, b, c, d, e, f, g, h] = KEPT_FLOATS.map(black_box);
+    for _ in 0..KEPT_FLOAT_RUNS {
+        let mut frame = RunFrame::default();
+        frame.registers.pc = address;
+        frame.registers.v = [u128::MAX; wcontainers_linux_process::VECTOR_REGISTERS];
+        assert_eq!(
+            linux.run_instructions(&mut thread, &mapping, &mut frame),
+            RunEnd::Exit(address + EXIT_AT as u64)
+        );
+        assert_eq!(
+            [a, b, c, d, e, f, g, h].map(f64::to_bits),
+            KEPT_FLOATS.map(f64::to_bits)
+        );
+    }
+}
+
+/// How many stops are sent to a thread blocked in a read, and how long apart.
+#[cfg(target_arch = "aarch64")]
+const STOPS_TO_A_BLOCKED_READ: usize = 8;
+#[cfg(target_arch = "aarch64")]
+const BETWEEN_STOPS_TO_A_READ: std::time::Duration = std::time::Duration::from_millis(5);
+/// The byte written for the blocked read.
+#[cfg(target_arch = "aarch64")]
+const READ_BYTE: u8 = 0x5a;
+
+/// A stop that comes between runs leaves a system call the prepared thread is blocked in to go on, as one a handler
+/// installed with `SA_RESTART` interrupts does ([signal(7)](https://man7.org/linux/man-pages/man7/signal.7.html),
+/// "Interruption of system calls and library functions by signal handlers": a read of a pipe): the read returns the
+/// byte written after the stops, never `EINTR`.
+#[cfg(target_arch = "aarch64")]
+pub fn a_stop_between_runs_lets_a_blocked_call_go_on<L: LinuxProcess + Sync>(linux: L) {
+    let (reader, writer) = rustix::pipe::pipe().expect("a pipe");
+    std::thread::scope(|scope| {
+        let linux = &linux;
+        let (prepared_sender, prepared) = std::sync::mpsc::channel();
+        let blocked = scope.spawn(move || {
+            let _thread = linux.prepare_run_thread().expect("the thread is prepared");
+            prepared_sender
+                .send(rustix::thread::gettid())
+                .expect("the test waits");
+            let mut byte = [0_u8];
+            rustix::io::read(&reader, &mut byte).map(|count| (count, byte[0]))
+        });
+        let thread = prepared.recv().expect("the thread is prepared");
+        for _ in 0..STOPS_TO_A_BLOCKED_READ {
+            std::thread::sleep(BETWEEN_STOPS_TO_A_READ);
+            linux
+                .tgkill(
+                    own_process(),
+                    thread,
+                    wcontainers_linux_process::RUN_STOP_SIGNAL,
+                )
+                .expect("the thread is stopped");
+        }
+        rustix::io::write(&writer, &[READ_BYTE]).expect("the byte is written");
+        assert_eq!(blocked.join().expect("the thread ends"), Ok((1, READ_BYTE)));
+    });
+}
+
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
@@ -1272,6 +1352,18 @@ macro_rules! tests {
         #[test]
         fn runs_instructions_until_an_exit_and_keeps_the_thread_s_own() {
             $crate::runs_instructions_until_an_exit_and_keeps_the_thread_s_own($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn keeps_the_floats_a_call_keeps() {
+            $crate::keeps_the_floats_a_call_keeps($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn a_stop_between_runs_lets_a_blocked_call_go_on() {
+            $crate::a_stop_between_runs_lets_a_blocked_call_go_on($value);
         }
 
         #[cfg(target_arch = "aarch64")]

@@ -5313,6 +5313,7 @@ dependencies = [
 name = "wcontainers-linux-process-direct"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "libc",
  "linux-raw-sys",
  "memmap2",

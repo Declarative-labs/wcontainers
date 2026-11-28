@@ -198,7 +198,8 @@ pub trait LinuxProcess {
     /// of its own, which every signal of a run is taken on, this process's handlers of a run (installed once), and
     /// every signal blocked but a run's (an access fault, an undefined instruction, a breakpoint, [`RUN_STOP_SIGNAL`]),
     /// by the [raw mask](https://man7.org/linux/man-pages/man2/rt_sigprocmask.2.html), which reaches the two signals
-    /// glibc keeps for itself too. `EBUSY` where the thread is already prepared.
+    /// glibc keeps for itself too. A [`RUN_STOP_SIGNAL`] that comes between runs lets a system call the thread is blocked
+    /// in go on, as `SA_RESTART` does. `EBUSY` where the thread is already prepared.
     #[cfg(target_arch = "aarch64")]
     fn prepare_run_thread(&self) -> Result<Self::RunThread, Errno>;
 

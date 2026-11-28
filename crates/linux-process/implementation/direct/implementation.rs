@@ -1185,12 +1185,13 @@ mod entering {
             "stp d10, d11, [sp, #{kept_d} + 16]",
             "stp d12, d13, [sp, #{kept_d} + 32]",
             "stp d14, d15, [sp, #{kept_d} + 48]",
-            "mrs x9, fpcr",
-            "mrs x10, tpidr_el0",
-            "stp x9, x10, [sp, #{kept_system}]",
             "adr x9, 2f",
             "mov x10, sp",
             "stp x9, x10, [x0, #{exits_go}]",
+            // Read once x9 and x10 hold addresses of the run, never a value of the thread's own.
+            "mrs x9, fpcr",
+            "mrs x10, tpidr_el0",
+            "stp x9, x10, [sp, #{kept_system}]",
             // Where a signal finds each part of the run, then the frame: from here a stop ends the run, and one that
             // came before ends it now.
             "ldr x11, [x0, #{signal_stack}]",
