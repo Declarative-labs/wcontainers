@@ -425,7 +425,7 @@ pub open spec fn displaced_jump_means(step: spec_fn(Machine, u32) -> Stepped, n:
 }
 
 /// Four times a low word is below 2^34 and a multiple of 4.
-proof fn lemma_low_word_times_four(v: u64)
+pub proof fn lemma_low_word_times_four(v: u64)
     ensures
         ((v & 0xffff_ffffu64) << 2u64) < 0x4_0000_0000u64,
         ((v & 0xffff_ffffu64) << 2u64) & 3u64 == 0,

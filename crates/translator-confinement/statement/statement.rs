@@ -12,6 +12,9 @@
 //!
 //! [`compose::described_is_confined`] is the general theorem: a piece described by blocks that each hold alone is
 //! confined, whatever its shape; the other modules prove whole pieces one shape at a time.
+//! [`compose::described_is_chained`] adds that every exit of such a piece hands on what the next piece's entry needs
+//! ([`is_chained`]), and [`compose::whole_run_is_confined`] proves, by induction over the steps, every step of a
+//! [`whole_run`] of such pieces confined; what it still takes on trust is listed there.
 
 #![no_std]
 
@@ -146,6 +149,93 @@ pub open spec fn is_confined(step: spec_fn(Machine, u32) -> Stepped, instruction
         entered(a, start) && runs(a, run(step, instructions, a, start, n)) ==> {
         let now = run(step, instructions, a, start, n);
         confined_step(a, now, step(now, word_at(instructions, a, now.pc)))
+    }
+}
+
+/// How far outside the window a run may leave the stack pointer for the next piece: the most an access through it
+/// moves it after touching it (`ldp qT, qT2, [sp], #1008`; the slot's never mapped bytes stop anything further).
+pub const STACK_SLACK: u64 = 1024;
+
+pub open spec fn stack_ok(a: Allowed, sp: u64) -> bool {
+    a.displaced || (a.base - STACK_SLACK as int <= sp as int && sp as int <= a.base + WINDOW_BYTES as int + STACK_SLACK as int)
+}
+
+/// What a run hands to the piece it goes on to: the frame in x28, the window's base in x24, the stack pointer within
+/// the slack of the window unless displaced.
+pub open spec fn hands_on(a: Allowed, m: Machine) -> bool {
+    &&& m.x.len() == 31
+    &&& m.x[frame_register()] as int == a.frame
+    &&& m.x[base_register()] as int == a.base
+    &&& stack_ok(a, m.sp)
+}
+
+/// THE CHAIN'S ENTRY RULE: what a run hands on, at the first instruction ([`entered`] is one of these machines).
+pub open spec fn handed(a: Allowed, m: Machine) -> bool {
+    hands_on(a, m) && m.pc as int == a.code && !m.ended
+}
+
+/// The slot table: where an exit goes to the piece of a guest address.
+pub open spec fn in_table(a: Allowed, pc: u64) -> bool {
+    slot_table(a) <= pc as int && (pc as int) < slot_table(a) + SLOT_TABLE_BYTES as int
+}
+
+/// THE CHAIN: from every machine a run hands on and after every number of steps, the next step stays confined, and
+/// a step into the slot table hands on.
+pub open spec fn is_chained(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, a: Allowed) -> bool {
+    &&& a.length == instructions.len() * 4
+    &&& forall|start: Machine, n: nat|
+        #![trigger run(step, instructions, a, start, n)]
+        handed(a, start) && runs(a, run(step, instructions, a, start, n)) ==> {
+        let now = run(step, instructions, a, start, n);
+        let s = step(now, word_at(instructions, a, now.pc));
+        &&& confined_step(a, now, s)
+        &&& !s.after.ended && in_table(a, s.after.pc) ==> hands_on(a, s.after)
+    }
+}
+
+/// A piece of a program: its instructions and where they run.
+pub struct Piece {
+    pub instructions: Seq<u32>,
+    pub a: Allowed,
+}
+
+/// The pieces share one window, its reservation, frame and way, and lie below the slot tables.
+pub open spec fn one_window(pieces: Seq<Piece>, a: Allowed) -> bool {
+    forall|i: int| 0 <= i < pieces.len() ==> {
+        let b = #[trigger] pieces[i].a;
+        &&& b.base == a.base && b.below == a.below && b.frame == a.frame && b.displaced == a.displaced
+        &&& 0 <= b.code <= PROCESS_SLOTS
+    }
+}
+
+/// A WHOLE RUN of a program, piece `k` the one it is in: each step is its piece's, and a step into the slot table goes
+/// on at the first instruction of piece `link(pc)` with every register as the step left it. That is what the slot
+/// table's words do once exit linking wrote them: ASSUMED here, not proven (they are not the translator's pieces).
+pub open spec fn whole_run(
+    step: spec_fn(Machine, u32) -> Stepped,
+    pieces: Seq<Piece>,
+    link: spec_fn(u64) -> int,
+    k: int,
+    m: Machine,
+    n: nat,
+) -> (int, Machine)
+    decreases n,
+{
+    if n == 0 {
+        (k, m)
+    } else {
+        let before = whole_run(step, pieces, link, k, m, (n - 1) as nat);
+        let p = pieces[before.0];
+        if runs(p.a, before.1) {
+            let after = step(before.1, word_at(p.instructions, p.a, before.1.pc)).after;
+            if !after.ended && in_table(p.a, after.pc) {
+                (link(after.pc), Machine { pc: pieces[link(after.pc)].a.code as u64, ..after })
+            } else {
+                (before.0, after)
+            }
+        } else {
+            before
+        }
     }
 }
 

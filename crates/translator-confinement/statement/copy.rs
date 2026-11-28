@@ -148,6 +148,7 @@ pub proof fn lemma_exit_step(step: spec_fn(Machine, u32) -> Stepped, instruction
             let k = (m.pc - a.code - exit) / 4 + 1;
             &&& confined_step(a, m, s)
             &&& kept(a, s.after) && s.after.ended == m.ended && s.after.x[base_register()] == m.x[base_register()]
+            &&& s.after.sp == m.sp
             &&& k < 4 ==> s.after.pc == m.pc + 4 && at_exit(s.after, exit_slot(a, guest + 4) as u64, k)
             &&& k == 4 ==> !in_sequence(a, s.after.pc)
         }),
