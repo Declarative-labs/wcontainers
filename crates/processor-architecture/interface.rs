@@ -75,11 +75,11 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
     /// Simulates applying this instruction to the given processor + memory.
     ///
     /// The processor expected afterwards is returned, memory changes are written through the hook.
-    fn simulate(
+    fn simulate<Sink: MemorySink<Architecture>>(
         &self,
         processor: &Architecture::ProcessorState,
         memory: MemorySnapshot<'_, '_, Architecture>,
-        mutation_hook: &mut impl MemorySink<Architecture>,
+        mutation_hook: &mut Sink,
     ) -> Result<Architecture::ProcessorStateExpectation, Self::Error>
         // TODO: replace this clause with what the method promises.
         ensures
@@ -96,7 +96,9 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
             true,
     {
         let mut mutations = Vec::new();
-        let processor = self.simulate(&before.processor, before.memory(), &mut mutations)?;
+        // VERUS: no call of a function outside `verus!`, so the snapshot is built here.
+        let snapshot = MemorySnapshot { mutations: before.memory_mutations.as_slice() };
+        let processor = self.simulate(&before.processor, snapshot, &mut mutations)?;
         before.memory_mutations.append(&mut mutations);
         Ok(ExecutionStateExpectation {
             processor,

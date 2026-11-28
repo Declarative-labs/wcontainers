@@ -1,5 +1,6 @@
 #![no_std]
-#![allow(async_fn_in_trait)]
+
+use core::future::Future;
 
 use bitflags::bitflags;
 use vstd::prelude::*;
@@ -8,12 +9,18 @@ use wcontainers_abi::HostError;
 verus! {
 
 pub trait Readiness<Handle> {
+    // VERUS: no `async fn` in a trait, which is an `impl Trait` return, so the wait is a named type.
+    type Wait<'wait>: Future<Output = Result<ReadinessReport, HostError>>
+    where
+        Self: 'wait,
+        Handle: 'wait;
+
     /// Waits until the handle is ready for one of the things asked for or has an unconditional event, and returns both.
-    async fn wait_until_ready(
-        &self,
-        handle: &Handle,
+    fn wait_until_ready<'wait>(
+        &'wait self,
+        handle: &'wait Handle,
         interest: ReadyFor,
-    ) -> Result<ReadinessReport, HostError>
+    ) -> Self::Wait<'wait>
         // TODO: replace this clause with what the method promises.
         ensures
             true,
@@ -25,8 +32,6 @@ pub struct ReadinessReport {
     pub ready_for: ReadyFor,
     pub unconditional: UnconditionalEvents,
 }
-
-} // verus!
 
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -49,3 +54,5 @@ bitflags! {
         const HANG_UP = 1 << 1;
     }
 }
+
+} // verus!

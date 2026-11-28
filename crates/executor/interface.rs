@@ -55,7 +55,7 @@ pub trait Execution {
 
     /// Runs until a trap terminates the execution or the executor must wait.
     // VERUS: no proof of an `async` body in an implementation of a trait, so this is a plain call that returns when it must wait and not a future.
-    fn run(self, handler: &mut impl TrapHandler)
+    fn run<Handler: TrapHandler>(self, handler: &mut Handler)
     -> ExecutionStop<Self::ProcessorState, Self::Wait>
         // TODO: replace this clause with what the method promises.
         ensures

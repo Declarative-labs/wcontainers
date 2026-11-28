@@ -76,9 +76,9 @@ pub trait Kernel: Sync + Sized {
         ensures
             true,
     ;
-    fn resume_tasks(
+    fn resume_tasks<Tasks: IntoIterator<Item = Self::SuspendedTask>>(
         &self,
-        tasks: impl IntoIterator<Item = Self::SuspendedTask>,
+        tasks: Tasks,
     ) -> Self::UnresumedTasks<'_>
         // TODO: replace this clause with what the method promises.
         ensures
@@ -144,10 +144,10 @@ pub trait Process: ProcessInfo {
             true,
     ;
     // VERUS: no `impl Trait` in a trait and no lifetime on a type of this handle, so the parts go to a reader.
-    fn read_memory(
+    fn read_memory<Reader: MemoryReader>(
         &mut self,
         range: Range<u64>,
-        reader: &mut impl MemoryReader,
+        reader: &mut Reader,
     ) -> Result<(), MemoryError>
         // TODO: replace this clause with what the method promises.
         ensures

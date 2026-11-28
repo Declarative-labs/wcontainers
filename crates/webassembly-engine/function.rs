@@ -28,9 +28,9 @@ pub trait FunctionTypeBinder<Parameters, Results>: WebAssemblyEngine {
     ;
 
     /// Returns the address of a new [host function](https://webassembly.github.io/spec/core/exec/runtime.html#:~:text=A%20host%20function%20is%20a%20function%20expressed%20outside%20WebAssembly) that runs the given function.
-    fn bind_host_function(
+    fn bind_host_function<Work: Fn(&mut Self::HostContext, Parameters) -> Results + Send + Sync + 'static>(
         &mut self,
-        function: impl Fn(&mut Self::HostContext, Parameters) -> Results + Send + Sync + 'static,
+        function: Work,
     ) -> Self::FunctionAddress
         // TODO: replace this clause with what the method promises.
         ensures

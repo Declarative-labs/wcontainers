@@ -68,21 +68,21 @@ pub trait TcpConnections:
         ensures
             true,
     ;
-    fn send(
+    fn send<Bytes: VolatileBytes>(
         &self,
         connection: &Self::Connection,
         request: TcpSendRequest,
-        payload: &impl VolatileBytes,
+        payload: &Bytes,
     ) -> Result<ByteCount, HostError>
         // TODO: replace this clause with what the method promises.
         ensures
             true,
     ;
-    fn receive(
+    fn receive<Bytes: VolatileBytes>(
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
-        into: &impl VolatileBytes,
+        into: &Bytes,
     ) -> Result<TcpReceived, HostError>
         // TODO: replace this clause with what the method promises.
         ensures

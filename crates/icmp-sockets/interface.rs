@@ -37,21 +37,21 @@ pub trait IcmpSockets:
         ensures
             true,
     ;
-    fn send_to(
+    fn send_to<Bytes: VolatileBytes>(
         &self,
         socket: &Self::Socket,
         header: IpHeaderFields<'_>,
         fields: IpSendFields,
-        message: &impl VolatileBytes,
+        message: &Bytes,
     ) -> Result<(), SendError>
         // TODO: replace this clause with what the method promises.
         ensures
             true,
     ;
-    fn receive(
+    fn receive<Bytes: VolatileBytes>(
         &self,
         socket: &Self::Socket,
-        into: &impl VolatileBytes,
+        into: &Bytes,
     ) -> Result<Received, HostError>
         // TODO: replace this clause with what the method promises.
         ensures

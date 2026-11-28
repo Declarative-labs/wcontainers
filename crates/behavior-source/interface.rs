@@ -26,11 +26,11 @@ pub trait BehaviorSource {
     /// Executes exactly one instruction on the given processor + memory.
     ///
     /// Processor changes are written in place, memory changes are written through the hook.
-    fn execute_single_instruction_in_place(
+    fn execute_single_instruction_in_place<Sink: MemorySink<Self::Architecture>>(
         &mut self,
         processor: &mut <Self::Architecture as ProcessorArchitecture>::ProcessorState,
         memory: MemorySnapshot<'_, '_, Self::Architecture>,
-        mutation_hook: &mut impl MemorySink<Self::Architecture>,
+        mutation_hook: &mut Sink,
     ) -> Result<(), Self::Error>
         // TODO: replace this clause with what the method promises.
         ensures
@@ -61,10 +61,10 @@ pub trait BehaviorSource {
     /// Returns the one behavior of the instruction that this source shows.
     ///
     /// The source runs every generated state, so a source that shows no known behavior fails here and not later.
-    fn measure_instruction(
+    fn measure_instruction<Generator: DistinguishingStateGenerator<Self::Architecture>>(
         &mut self,
         instruction: <Self::Architecture as ProcessorArchitecture>::Instruction,
-        generator: &impl DistinguishingStateGenerator<Self::Architecture>,
+        generator: &Generator,
     ) -> Result<
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction,
         MeasureInstructionError<Self::Architecture, Self::Error>,
@@ -126,9 +126,9 @@ pub trait BehaviorSource {
     }
 
     /// Returns each instruction of the architecture with the one behavior this source shows for it.
-    fn measure_instructions(
+    fn measure_instructions<Generator: DistinguishingStateGenerator<Self::Architecture>>(
         &mut self,
-        generator: &impl DistinguishingStateGenerator<Self::Architecture>,
+        generator: &Generator,
     ) -> Result<
         Vec<(
             <Self::Architecture as ProcessorArchitecture>::Instruction,

@@ -1,8 +1,8 @@
 #![no_std]
 #![allow(unused_variables)]
 // TODO: a wait costs one indirect call to wake the kernel, because Rust cannot yet resolve a future's waker at compile time. Check on https://github.com/rust-lang/rfcs/pull/3434 (a future generic over its context) and on https://goals.rust-lang.org/2026/async-statemachine-optimisation.html; adopt either when it is stable.
-#![allow(async_fn_in_trait)]
 
+use core::future::Future;
 use core::num::NonZeroUsize;
 use core::ops::{ControlFlow, Deref, Range};
 
@@ -277,19 +277,19 @@ pub const FIRST_TASK_ID_AFTER_WRAPPING: u32 = 300;
 pub trait StreamTransport: Readiness<Self::Endpoint> {
     type Endpoint: Ord;
 
-    fn send_stream(
+    fn send_stream<Bytes: VolatileBytes>(
         &self,
         peer: &Self::Endpoint,
-        payload: &impl VolatileBytes,
+        payload: &Bytes,
     ) -> Result<usize, HostError>
         // TODO: replace this clause with what the method promises.
         ensures
             true,
     ;
-    fn receive_stream(
+    fn receive_stream<Bytes: VolatileBytes>(
         &self,
         peer: &Self::Endpoint,
-        into: &impl VolatileBytes,
+        into: &Bytes,
     ) -> Result<usize, HostError>
         // TODO: replace this clause with what the method promises.
         ensures
@@ -319,11 +319,18 @@ pub trait FallbackObserver<Fallback> {
 pub trait FuseServer {
     type Reply: Deref<Target = [u8]>;
     type Notice: Deref<Target = [u8]>;
+    // VERUS: no `async fn` in a trait, which is an `impl Trait` return, so each wait is a named type.
+    type Request<'server>: Future<Output = Result<Self::Reply, HostError>>
+    where
+        Self: 'server;
+    type NextNotice<'server>: Future<Output = Result<Self::Notice, HostError>>
+    where
+        Self: 'server;
 
     /// Sends a FUSE request and returns its reply; a request FUSE never replies to completes immediately with an empty reply.
     ///
     /// The reply completes only after every notice the server sent before it has been applied.
-    async fn send_request(&self, request: &[u8]) -> Result<Self::Reply, HostError>
+    fn send_request<'server>(&'server self, request: &'server [u8]) -> Self::Request<'server>
         // TODO: replace this clause with what the method promises.
         ensures
             true,
@@ -331,10 +338,10 @@ pub trait FuseServer {
     /// Waits for the next [notice](https://libfuse.github.io/doxygen/fuse__lowlevel_8h.html#a9cb974af9745294ff446d11cba2422f1) the server sends unasked.
     ///
     /// Calling it again tells the server that the notice before was applied, and with what result.
-    async fn receive_notice(
-        &self,
+    fn receive_notice<'server>(
+        &'server self,
         applied: Option<Result<(), Errno>>,
-    ) -> Result<Self::Notice, HostError>
+    ) -> Self::NextNotice<'server>
         // TODO: replace this clause with what the method promises.
         ensures
             true,
@@ -344,11 +351,15 @@ pub trait FuseServer {
 /// A [DNS resolver](https://man7.org/linux/man-pages/man5/resolv.conf.5.html).
 pub trait DomainNameResolver {
     type AnswerBytes: AsRef<[u8]>;
+    // VERUS: no `async fn` in a trait, which is an `impl Trait` return, so the wait is a named type.
+    type Resolution<'resolver>: Future<Output = Result<Message<Self::AnswerBytes>, HostError>>
+    where
+        Self: 'resolver;
 
-    async fn resolve_domain(
-        &self,
-        question: Question<&Name<[u8]>>,
-    ) -> Result<Message<Self::AnswerBytes>, HostError>
+    fn resolve_domain<'resolver>(
+        &'resolver self,
+        question: Question<&'resolver Name<[u8]>>,
+    ) -> Self::Resolution<'resolver>
         // TODO: replace this clause with what the method promises.
         ensures
             true,

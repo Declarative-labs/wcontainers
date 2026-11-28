@@ -20,10 +20,10 @@ pub trait ProcessorCores: Sync {
     ;
 
     /// Moves the calling thread onto the core for as long as the work runs, and returns what the work returned.
-    fn run_on_core<Output>(
+    fn run_on_core<Output, Work: FnOnce() -> Output>(
         &self,
         core: &Self::Core,
-        work: impl FnOnce() -> Output,
+        work: Work,
     ) -> Result<Output, Self::RunOnCoreError>
         // TODO: replace this clause with what the method promises.
         ensures
@@ -31,9 +31,11 @@ pub trait ProcessorCores: Sync {
     ;
 
     /// Performs run_on_core on all cores in parallel.
-    fn run_on_all_cores<Output: Send>(
+    // TRIAL: does strict mode take a default body Verus does not see?
+    #[verifier::external_body]
+    fn run_on_all_cores<Output: Send, Work: Fn(Self::CoreIdentity) -> Output + Sync>(
         &self,
-        work: impl Fn(Self::CoreIdentity) -> Output + Sync,
+        work: Work,
     ) -> Result<Vec<Output>, RunOnAllCoresError<Self::ListCoresError, Self::RunOnCoreError>>
         // TODO: replace this clause with what the method promises.
         ensures

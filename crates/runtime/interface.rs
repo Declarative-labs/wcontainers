@@ -19,6 +19,8 @@ pub trait Runtime {
     type Config;
 
     fn new(config: Self::Config) -> Self
+    where
+        Self: Sized,
         // TODO: replace this clause with what the method promises.
         ensures
             true,

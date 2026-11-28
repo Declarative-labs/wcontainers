@@ -1,6 +1,7 @@
 //! Guest memory as both sides see it: pages and what each allows.
 
 use bitflags::bitflags;
+use vstd::prelude::*;
 
 /// The page size the guest is told. Permissions are kept per page of this size.
 pub const PAGE_SIZE: u64 = 4096;
@@ -15,6 +16,8 @@ pub const WORD: u64 = size_of::<u64>() as u64;
 /// Nothing is ever placed below this address, so a null pointer always faults.
 pub const LOWEST_ADDRESS: u64 = 64 * 1024;
 
+verus! {
+
 bitflags! {
     /// What a page allows. Empty means any access faults.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -24,6 +27,8 @@ bitflags! {
         const EXECUTE = 4;
     }
 }
+
+} // verus!
 
 /// The addresses a process may use: from [`LOWEST_ADDRESS`] up to, not including, `end`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

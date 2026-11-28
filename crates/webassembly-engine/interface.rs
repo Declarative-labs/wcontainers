@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(async_fn_in_trait)]
 
 extern crate alloc;
 
@@ -50,23 +49,6 @@ pub trait WebAssemblyEngine:
         ensures
             true,
     ;
-
-    /// Compiles a module [while its bytes arrive](https://webassembly.github.io/spec/web-api/#dom-webassembly-compilestreaming).
-    async fn compile_streaming<StreamError>(
-        &self,
-        chunks: impl Stream<Item = Result<impl AsRef<[u8]>, StreamError>>,
-    ) -> Result<Self::Module, CompileStreamingError<StreamError, Self::CompileError>>
-        // TODO: replace this clause with what the method promises.
-        ensures
-            true,
-    {
-        let mut chunks = pin!(chunks);
-        let mut bytes = Vec::new();
-        while let Some(chunk) = poll_fn(|context| chunks.as_mut().poll_next(context)).await {
-            bytes.extend_from_slice(chunk.map_err(CompileStreamingError::Stream)?.as_ref());
-        }
-        self.compile(&bytes).map_err(CompileStreamingError::Compile)
-    }
 
     type InstantiateError;
     /// Runs the [instantiation](https://webassembly.github.io/spec/core/exec/modules.html#instantiation) of the module.
@@ -137,3 +119,17 @@ pub struct Limits {
 }
 
 } // verus!
+
+/// Compiles a module for the engine [while its bytes arrive](https://webassembly.github.io/spec/web-api/#dom-webassembly-compilestreaming).
+// VERUS: no proof of an `async` body, so this stays outside `verus!` as a function over any engine.
+pub async fn compile_streaming<Engine: WebAssemblyEngine, StreamError>(
+    engine: &Engine,
+    chunks: impl Stream<Item = Result<impl AsRef<[u8]>, StreamError>>,
+) -> Result<Engine::Module, CompileStreamingError<StreamError, Engine::CompileError>> {
+    let mut chunks = pin!(chunks);
+    let mut bytes = Vec::new();
+    while let Some(chunk) = poll_fn(|context| chunks.as_mut().poll_next(context)).await {
+        bytes.extend_from_slice(chunk.map_err(CompileStreamingError::Stream)?.as_ref());
+    }
+    engine.compile(&bytes).map_err(CompileStreamingError::Compile)
+}

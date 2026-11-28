@@ -1,6 +1,9 @@
 //! What the kernel asks of the CPU side.
 
 use crate::{AddressSpace, Permissions, RegisterBlock};
+use vstd::prelude::*;
+
+verus! {
 
 /// One guest memory: the whole address space of one process. Threads of a process share it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -24,6 +27,8 @@ pub enum CpuError {
     /// This host cannot do this at all.
     NotSupported,
 }
+
+} // verus!
 
 /// What the kernel asks of the CPU side. Addresses and lengths of page operations are multiples of
 /// [`crate::PAGE_SIZE`].

@@ -3,8 +3,12 @@
 //! Nothing here waits. A request whose answer takes time returns at once and the answer arrives later as an
 //! [`Event`], which the driver hands to the kernel.
 
+use vstd::prelude::*;
+
 /// The host's clocks count nanoseconds: how many make a second.
 pub const NANOSECONDS_PER_SECOND: u64 = core::time::Duration::from_secs(1).as_nanos() as u64;
+
+verus! {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostError {
@@ -17,6 +21,8 @@ pub enum HostError {
     /// Any other failure, as a Linux error number.
     Errno(i32),
 }
+
+} // verus!
 
 /// One slow path that was taken, reported so that it is never silent.
 #[derive(Clone, Copy, Debug)]

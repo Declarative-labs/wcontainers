@@ -74,10 +74,10 @@ pub trait UdpSockets:
         ensures
             true,
     ;
-    fn receive(
+    fn receive<Bytes: VolatileBytes>(
         &self,
         socket: &Self::Socket,
-        into: &impl VolatileBytes,
+        into: &Bytes,
     ) -> Result<UdpReceived, HostError>
         // TODO: replace this clause with what the method promises.
         ensures

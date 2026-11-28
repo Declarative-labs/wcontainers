@@ -12,7 +12,11 @@ path = "interface.rs"
 
 [dependencies]
 bitflags.workspace = true
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
 zerocopy.workspace = true
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true
