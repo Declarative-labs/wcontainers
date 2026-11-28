@@ -7,7 +7,14 @@ edition = "2024"
 path = "implementation.rs"
 
 [dependencies]
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-memory-shard = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true
