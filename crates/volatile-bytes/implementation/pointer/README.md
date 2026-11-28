@@ -10,23 +10,23 @@ map it, or free it: the caller does.
 
 ## The unsafe items (7)
 
-1. implementation.rs:28, `unsafe fn PointerAndLength::new`: the promise. Rests on its caller: while the value and every
+1. implementation.rs:30, `unsafe fn PointerAndLength::new`: the promise. Rests on its caller: while the value and every
    view made from it live, the bytes are valid for reads and writes from any thread, never trap, and no one forms a
    reference or a slice over them.
-2. implementation.rs:75, the copy out in `read_at`. Rests on: the promise, and `at + count <= length`, which Verus
+2. implementation.rs:77, the copy out in `read_at`. Rests on: the promise, and `at + count <= length`, which Verus
    proves at the call (the copy's `requires`).
-3. implementation.rs:89, the copy in in `write_at`. Rests on the same.
-4. implementation.rs:179, `unsafe fn copy_out`: a call to `memcpy`, through a pointer read by a volatile load so the
+3. implementation.rs:91, the copy in in `write_at`. Rests on the same.
+4. implementation.rs:193, `unsafe fn copy_out`: a call to `memcpy`, through a pointer read by a volatile load so the
    compiler cannot swap in its own copy. Rests on: the view's pointer and length, `at + into.len() <= length`, and
    `into` not over the view.
-5. implementation.rs:202, `unsafe fn copy_in`: the same, writing the view from `bytes`.
-6. and 7. implementation.rs:149 and 158, the two `assume_specification`s of the assumption below. They exist only when
+5. implementation.rs:216, `unsafe fn copy_in`: the same, writing the view from `bytes`.
+6. and 7. implementation.rs:152 and 166, the two `assume_specification`s of the assumption below. They exist only when
    Verus builds the crate: Verus turns each into an unsafe function that calls the function it specifies. The ordinary
    build drops them.
 
 ## What is assumed, not proved
 
-One assumption, in `mod memcpy_assumption`, in Verus's form for the specification of a function it does not verify
+One assumption, in the last `verus!` block of implementation.rs, in Verus's form for the specification of a function it does not verify
 (`assume_specification`), marked `#[verus::trusted]` so that strict mode accepts it: each copy reaches only the `count`
 bytes at `at` of the view, the copy out writes only the buffer it is handed (keeping its length), and the copy in writes
 no buffer. Nothing is said about the values of the bytes: `memcpy` may read or write a byte more than once, and each byte

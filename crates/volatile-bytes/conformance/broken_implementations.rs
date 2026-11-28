@@ -7,8 +7,9 @@ use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_volatile_bytes::VolatileBytes;
 
-/// How many bytes each subject holds: more than one value of a byte, so that the suite's numbered bytes repeat.
-const LENGTH: usize = u8::MAX as usize + size_of::<u64>();
+/// How many bytes each subject holds: two for every value of a byte, so that the suite's numbered bytes repeat and its
+/// middle offset does not fit a byte.
+const LENGTH: usize = 2 * (u8::MAX as usize + 1);
 
 /// The bytes the store keeps after the end, which only the fault `WritesPastTheEnd` reaches.
 const AFTER_THE_END: usize = size_of::<u64>();
@@ -22,6 +23,16 @@ enum Fault {
     ReadIgnoresTheOffset,
     /// `write_at` writes to the start, whatever the offset.
     WriteIgnoresTheOffset,
+    /// `read_at` keeps only the low byte of the offset.
+    ReadCutsTheOffsetToAByte,
+    /// `read_at` from an offset past the start copies only the first byte, though it counts them all.
+    ReadAtAnOffsetCopiesOnlyTheFirstByte,
+    /// `read_at` past the end reads the bytes the store keeps after it: its bound refuses only the length itself.
+    ReadPastTheEndReadsTheStore,
+    /// `read` fills a buffer shorter than the bytes from the end instead of the start.
+    ReadFillsAShortBufferFromTheEnd,
+    /// `read` counts one byte more for a buffer longer than the bytes.
+    ReadCountsALongerBufferOneMore,
     /// `read_at` reads from the byte after the offset when one is left.
     ReadsOneByteLate,
     /// `read_at` counts one byte more than it copies when the buffer is shorter than what is left.
@@ -91,8 +102,12 @@ impl VolatileBytes for Held {
     fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let store = self.store.borrow();
         let offset = if self.breaks(Fault::ReadTruncatesTheOffset) { u64::from(offset as u32) } else { offset };
+        let offset = if self.breaks(Fault::ReadCutsTheOffsetToAByte) { u64::from(offset as u8) } else { offset };
         let wraps = offset.checked_add(into.len() as u64).is_none();
         let (mut at, mut count) = Held::place(offset, into.len(), LENGTH);
+        if self.breaks(Fault::ReadPastTheEndReadsTheStore) && offset > LENGTH as u64 {
+            (at, count) = Held::place(offset, into.len(), LENGTH + AFTER_THE_END);
+        }
         if self.breaks(Fault::ReadIgnoresTheOffset) || (self.breaks(Fault::ReadWrapsTheOffset) && wraps) {
             (at, count) = Held::place(u64::MIN, into.len(), LENGTH);
         }
@@ -106,7 +121,12 @@ impl VolatileBytes for Held {
             count = count.saturating_sub(1);
         }
         let from = if self.breaks(Fault::ReadsOneByteLate) && at + count < LENGTH { at + 1 } else { at };
-        into[..count].copy_from_slice(&store[from..from + count]);
+        let copied = if self.breaks(Fault::ReadAtAnOffsetCopiesOnlyTheFirstByte) && at > usize::MIN {
+            count.min(1)
+        } else {
+            count
+        };
+        into[..copied].copy_from_slice(&store[from..from + copied]);
         if self.breaks(Fault::ReadTouchesTheBufferBeyondTheCount) {
             into[count..].fill(u8::MIN);
         }
@@ -138,8 +158,12 @@ impl VolatileBytes for Held {
     }
 
     fn read(&self, into: &mut [u8]) -> usize {
-        let offset = if self.breaks(Fault::ReadNotFromTheStart) { 1 } else { u64::MIN };
-        self.read_at(offset, into)
+        let mut offset = if self.breaks(Fault::ReadNotFromTheStart) { 1 } else { u64::MIN };
+        if self.breaks(Fault::ReadFillsAShortBufferFromTheEnd) {
+            offset = LENGTH.saturating_sub(into.len()) as u64;
+        }
+        let count = self.read_at(offset, into);
+        if self.breaks(Fault::ReadCountsALongerBufferOneMore) && into.len() > LENGTH { count + 1 } else { count }
     }
 
     fn write(&self, bytes: &[u8]) -> usize {
@@ -191,6 +215,12 @@ caught! {
     a_source_counted_as_the_length: WriteFromCountsTheLength by writes_only_what_a_source_holds;
     a_read_ignoring_the_offset: ReadIgnoresTheOffset by reads_and_writes_at_an_offset_inside;
     a_read_one_byte_late: ReadsOneByteLate by reads_and_writes_at_an_offset_inside;
+    a_read_of_an_offset_cut_to_a_byte: ReadCutsTheOffsetToAByte by reads_and_writes_at_an_offset_inside;
+    a_read_at_an_offset_copying_only_the_first_byte: ReadAtAnOffsetCopiesOnlyTheFirstByte by reads_and_writes_at_an_offset_inside;
+    a_read_ignoring_the_offset_of_a_longer_buffer: ReadIgnoresTheOffset by reads_and_writes_what_is_left_of_a_longer_buffer;
+    a_read_past_the_end_of_the_store: ReadPastTheEndReadsTheStore by reads_and_writes_nothing_past_the_end;
+    a_read_of_a_short_buffer_from_the_end: ReadFillsAShortBufferFromTheEnd by reads_and_writes_as_from_the_start;
+    a_read_counting_a_longer_buffer_one_more: ReadCountsALongerBufferOneMore by reads_and_writes_as_from_the_start;
     a_read_counting_one_more: ReadCountsOneMore by reads_and_writes_at_an_offset_inside;
     a_read_one_byte_fewer: ReadsOneByteFewer by reads_and_writes_the_last_byte;
     a_read_refusing_the_last_byte: ReadRefusesTheLastByte by reads_and_writes_the_last_byte;
