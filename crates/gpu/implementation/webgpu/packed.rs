@@ -188,14 +188,10 @@ fn widen_wgsl(format: Format) -> String {
             format!("{bytes} let c = vec4u(b.y, select(b.x, b.z, {odd}), b.w, 255u);")
         }
         _ => {
+            // Every 16-bit packed format has red, green and blue bits; alpha is one where it has none.
             let (mut at, mut c) = (
                 0,
-                [
-                    String::from("255u"),
-                    "255u".into(),
-                    "255u".into(),
-                    "255u".into(),
-                ],
+                [String::new(), String::new(), String::new(), "255u".into()],
             );
             for (slot, bits) in [2, 1, 0, 3]
                 .into_iter()
@@ -238,7 +234,10 @@ fn pack_wgsl(format: Format) -> String {
 }
 
 /// The fragment program of a copy by a draw between a converted format's raw blocks and its held
-/// texels (`into` the held texture, or out of a 3D or 2D one), its entry point `convert`.
+/// texels (`into` the held texture, or out of a 3D or 2D one), its entry point `convert`. A held
+/// 8-bit value k is sampled as the float nearest k / 255, or as k times the float nearest 1 / 255;
+/// either times 255, rounded once, is k or above it and below k + 1 (every k checked), so its whole
+/// part is k.
 pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
     if three_channel(format) {
         return three_channel_program(format, into, three_d);
@@ -268,7 +267,7 @@ pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
             "@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\
              @group(0) @binding(1) var src: {texture};\n\
              fn texel(x: u32, y: u32) -> vec4u {{\n\
-                 return vec4u(round(textureLoad(src, {at}, 0) * 255.0));\n\
+                 return vec4u(textureLoad(src, {at}, 0) * 255.0);\n\
              }}\n\
              @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) u32 {{\n\
                  let i = u32(p.x);\n\
@@ -281,17 +280,13 @@ pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
     }
 }
 
-/// WGSL widening `x`, a code of `n` bits, to 8 by repeating its bits, as [`widen`] does.
+/// WGSL widening `x`, a code of `n` bits, to 8 by repeating its bits, as [`widen`] does: of 4 to 8
+/// bits two copies fill the 8 (the second's top `8 - n` bits after the first); one bit is all eight.
+/// The packed formats' codes are of 1, 4, 5 and 6 bits.
 const REPEAT_WGSL: &str = "
 fn repeat(x: u32, n: u32) -> u32 {
-    var wide = 0u;
-    var filled = 0u;
-    loop {
-        wide = (wide << n) | x;
-        filled += n;
-        if filled >= 8u { break; }
-    }
-    return wide >> (filled - 8u);
+    if n == 1u { return x * 255u; }
+    return (x << (8u - n)) | (x >> (2u * n - 8u));
 }
 ";
 

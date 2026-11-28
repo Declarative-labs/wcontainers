@@ -932,6 +932,167 @@ fn three_channel_formats_copy_into_their_twins_word_for_word() {
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 
+/// A `b5g6r5unorm` and a `bgr5a1unorm` target held as `rgba8unorm`, whose texels all differ by place
+/// and by channel ([`texel_at`]), are rounded texel by texel and channel by channel to what the host's
+/// packing and widening make of each texel.
+#[test]
+fn packed_targets_are_rounded_at_each_texel_and_channel() {
+    use crate::packed;
+    let mut gpu = device();
+    let usage = wgpu::TextureUsages::COPY_SRC
+        | wgpu::TextureUsages::COPY_DST
+        | wgpu::TextureUsages::RENDER_ATTACHMENT
+        | wgpu::TextureUsages::TEXTURE_BINDING;
+    for format in [Format::B5g6r5Unorm, Format::Bgr5a1Unorm] {
+        let t = raw_texture(&gpu, false, 1, 1, 1, usage);
+        let texels = positioned(N);
+        fill_texels(&gpu, &t, 0, 0, &texels);
+        fill::quantise(
+            &mut gpu,
+            &PackedTarget {
+                format,
+                texture: t.clone(),
+                mip: 0,
+                z: 0,
+            },
+        );
+        let (mut blocks, mut want) = (Vec::new(), Vec::new());
+        packed::pack(format, &texels, &mut blocks);
+        packed::widen(format, &blocks, &mut want);
+        assert_eq!(read_level(&mut gpu, &t, 0, 0), want, "{format:?}");
+    }
+    assert_eq!(gpu.status(), DeviceStatus::Ok);
+}
+
+/// Every converted format's held texels holding every byte value in every channel, at a region off
+/// the origin reaching the right edge of a texture 7 texels wide (so a two-pixel format's last pair
+/// is one texel), copied into a buffer (by a draw packing them) give the blocks the host packs them to.
+#[test]
+fn converted_formats_pack_every_held_value_as_the_host_does() {
+    use crate::packed;
+    let mut gpu = device();
+    let (wide, high) = (7u32, 8u32);
+    let (x, y, w, h) = (2u32, 1u32, 5u32, 6u32);
+    for format in [
+        Format::A8Unorm,
+        Format::Bgrx8Unorm,
+        Format::B5g6r5Unorm,
+        Format::Bgr5a1Unorm,
+        Format::Bgra4Unorm,
+        Format::Rgbg8Unorm,
+        Format::Grgb8Unorm,
+    ] {
+        let t = gpu
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: wide,
+                height: high,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+            .expect("create_texture");
+        // Byte k of texel i holds (i + 64 k) mod 256: every value in every channel over the texture.
+        let held: Vec<u8> = (0..wide * high)
+            .flat_map(|i| (0..4).map(move |k| (i * 7 + 64 * k) as u8))
+            .collect();
+        let raw = crate::texture_of(&gpu, &t).expect("held").raw();
+        gpu.queue.write_texture(
+            raw.as_image_copy(),
+            &held,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(wide * 4),
+                rows_per_image: Some(high),
+            },
+            wgpu::Extent3d {
+                width: wide,
+                height: high,
+                depth_or_array_layers: 1,
+            },
+        );
+        let row = packed::packed_bytes(format, u64::from(w)) as u32;
+        let mut want = Vec::new();
+        for r in 0..h {
+            let at = (((y + r) * wide + x) * 4) as usize;
+            packed::pack(format, &held[at..at + (w * 4) as usize], &mut want);
+        }
+        let dst = upload(&mut gpu, &vec![0; want.len()]);
+        gpu.copy_texture_to_buffer(
+            &TextureRegion {
+                origin: Origin { x, y, z: 0 },
+                ..at(&t, 0, 0, false)
+            },
+            &CopyBufferTexture {
+                buffer: &dst,
+                offset: 0,
+                row_pitch: row,
+                rows_per_layer: h,
+            },
+            Extent {
+                width: w,
+                height: h,
+                depth_or_layers: 1,
+            },
+        );
+        assert_eq!(
+            read_buffer(&mut gpu, &dst, want.len() as u64),
+            want,
+            "{format:?}"
+        );
+    }
+    assert_eq!(gpu.status(), DeviceStatus::Ok);
+}
+
+/// A converted format's blocks copied from a buffer into slice 1 of a 3D texture at a region off the
+/// origin (a column and a row that differ), and copied from there into a buffer (by draws widening
+/// and packing them), come back as written.
+#[test]
+fn a_converted_3d_region_copies_in_and_out_at_its_place() {
+    let mut gpu = device();
+    let t = gpu
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D3,
+            format: Format::B5g6r5Unorm,
+            width: N,
+            height: N,
+            depth_or_layers: 2,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .expect("create_texture");
+    let (w, h) = (4u32, 2u32);
+    let blocks: Vec<u8> = (0..w * h * 2).map(|i| (i * 37 + 11) as u8).collect();
+    let src = upload(&mut gpu, &blocks);
+    let copy = |buffer| CopyBufferTexture {
+        buffer,
+        offset: 0,
+        row_pitch: w * 2,
+        rows_per_layer: h,
+    };
+    let region = TextureRegion {
+        origin: Origin { x: 3, y: 1, z: 1 },
+        ..at(&t, 0, 0, false)
+    };
+    let size = Extent {
+        width: w,
+        height: h,
+        depth_or_layers: 1,
+    };
+    gpu.copy_buffer_to_texture(&copy(&src), &region, size);
+    let dst = upload(&mut gpu, &vec![0; blocks.len()]);
+    gpu.copy_texture_to_buffer(&region, &copy(&dst), size);
+    assert_eq!(read_buffer(&mut gpu, &dst, blocks.len() as u64), blocks);
+    assert_eq!(gpu.status(), DeviceStatus::Ok);
+}
+
 /// Depth and stencil written from a buffer into layers 1 and 2 of a three-layer texture (by draws:
 /// a part of a level) read back as written from those layers, by draws reading part of a level: each
 /// layer from its own rows of the buffer.
