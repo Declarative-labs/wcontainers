@@ -8,20 +8,11 @@ use std::sync::Arc;
 
 use memmap2::{MmapOptions, MmapRaw};
 use thiserror::Error;
+use vstd::prelude::*;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_volatile_bytes::{StandaloneVolatileBytes, VolatileBytes};
 use wcontainers_volatile_bytes_pointer::{PointerAndLength, PointerBytes};
-
-/// Bytes of a mapping that another party, such as a guest or another process, may read and write at any moment.
-///
-/// A view of the whole mapping, which keeps the mapping alive. Copies behave as `PointerBytes` says.
-pub struct SharedMapping {
-    /// The view's bytes, made only by `new` from the map below.
-    bytes: PointerBytes,
-    /// Kept only so that the bytes stay mapped.
-    _map: Arc<MmapRaw>,
-}
 
 /// A mapping made and checked, from which `StandaloneVolatileBytes::new` makes a `SharedMapping`.
 pub struct Mapped(MmapRaw);
@@ -95,8 +86,29 @@ impl StandaloneVolatileBytes for SharedMapping {
     }
 }
 
+verus! {
+
+// VERUS: Verus cannot read memmap2's `MmapRaw`, so it is declared to Verus as a type whose inside it does not see.
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExMmapRaw(pub MmapRaw);
+
+/// Bytes of a mapping that another party, such as a guest or another process, may read and write at any moment.
+///
+/// A view of the whole mapping, which keeps the mapping alive. Copies behave as `PointerBytes` says.
+pub struct SharedMapping {
+    /// The view's bytes, made only by `new` from the map below.
+    bytes: PointerBytes,
+    /// Kept only so that the bytes stay mapped.
+    _map: Arc<MmapRaw>,
+}
+
 /// Forwards to the base type.
 impl VolatileBytes for SharedMapping {
+    closed spec fn spec_len(&self) -> nat {
+        self.bytes.spec_len()
+    }
+
     fn len(&self) -> u64 {
         self.bytes.len()
     }
@@ -117,3 +129,5 @@ impl VolatileBytes for SharedMapping {
         self.bytes.write_from(source)
     }
 }
+
+} // verus!

@@ -11,8 +11,16 @@ path = "conformance.rs"
 name = "ref_cell"
 path = "../foreign_implementation/ref_cell/conformance.rs"
 
+[[test]]
+name = "broken_implementations"
+path = "broken_implementations.rs"
+
 [dependencies]
 wcontainers-volatile-bytes = { path = ".." }
+
+[dev-dependencies]
+wcontainers-byte-sink = { path = "../../byte-sink" }
+wcontainers-byte-source = { path = "../../byte-source" }
 
 [lints]
 workspace = true

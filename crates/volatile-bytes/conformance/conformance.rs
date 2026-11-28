@@ -133,13 +133,12 @@ pub fn reads_and_writes_nothing_at_the_length<T: VolatileBytes>(subject: T) {
     assert_eq!(read_all(&subject, length), expected);
 }
 
-/// Checks that offsets past the end read and write nothing, including those whose sum with the buffer's length, or
-/// whose value in a 32-bit address, would wrap.
+/// Checks that offsets past the end read and write nothing: one past it; 2^63, whose low 32 bits are zero, so that a
+/// 32-bit address cut from it would be the start; and one whose sum with the buffer's length wraps.
 pub fn reads_and_writes_nothing_past_the_end<T: VolatileBytes>(subject: T) {
     let length = count_bytes(&subject);
     let expected = fill_numbered(&subject, length);
-    let wide = offset_of(length) + (u64::from(u32::MAX) + 1);
-    for offset in [offset_of(length) + 1, wide, 1 << (u64::BITS - 1), u64::MAX - (size_of::<u64>() as u64 - 1)] {
+    for offset in [offset_of(length) + 1, 1 << (u64::BITS - 1), u64::MAX - (size_of::<u64>() as u64 - 1)] {
         let mut read = [WRITTEN; 2 * size_of::<u64>()];
         assert_eq!(subject.read_at(offset, &mut read), usize::MIN, "{offset}");
         assert_eq!(read, [WRITTEN; 2 * size_of::<u64>()], "{offset}");

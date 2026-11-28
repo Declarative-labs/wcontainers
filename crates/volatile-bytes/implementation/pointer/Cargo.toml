@@ -17,11 +17,15 @@ wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-volatile-bytes = { path = "../.." }
 # The C library's memcpy, which every copy calls.
 libc = { version = "0.2.191", default-features = false }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+
+[package.metadata.verus]
+verify = true
 
 [dev-dependencies]
 wcontainers-volatile-bytes-conformance = { path = "../../conformance" }
 
-# A low-level primitive: it denies unsafe code, so that each of its 4 uses is marked (README.md).
+# A low-level primitive: it denies unsafe code, so that each of its 7 uses is marked (README.md).
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
