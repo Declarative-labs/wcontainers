@@ -13,14 +13,29 @@ use wcontainers_volatile_bytes::VolatileBytes;
 /// https://developer.arm.com/documentation/101811/0104/Translation-granule
 const PAGE: u64 = 4096;
 
-/// The length of most shards the tests hold: three pages, so that a shard has a first, a middle and a last page.
-const SHARD: u64 = PAGE + PAGE + PAGE;
+/// The length of most shards the tests hold: three pages of the granule, so that a shard has a first, a middle and a last page.
+///
+/// https://developer.arm.com/documentation/101811/0104/Translation-granule
+const SHARD: u64 = 12288;
 
-/// An address with room below it, where the tests hold their first shard.
-const BASE: u64 = PAGE * PAGE;
+/// The length of one byte, the least an overlap can be.
+const BYTE_LENGTH: u64 = size_of::<u8>() as u64;
 
-/// An address far from `BASE`, where the tests hold a second shard that must not touch the first.
-const FAR: u64 = BASE * PAGE;
+/// Where the tests hold their first shard: the lowest address Linux lets a program map by default.
+///
+/// https://www.kernel.org/doc/html/latest/admin-guide/sysctl/vm.html#mmap-min-addr
+const BASE: u64 = 65536;
+
+/// The second page of a shard of `SHARD` bytes at `BASE`.
+const SECOND_PAGE: u64 = BASE + PAGE;
+
+/// The third page of a shard of `SHARD` bytes at `BASE`.
+const THIRD_PAGE: u64 = SECOND_PAGE + PAGE;
+
+/// Where the tests hold a second shard, far from the first: where Linux loads a position-independent x86-64 program.
+///
+/// https://elixir.bootlin.com/linux/v6.12/source/arch/x86/include/asm/elf.h#L238
+const FAR: u64 = 0x5555_5555_4000;
 
 const READ_WRITE: MemoryPermissions = MemoryPermissions { read: true, write: true, execute: false };
 
@@ -55,7 +70,7 @@ fn host_length<S: MemoryShard>(shard: &S) -> usize {
 
 /// Returns bytes counting up from one, none of them zero, each different from its neighbors.
 fn number_bytes(count: usize) -> Vec<u8> {
-    (0..count).map(|index| (index % usize::from(u8::MAX)) as u8 + 1).collect()
+    (1..=u8::MAX).cycle().take(count).collect()
 }
 
 /// Returns the bytes of `number_bytes` in the other order, so that no write of one is taken for a write of the other.
@@ -112,7 +127,7 @@ pub fn creates_a_shard_as_its_config_asks<S: MemoryShard, T: MemoryCapabilityTab
     let second = shard_at(&table, FAR);
     assert_eq!(second.len(), PAGE);
     assert!(permits_the_same(second.permissions(), READ_EXECUTE));
-    assert!(table.get(&(BASE + PAGE)).is_none(), "an address inside a shard is not where it is held");
+    assert!(table.get(&SECOND_PAGE).is_none(), "an address inside a shard is not where it is held");
     assert!(table.get(&u64::MIN).is_none());
 }
 
@@ -120,23 +135,22 @@ pub fn creates_a_shard_as_its_config_asks<S: MemoryShard, T: MemoryCapabilityTab
 pub fn refuses_a_taken_address<S: MemoryShard, T: MemoryCapabilityTable<S>>(mut table: T) {
     hold(&mut table, BASE, PAGE, READ_WRITE);
     let bytes = fill(shard_at(&table, BASE), number_bytes);
-    assert!(matches!(table.create(BASE, config(PAGE + PAGE, READ_ONLY)), Err(CreateError::IdentifierTaken)));
+    assert!(matches!(table.create(BASE, config(SHARD, READ_ONLY)), Err(CreateError::IdentifierTaken)));
     let shard = shard_at(&table, BASE);
     assert_eq!(shard.len(), PAGE);
     assert!(permits_the_same(shard.permissions(), READ_WRITE));
     assert_eq!(read_whole(shard), bytes);
 }
 
-/// Checks that a create overlapping a held shard is refused as an overlap and holds nothing, while one beside it succeeds.
+/// Checks that a create sharing even one byte with a held shard is refused as an overlap and holds nothing, while one
+/// beside it succeeds.
 pub fn refuses_a_create_that_overlaps<S: MemoryShard, T: MemoryCapabilityTable<S>>(mut table: T) {
-    hold(&mut table, BASE, PAGE + PAGE, READ_WRITE);
+    hold(&mut table, SECOND_PAGE, PAGE, READ_WRITE);
     let overlapping = [
-        (BASE + PAGE, PAGE + PAGE),
-        (BASE + PAGE, PAGE),
-        (BASE - PAGE, PAGE + PAGE),
-        (BASE - PAGE, SHARD + PAGE),
-        (BASE + PAGE + PAGE - 1, PAGE),
-        (BASE - PAGE, PAGE + 1),
+        (BASE, SHARD),
+        (BASE, PAGE + BYTE_LENGTH),
+        (THIRD_PAGE - BYTE_LENGTH, PAGE),
+        (SECOND_PAGE + BYTE_LENGTH, BYTE_LENGTH),
     ];
     for (address, length) in overlapping {
         assert!(
@@ -145,9 +159,9 @@ pub fn refuses_a_create_that_overlaps<S: MemoryShard, T: MemoryCapabilityTable<S
         );
         assert!(table.get(&address).is_none(), "a refused create holds nothing");
     }
-    hold(&mut table, BASE - PAGE, PAGE, READ_ONLY);
-    hold(&mut table, BASE + PAGE + PAGE, PAGE, READ_ONLY);
-    assert_eq!(shard_at(&table, BASE).len(), PAGE + PAGE);
+    hold(&mut table, BASE, PAGE, READ_ONLY);
+    hold(&mut table, THIRD_PAGE, PAGE, READ_ONLY);
+    assert_eq!(shard_at(&table, SECOND_PAGE).len(), PAGE);
 }
 
 /// Checks that a drop stops holding one entry only, does nothing where nothing is held, and frees the address.
@@ -159,9 +173,9 @@ pub fn drops_one_entry<S: MemoryShard, T: MemoryCapabilityTable<S>>(mut table: T
     assert!(table.get(&BASE).is_none());
     assert_eq!(read_whole(shard_at(&table, FAR)), bytes);
     table.drop(&BASE);
-    table.drop(&(FAR + PAGE));
-    assert_eq!(shard_at(&table, FAR).len(), PAGE);
-    hold(&mut table, BASE, PAGE + PAGE, READ_EXECUTE);
+    table.drop(&(FAR + BYTE_LENGTH));
+    assert_eq!(read_whole(shard_at(&table, FAR)), bytes);
+    hold(&mut table, BASE, SHARD, READ_EXECUTE);
     assert!(permits_the_same(shard_at(&table, BASE).permissions(), READ_EXECUTE));
 }
 
@@ -174,8 +188,8 @@ pub fn reads_a_new_shard_as_zeros<S: MemoryShard, T: MemoryCapabilityTable<S>>(m
     assert!(read_whole(shard_at(&table, BASE)).iter().all(|&byte| byte == u8::MIN));
     fill(shard_at(&table, BASE), number_bytes_down);
     table.drop(&BASE);
-    hold(&mut table, BASE + PAGE, PAGE, READ_WRITE);
-    assert!(read_whole(shard_at(&table, BASE + PAGE)).iter().all(|&byte| byte == u8::MIN));
+    hold(&mut table, SECOND_PAGE, PAGE, READ_WRITE);
+    assert!(read_whole(shard_at(&table, SECOND_PAGE)).iter().all(|&byte| byte == u8::MIN));
     hold(&mut table, FAR, SHARD, READ_WRITE);
     assert!(read_whole(shard_at(&table, FAR)).iter().all(|&byte| byte == u8::MIN));
 }
@@ -183,12 +197,12 @@ pub fn reads_a_new_shard_as_zeros<S: MemoryShard, T: MemoryCapabilityTable<S>>(m
 /// Checks that a new shard reads as zeros while a duplicate of a dropped shard still holds that shard's bytes.
 pub fn keeps_bytes_while_a_duplicate_holds_them<S: MemoryShard, T: MemoryCapabilityTable<S>>(tables: (T, T)) {
     let (mut first, mut second) = tables;
-    hold(&mut first, BASE, PAGE + PAGE, READ_WRITE);
+    hold(&mut first, BASE, SHARD, READ_WRITE);
     let bytes = fill(shard_at(&first, BASE), number_bytes);
     assert!(second.duplicate_from(&first, &BASE, BASE).is_ok());
     first.drop(&BASE);
     assert_eq!(read_whole(shard_at(&second, BASE)), bytes);
-    hold(&mut first, BASE, PAGE + PAGE, READ_WRITE);
+    hold(&mut first, BASE, SHARD, READ_WRITE);
     assert!(read_whole(shard_at(&first, BASE)).iter().all(|&byte| byte == u8::MIN));
     fill(shard_at(&first, BASE), number_bytes_down);
     assert_eq!(read_whole(shard_at(&second, BASE)), bytes);
@@ -196,11 +210,11 @@ pub fn keeps_bytes_while_a_duplicate_holds_them<S: MemoryShard, T: MemoryCapabil
 
 /// Checks a duplicate within a table: it is the same memory with the same permissions, and each refusal leaves the table.
 pub fn duplicates_within_a_table<S: MemoryShard, T: MemoryCapabilityTable<S>>(mut table: T) {
-    hold(&mut table, BASE, PAGE + PAGE, READ_EXECUTE);
+    hold(&mut table, BASE, SHARD, READ_EXECUTE);
     let bytes = fill(shard_at(&table, BASE), number_bytes);
     assert!(table.duplicate_within(&BASE, FAR).is_ok());
     let duplicate = shard_at(&table, FAR);
-    assert_eq!(duplicate.len(), PAGE + PAGE);
+    assert_eq!(duplicate.len(), SHARD);
     assert!(permits_the_same(duplicate.permissions(), READ_EXECUTE));
     assert_eq!(read_whole(duplicate), bytes);
     let written = number_bytes_down(page());
@@ -208,70 +222,69 @@ pub fn duplicates_within_a_table<S: MemoryShard, T: MemoryCapabilityTable<S>>(mu
     assert_eq!(read_at(shard_at(&table, BASE), PAGE, page()), written);
     write_at(shard_at(&table, BASE), u64::MIN, &written);
     assert_eq!(read_at(shard_at(&table, FAR), u64::MIN, page()), written);
-    assert!(matches!(table.duplicate_within(&(BASE + PAGE), BASE * BASE), Err(DuplicateError::NothingHeld)));
-    assert!(table.get(&(BASE * BASE)).is_none());
+    assert!(matches!(table.duplicate_within(&SECOND_PAGE, u64::MIN), Err(DuplicateError::NothingHeld)));
+    assert!(table.get(&u64::MIN).is_none());
     assert!(matches!(table.duplicate_within(&BASE, FAR), Err(DuplicateError::IdentifierTaken)));
     assert!(matches!(
-        table.duplicate_within(&BASE, BASE + PAGE),
+        table.duplicate_within(&BASE, SECOND_PAGE),
         Err(DuplicateError::Failed(MemoryError::Overlap))
     ));
-    assert!(table.get(&(BASE + PAGE)).is_none());
-    assert!(matches!(
-        table.duplicate_within(&BASE, FAR - PAGE),
-        Err(DuplicateError::Failed(MemoryError::Overlap))
-    ));
-    assert!(table.duplicate_within(&BASE, BASE + PAGE + PAGE).is_ok());
-    assert_eq!(read_whole(shard_at(&table, BASE + PAGE + PAGE)), read_whole(shard_at(&table, BASE)));
+    assert!(table.get(&SECOND_PAGE).is_none());
+    let after = BASE + SHARD;
+    assert!(table.duplicate_within(&BASE, after).is_ok());
+    assert_eq!(read_whole(shard_at(&table, after)), read_whole(shard_at(&table, BASE)));
 }
 
 /// Checks a duplicate from another table: the same memory with the same permissions, the other table left as it was.
 pub fn duplicates_from_another_table<S: MemoryShard, T: MemoryCapabilityTable<S>>(tables: (T, T)) {
     let (mut first, mut second) = tables;
-    hold(&mut first, BASE, PAGE + PAGE, READ_ONLY);
+    hold(&mut first, BASE, SHARD, READ_ONLY);
     hold(&mut second, FAR, PAGE, READ_WRITE);
     let bytes = fill(shard_at(&first, BASE), number_bytes);
     assert!(second.duplicate_from(&first, &BASE, BASE).is_ok());
     let duplicate = shard_at(&second, BASE);
-    assert_eq!(duplicate.len(), PAGE + PAGE);
+    assert_eq!(duplicate.len(), SHARD);
     assert!(permits_the_same(duplicate.permissions(), READ_ONLY));
     assert_eq!(read_whole(duplicate), bytes);
     let written = number_bytes_down(page());
     write_at(shard_at(&second, BASE), PAGE, &written);
     assert_eq!(read_at(shard_at(&first, BASE), PAGE, page()), written);
-    assert!(matches!(second.duplicate_from(&first, &FAR, FAR + FAR), Err(DuplicateError::NothingHeld)));
-    assert!(second.get(&(FAR + FAR)).is_none());
+    assert!(matches!(second.duplicate_from(&first, &FAR, u64::MIN), Err(DuplicateError::NothingHeld)));
+    assert!(second.get(&u64::MIN).is_none());
     assert!(matches!(second.duplicate_from(&first, &BASE, FAR), Err(DuplicateError::IdentifierTaken)));
     assert_eq!(shard_at(&second, FAR).len(), PAGE);
+    let below_far = FAR - PAGE;
     assert!(matches!(
-        second.duplicate_from(&first, &BASE, FAR - PAGE),
+        second.duplicate_from(&first, &BASE, below_far),
         Err(DuplicateError::Failed(MemoryError::Overlap))
     ));
-    assert!(second.get(&(FAR - PAGE)).is_none());
+    assert!(second.get(&below_far).is_none());
     assert!(first.get(&FAR).is_none(), "a duplicate from another table changes only the table it is made in");
-    assert_eq!(shard_at(&first, BASE).len(), PAGE + PAGE);
+    assert_eq!(shard_at(&first, BASE).len(), SHARD);
 }
 
 /// Checks that new permissions change one entry, keep its length and bytes, and touch no other entry.
 pub fn sets_the_permissions_of_one_entry<S: MemoryShard, T: MemoryCapabilityTable<S>>(mut table: T) {
-    hold(&mut table, BASE, PAGE + PAGE, READ_WRITE);
+    hold(&mut table, BASE, SHARD, READ_WRITE);
     hold(&mut table, FAR, PAGE, READ_WRITE);
     let bytes = fill(shard_at(&table, BASE), number_bytes);
     assert!(table.set_permissions(&BASE, READ_ONLY).is_ok());
     let shard = shard_at(&table, BASE);
-    assert_eq!(shard.len(), PAGE + PAGE);
+    assert_eq!(shard.len(), SHARD);
     assert!(permits_the_same(shard.permissions(), READ_ONLY));
     assert_eq!(read_whole(shard), bytes);
     assert!(permits_the_same(shard_at(&table, FAR).permissions(), READ_WRITE));
     assert!(table.set_permissions(&BASE, READ_EXECUTE).is_ok());
     assert!(permits_the_same(shard_at(&table, BASE).permissions(), READ_EXECUTE));
-    assert!(matches!(table.set_permissions(&(BASE + PAGE), READ_ONLY), Err(SetPermissionsError::NothingHeld)));
-    assert!(table.get(&(BASE + PAGE)).is_none());
+    assert!(matches!(table.set_permissions(&SECOND_PAGE, READ_ONLY), Err(SetPermissionsError::NothingHeld)));
+    assert!(table.get(&SECOND_PAGE).is_none());
+    assert!(permits_the_same(shard_at(&table, BASE).permissions(), READ_EXECUTE));
 }
 
 /// Checks that new permissions on an entry leave a duplicate's own permissions, and that both still share their bytes.
 pub fn sets_permissions_without_touching_a_duplicate<S: MemoryShard, T: MemoryCapabilityTable<S>>(tables: (T, T)) {
     let (mut first, mut second) = tables;
-    hold(&mut first, BASE, PAGE + PAGE, READ_WRITE);
+    hold(&mut first, BASE, SHARD, READ_WRITE);
     fill(shard_at(&first, BASE), number_bytes);
     assert!(second.duplicate_from(&first, &BASE, BASE).is_ok());
     assert!(first.duplicate_within(&BASE, FAR).is_ok());
@@ -299,25 +312,26 @@ pub fn splits_a_shard_in_two<S: MemoryShard, T: MemoryCapabilityTable<S>>(mut ta
     assert_eq!(first.len(), PAGE);
     assert!(permits_the_same(first.permissions(), READ_EXECUTE));
     assert_eq!(read_whole(first), bytes[..page()]);
-    let second = shard_at(&table, BASE + PAGE);
-    assert_eq!(second.len(), PAGE + PAGE);
+    let second = shard_at(&table, SECOND_PAGE);
+    assert_eq!(second.len(), SHARD - PAGE);
     assert!(permits_the_same(second.permissions(), READ_EXECUTE));
     assert_eq!(read_whole(second), bytes[page()..]);
     assert_eq!(shard_at(&table, FAR).len(), PAGE);
-    assert!(table.get(&(BASE + PAGE + PAGE)).is_none());
+    assert!(table.get(&THIRD_PAGE).is_none());
 }
 
 /// Checks that a split anywhere but strictly inside the shard, or where nothing is held, is refused and changes nothing.
 pub fn refuses_a_split_outside_the_shard<S: MemoryShard, T: MemoryCapabilityTable<S>>(mut table: T) {
     hold(&mut table, BASE, SHARD, READ_WRITE);
     let bytes = fill(shard_at(&table, BASE), number_bytes);
-    for offset in [u64::MIN, SHARD, SHARD + PAGE, u64::MAX] {
+    for offset in [u64::MIN, SHARD, u64::MAX] {
         assert!(matches!(table.split(&BASE, offset), Err(SplitError::OutsideShard)), "{offset} is outside");
         assert_eq!(shard_at(&table, BASE).len(), SHARD);
     }
-    assert!(matches!(table.split(&(BASE + PAGE), PAGE), Err(SplitError::NothingHeld)));
-    assert!(table.get(&(BASE + PAGE)).is_none());
-    assert!(table.get(&(BASE + PAGE + PAGE)).is_none());
+    assert!(matches!(table.split(&SECOND_PAGE, PAGE), Err(SplitError::NothingHeld)));
+    assert!(table.get(&SECOND_PAGE).is_none());
+    assert!(table.get(&THIRD_PAGE).is_none());
+    assert_eq!(shard_at(&table, BASE).len(), SHARD);
     assert_eq!(read_whole(shard_at(&table, BASE)), bytes);
 }
 
@@ -333,12 +347,12 @@ pub fn shares_bytes_across_a_split<S: MemoryShard, T: MemoryCapabilityTable<S>>(
     assert!(permits_the_same(whole.permissions(), READ_WRITE));
     assert_eq!(read_whole(whole), bytes);
     let written = number_bytes_down(page());
-    write_at(shard_at(&first, BASE + PAGE), PAGE, &written);
+    write_at(shard_at(&first, SECOND_PAGE), PAGE, &written);
     assert_eq!(read_at(shard_at(&second, BASE), PAGE + PAGE, page()), written);
     write_at(shard_at(&second, BASE), u64::MIN, &written);
     assert_eq!(read_whole(shard_at(&first, BASE)), written);
     write_at(shard_at(&second, BASE), PAGE, &written);
-    assert_eq!(read_at(shard_at(&first, BASE + PAGE), u64::MIN, page()), written);
+    assert_eq!(read_at(shard_at(&first, SECOND_PAGE), u64::MIN, page()), written);
 }
 
 /// Checks that new permissions on one half of a split leave the other half and a duplicate, which go on sharing the bytes.
@@ -347,18 +361,18 @@ pub fn sets_permissions_on_a_half<S: MemoryShard, T: MemoryCapabilityTable<S>>(t
     hold(&mut first, BASE, SHARD, READ_WRITE);
     assert!(second.duplicate_from(&first, &BASE, BASE).is_ok());
     assert!(first.split(&BASE, PAGE).is_ok());
-    assert!(first.split(&(BASE + PAGE), PAGE).is_ok());
+    assert!(first.split(&SECOND_PAGE, PAGE).is_ok());
     let bytes = fill(shard_at(&second, BASE), number_bytes);
-    assert!(first.set_permissions(&(BASE + PAGE), READ_ONLY).is_ok());
+    assert!(first.set_permissions(&SECOND_PAGE, READ_ONLY).is_ok());
     assert!(permits_the_same(shard_at(&first, BASE).permissions(), READ_WRITE));
-    assert!(permits_the_same(shard_at(&first, BASE + PAGE).permissions(), READ_ONLY));
-    assert!(permits_the_same(shard_at(&first, BASE + PAGE + PAGE).permissions(), READ_WRITE));
+    assert!(permits_the_same(shard_at(&first, SECOND_PAGE).permissions(), READ_ONLY));
+    assert!(permits_the_same(shard_at(&first, THIRD_PAGE).permissions(), READ_WRITE));
     assert!(permits_the_same(shard_at(&second, BASE).permissions(), READ_WRITE));
-    assert_eq!(shard_at(&first, BASE + PAGE).len(), PAGE);
-    assert_eq!(read_whole(shard_at(&first, BASE + PAGE)), bytes[page()..page() + page()]);
-    assert_eq!(read_whole(shard_at(&first, BASE + PAGE + PAGE)), bytes[page() + page()..]);
+    assert_eq!(shard_at(&first, SECOND_PAGE).len(), PAGE);
+    assert_eq!(read_whole(shard_at(&first, SECOND_PAGE)), bytes[page()..page() + page()]);
+    assert_eq!(read_whole(shard_at(&first, THIRD_PAGE)), bytes[page() + page()..]);
     let written = number_bytes_down(page());
-    write_at(shard_at(&first, BASE + PAGE), u64::MIN, &written);
+    write_at(shard_at(&first, SECOND_PAGE), u64::MIN, &written);
     assert_eq!(read_at(shard_at(&second, BASE), PAGE, page()), written);
 }
 
