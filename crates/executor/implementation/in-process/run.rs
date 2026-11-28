@@ -14,8 +14,8 @@ use wcontainers_executor_arm64_stop::{
     AfterPage, FloatStatus, GENERAL, GuestState, Interrupted, Taken, in_process,
 };
 use wcontainers_linux_process::{
-    EXIT_BYTES, EXIT_SCRATCH_REGISTER, FRAME_REGISTER, GENERAL_REGISTERS, LinuxProcess,
-    RUN_FRAME_WORDS, RunEnd, RunFrame, VECTOR_REGISTERS, WINDOW_BASE_REGISTER,
+    Arm64Registers, EXIT_BYTES, EXIT_SCRATCH_REGISTER, FRAME_REGISTER, GENERAL_REGISTERS,
+    LinuxProcess, RUN_FRAME_WORDS, RunEnd, RunFrame, VECTOR_REGISTERS, WINDOW_BASE_REGISTER,
 };
 use wcontainers_linux_process_direct::{
     DirectInstructionMapping, DirectLinuxProcess, DirectRunThread,
@@ -132,41 +132,16 @@ impl InProcessThread {
     /// Runs the piece's instructions from the thread's pc until they call the floor, take an exception or are
     /// stopped.
     pub fn run(&mut self, instructions: &DirectInstructionMapping) -> Exit {
-        match self
+        let end = self
             .linux
-            .run_instructions(&mut self.host, instructions, &mut self.frame)
-        {
-            // As every way gives a call to the stop crate: the pc at the branch into the floor, not after it.
-            RunEnd::Exit(exit) => {
-                self.frame.registers.pc -= INSTRUCTION_BYTES;
-                call_at(exit)
-            }
-            RunEnd::Refused => Exit::Refused,
-            RunEnd::NotEntered => Exit::NotEntered,
-            RunEnd::Stopped => {
-                let registers = &mut self.frame.registers;
-                // Stopped in an exit before it changed a register: the call it was making, made.
-                if registers.pc & !(GUEST_PAGE - 1) == FLOOR_PAGE {
-                    let exit = registers.pc & !(PROCESS_ENTRY_BYTES - 1);
-                    registers.pc = registers.x[LINK] - INSTRUCTION_BYTES;
-                    return call_at(exit);
-                }
-                Exit::Stopped
-            }
-            RunEnd::Fault {
-                address,
-                write,
-                alignment,
-            } => {
-                // The stop crate tells an alignment fault through the stack pointer by the access's operand.
-                Exit::Taken(Taken::Access {
-                    alignment,
-                    fault: address,
-                    write,
-                })
-            }
-            RunEnd::Raised(_) => Exit::Taken(Taken::Other),
-        }
+            .run_instructions(&mut self.host, instructions, &mut self.frame);
+        ended(&mut self.frame.registers, end)
+    }
+
+    /// The address of the thread's frame, which a run keeps in its frame register.
+    #[cfg(test)]
+    pub fn frame_address(&self) -> u64 {
+        core::ptr::from_ref(&*self.frame).addr() as u64
     }
 
     /// The hardware as the thread left it, its pc at its branch into the floor after a call.
@@ -180,12 +155,6 @@ impl InProcessThread {
             fpsr: registers.fpsr as u32,
             fpcr: registers.fpcr as u32,
         }
-    }
-
-    /// Makes the thread go on from the hardware and register page an exception left, which the stop crate resolved.
-    pub fn resume(&mut self, hardware: &Interrupted, page: &RegisterPage) {
-        self.set_hardware(hardware);
-        self.set_page(page);
     }
 
     fn set_hardware(&mut self, hardware: &Interrupted) {
@@ -247,6 +216,41 @@ impl InProcessThread {
     }
 }
 
+/// Where a run that ended so ended, with the `registers` it left; a call's pc is made its branch into the floor.
+fn ended(registers: &mut Arm64Registers, end: RunEnd) -> Exit {
+    match end {
+        // As every way gives a call to the stop crate: the pc at the branch into the floor, not after it.
+        RunEnd::Exit(exit) => {
+            registers.pc -= INSTRUCTION_BYTES;
+            call_at(exit)
+        }
+        RunEnd::Refused => Exit::Refused,
+        RunEnd::NotEntered => Exit::NotEntered,
+        RunEnd::Stopped => {
+            // Stopped in an exit before it changed a register: the call it was making, made.
+            if registers.pc & !(GUEST_PAGE - 1) == FLOOR_PAGE {
+                let exit = registers.pc & !(PROCESS_ENTRY_BYTES - 1);
+                registers.pc = registers.x[LINK] - INSTRUCTION_BYTES;
+                return call_at(exit);
+            }
+            Exit::Stopped
+        }
+        RunEnd::Fault {
+            address,
+            write,
+            alignment,
+        } => {
+            // The stop crate tells an alignment fault through the stack pointer by the access's operand.
+            Exit::Taken(Taken::Access {
+                alignment,
+                fault: address,
+                write,
+            })
+        }
+        RunEnd::Raised(_) => Exit::Taken(Taken::Other),
+    }
+}
+
 /// Where a run that ended at the exit at `exit` ended.
 fn call_at(exit: u64) -> Exit {
     match exit
@@ -256,5 +260,46 @@ fn call_at(exit: u64) -> Exit {
     {
         Some(code) => Exit::Call(code),
         None => Exit::Elsewhere,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The address of a `blr` into the floor, the exit it calls, and that exit's code.
+    const BRANCH: u64 = 0x4_0010;
+    const CODE: u16 = 3;
+    const EXIT: u64 = IN_PROCESS_ENTRIES + CODE as u64 * PROCESS_ENTRY_BYTES;
+
+    /// The registers a call into the floor leaves at `pc`: x30 the address after its `blr`
+    /// ([Arm ARM, C6.2 BLR](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BLR--Branch-with-link-to-register-)).
+    fn called(pc: u64) -> Arm64Registers {
+        let mut registers = Arm64Registers {
+            pc,
+            ..Arm64Registers::default()
+        };
+        registers.x[LINK] = BRANCH + INSTRUCTION_BYTES;
+        registers
+    }
+
+    /// A call's pc is its `blr` whether its run ended at the exit or was stopped inside it, at any of its instructions.
+    #[test]
+    fn a_call_s_pc_is_its_branch_whether_it_ended_at_the_exit_or_was_stopped_in_it() {
+        let mut registers = called(BRANCH + INSTRUCTION_BYTES);
+        assert_eq!(ended(&mut registers, RunEnd::Exit(EXIT)), Exit::Call(CODE));
+        assert_eq!(registers.pc, BRANCH);
+        for at in (EXIT..EXIT + PROCESS_ENTRY_BYTES).step_by(INSTRUCTION_BYTES as usize) {
+            let mut registers = called(at);
+            assert_eq!(
+                ended(&mut registers, RunEnd::Stopped),
+                Exit::Call(CODE),
+                "{at:#x}"
+            );
+            assert_eq!(registers.pc, BRANCH, "{at:#x}");
+        }
+        let mut registers = called(BRANCH);
+        assert_eq!(ended(&mut registers, RunEnd::Stopped), Exit::Stopped);
+        assert_eq!(registers.pc, BRANCH);
     }
 }

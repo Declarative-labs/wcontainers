@@ -707,9 +707,12 @@ fn an_interrupt_asked_before_the_execution_is_taken_first_by_a_guest_that_keeps_
     assert_eq!(ended.exception, None);
 }
 
-/// `ldadd x0, x3, [x1]`, `dc zva, x1` and `ic ivau, x1`
+/// `ldadd x0, x3, [x1]`, `swp x0, x3, [x1]`, `cas x0, x3, [x1]`, `str x3, [x1]`, `dc zva, x1` and `ic ivau, x1`
 /// ([Arm ARM, C6.2](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions)).
 const ATOMIC_ADD: u32 = 0xf820_0023;
+const SWAP: u32 = 0xf820_8023;
+const COMPARE_SWAP: u32 = 0xc8a0_7c23;
+const STORE: u32 = 0xf900_0023;
 const ZERO_BLOCK: u32 = 0xd50b_7421;
 const CODE_CHANGED: u32 = 0xd50b_7521;
 
@@ -728,47 +731,53 @@ fn fault_of(
     (handler.faults, ended)
 }
 
-/// Linux reports an atomic access and `dc zva` as writes (the abort's WnR bit, arch/arm64/mm/fault.c
-/// `is_write_abort`) and a cache maintenance by address that faults as a read (its CM bit), whether the page refuses
-/// it or the address is outside the window.
+/// Linux reports the abort's WnR bit (arch/arm64/mm/fault.c `is_write_abort`), and Graviton4 sets it, measured through
+/// `run_instructions` on an unmapped, an inaccessible and a read-only page: for a store and `dc zva` everywhere; for an
+/// atomic only where the page can be read, since it reads first; never for a cache maintenance by address (its CM bit).
+/// A page inside the window the guest may not touch is the inaccessible one and an address outside it the unmapped one.
 #[test]
 fn a_fault_is_a_write_or_a_read_as_linux_reports_it() {
     let mut executor = executor();
-    let write = |address| {
+    let fault = |address, access| {
         (
-            vec![(address, Access::Write)],
+            vec![(address, access)],
             Some(Exception::DataAbort {
                 status: if address == READ_ONLY {
                     FaultStatus::PermissionFaultLevel3
                 } else {
                     FaultStatus::TranslationFaultLevel3
                 },
-                access: AccessDirection::Write,
+                access: if access == Access::Write {
+                    AccessDirection::Write
+                } else {
+                    AccessDirection::Read
+                },
                 address,
             }),
         )
     };
-    for (name, instruction, address, wanted) in [
-        ("ldadd", ATOMIC_ADD, READ_ONLY, write(READ_ONLY)),
-        ("dc zva", ZERO_BLOCK, READ_ONLY, write(READ_ONLY)),
-        ("dc zva", ZERO_BLOCK, GUARD, write(GUARD)),
-        ("ldadd", ATOMIC_ADD, GUARD, write(GUARD)),
-        (
-            "ic ivau",
-            CODE_CHANGED,
-            NOTHING,
-            (
-                vec![(NOTHING, Access::Read)],
-                Some(Exception::DataAbort {
-                    status: FaultStatus::TranslationFaultLevel3,
-                    access: AccessDirection::Read,
-                    address: NOTHING,
-                }),
-            ),
-        ),
-    ] {
+    let mut cases = vec![("ic ivau", CODE_CHANGED, NOTHING, Access::Read)];
+    for address in [READ_ONLY, NOTHING, GUARD] {
+        let atomic = if address == READ_ONLY {
+            Access::Write
+        } else {
+            Access::Read
+        };
+        cases.extend([
+            ("ldadd", ATOMIC_ADD, address, atomic),
+            ("swp", SWAP, address, atomic),
+            ("cas", COMPARE_SWAP, address, atomic),
+            ("str", STORE, address, Access::Write),
+            ("dc zva", ZERO_BLOCK, address, Access::Write),
+        ]);
+    }
+    for (name, instruction, address, access) in cases {
         let (faults, ended) = fault_of(&mut executor, instruction, address);
-        assert_eq!((faults, ended.exception), wanted, "{name} at {address:#x}");
+        assert_eq!(
+            (faults, ended.exception),
+            fault(address, access),
+            "{name} at {address:#x}"
+        );
         assert_eq!(ended.program_counter, CODE, "{name} at {address:#x}");
     }
     // On a page the guest may read, a code change is announced and the guest goes on to its system call.
@@ -990,6 +999,34 @@ fn the_flags_vectors_and_float_status_the_guest_leaves_are_the_execution_s() {
     wanted[0] = 0;
     wanted[STATUS_INTO] = STATUS;
     assert_eq!(ended.general_purpose_registers, wanted);
+}
+
+/// `fadd d0, d1, d2` ([Arm ARM, C7.2](https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FADD--scalar---Floating-point-add--scalar--)),
+/// the operands it adds, one and 2^-60, whose sum one cannot hold, and FPSR's IXC, which an inexact result sets.
+const FLOAT_ADD: u32 = 0x1e62_2820;
+const ONE: f64 = 1.0;
+const TINY: f64 = 1.0 / (1_u64 << 60) as f64;
+const INEXACT: u64 = 0x10;
+
+/// A float status the guest never wrote is read as the chip keeps it: an inexact add before `mrs fpsr` sets IXC, in
+/// the default mode, and the sum is one.
+#[test]
+fn an_inexact_add_sets_the_float_status_the_guest_reads_back() {
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &[FLOAT_ADD, READ_FPSR, SYSTEM_CALL], 0);
+    let mut start = before(18);
+    start.floating_point_status = 0;
+    start.floating_point_control = 0;
+    start.vector_registers[1] = u128::from(ONE.to_bits());
+    start.vector_registers[2] = u128::from(TINY.to_bits());
+    let ended = execute(&mut executor, &memory, start, &mut Handler::default());
+    assert_eq!(
+        ended.exception,
+        Some(Exception::SupervisorCall { immediate: 0 })
+    );
+    assert_eq!(ended.vector_registers[0], u128::from(ONE.to_bits()));
+    assert_eq!(ended.general_purpose_registers[STATUS_INTO], INEXACT);
+    assert_eq!(ended.floating_point_status, INEXACT);
 }
 
 /// A load through a stack pointer into a page the guest may not touch is an abort at that address, not an alignment

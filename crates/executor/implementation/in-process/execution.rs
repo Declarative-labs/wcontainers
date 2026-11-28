@@ -438,10 +438,12 @@ impl<'run> Run<'run> {
                 exclusive: [0; 4],
             },
             page: RegisterPage::default(),
+            // A run takes FPSR in from its frame and gives it back, so that the hardware's flags are the guest's
+            // exactly, in every mode: they are kept from the start.
             float: FloatStatus {
                 fpsr: processor.floating_point_status as u32,
                 fpcr: processor.floating_point_control as u32,
-                tracking: false,
+                tracking: true,
             },
             displace: false,
         }
@@ -563,7 +565,8 @@ impl<'run> Run<'run> {
             match resolution {
                 None => return Some(Trap::Ended(host_refused())),
                 Some(Resolution::Outside { address, state }) => {
-                    let access = access_of(word_at(self.memory, state.pc));
+                    let readable = self.memory.allowed(address).intersects(READABLE);
+                    let access = access_of(word_at(self.memory, state.pc), readable);
                     self.state = state;
                     self.page = page;
                     return Some(Trap::MemoryFault { address, access });
@@ -580,13 +583,12 @@ impl<'run> Run<'run> {
                     return None;
                 }
                 Some(Resolution::Resolved(resolved)) => match resolved {
-                    Resolved::Again(then, then_page)
-                    | Resolved::FloatStatusNotKept(then, then_page)
-                    | Resolved::LastTarget {
-                        then,
-                        page: then_page,
-                        ..
-                    } => self.thread.resume(&then, &then_page),
+                    // The thread goes on from its branch into the floor, which, with x30 the address after it, lands
+                    // there: the hardware the stop crate gives, the call made, differs in nothing else while the float
+                    // status is kept, and no page is changed.
+                    Resolved::Again(..)
+                    | Resolved::FloatStatusNotKept(..)
+                    | Resolved::LastTarget { .. } => {}
                     Resolved::Clock { at, .. } => {
                         let word = word_at(self.memory, at.pc);
                         self.state = *at;
@@ -641,7 +643,10 @@ impl<'run> Run<'run> {
             Stop::Alignment(_) => Trap::Ended(Exception::StackPointerAlignmentFault),
             Stop::MemoryFault { address, .. } => Trap::MemoryFault {
                 address: address | tag,
-                access: access_of(word_at(self.memory, pc)),
+                access: access_of(
+                    word_at(self.memory, pc),
+                    self.memory.allowed(address).intersects(READABLE),
+                ),
             },
         })
     }
@@ -710,23 +715,25 @@ fn word_at(memory: &InProcessMemory, pc: u64) -> u32 {
 }
 
 /// What the faulting instruction `word` did, as Linux reports it (the abort's WnR bit): a write where it writes memory,
-/// `dc zva`, which zeroes its block, and the atomics, which write what they read, among them. The instruction decides,
-/// not the host's access: a probe of a store that crosses a page reads, and an access outside the window is the mark's
-/// read; and every instruction that runs is one this decoder knows.
-fn access_of(word: u32) -> Access {
-    let stores = matches!(
-        decode(word),
-        Instruction::Store { .. }
-            | Instruction::ZeroBlock { .. }
-            | Instruction::Atomic { .. }
-            | Instruction::CompareSwap { .. }
-            | Instruction::StorePair { .. }
-            | Instruction::StoreVector { .. }
-            | Instruction::StoreVectorPair { .. }
-            | Instruction::StoreExclusive { .. }
-            | Instruction::StoreRelease { .. }
-            | Instruction::SimdMemory { load: false, .. }
-    );
+/// among them `dc zva`, which zeroes its block; an atomic, which reads before it writes, is a read where the page
+/// cannot be `readable` and a write where it can (measured on Graviton4). The instruction decides, not the host's
+/// access: a probe of a store that crosses a page reads, and an access outside the window is the mark's read; and
+/// every instruction that runs is one this decoder knows.
+fn access_of(word: u32, readable: bool) -> Access {
+    let stores = match decode(word) {
+        Instruction::Atomic { .. } | Instruction::CompareSwap { .. } => readable,
+        instruction => matches!(
+            instruction,
+            Instruction::Store { .. }
+                | Instruction::ZeroBlock { .. }
+                | Instruction::StorePair { .. }
+                | Instruction::StoreVector { .. }
+                | Instruction::StoreVectorPair { .. }
+                | Instruction::StoreExclusive { .. }
+                | Instruction::StoreRelease { .. }
+                | Instruction::SimdMemory { load: false, .. }
+        ),
+    };
     if stores { Access::Write } else { Access::Read }
 }
 
@@ -846,5 +853,69 @@ pub struct InProcessInterrupter {
 impl ExecutionInterrupter for InProcessInterrupter {
     fn interrupt(&self) {
         self.interruption.interrupt();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wcontainers_arm64::thread_state::PAGE;
+    use wcontainers_arm64::way::BASE;
+
+    use super::*;
+
+    /// Where the guest's instruction is, and a stack pointer inside its window and one past it.
+    const CODE: u64 = 0x4_0000;
+    const STACK: u64 = 0x20_0000;
+    const OUTSIDE_THE_WINDOW: u64 = OUTSIDE + GUEST_PAGE;
+    /// What the guest's registers hold where the run keeps its frame and the window's base.
+    const HOSTILE: u64 = 0x1234;
+    /// `brk #0` ([Arm ARM, C6.2](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BRK--Breakpoint-instruction-)).
+    const BREAKPOINT: u32 = 0xd420_0000;
+
+    /// A piece entered as after a slot-table fault, whatever the guest's x24 and x28 held, runs from its first
+    /// instruction with x28 its frame and x24 its window's base; a pc it may not start at, one before its first
+    /// instruction or between two, and a stack pointer outside the window of a piece not displaced, are refused.
+    #[test]
+    fn a_reentry_after_a_slot_fault_sets_the_frame_and_the_base() {
+        let mut executor =
+            InProcess::new(InProcessPool::new().expect("a host with the guest's pages"));
+        let (memory, _table) = executor.create_guest_memory().expect("a free slot");
+        let way = Way::InProcess {
+            slot: memory.slot(),
+            displaced: false,
+            kept: Kept::USUAL,
+        };
+        let (piece, _) = executor.piece(way, CODE, BREAKPOINT).expect("translated");
+        let mut thread = InProcessThread::new().expect("a thread of its own");
+        let mut state = GuestState {
+            x: [HOSTILE; 31],
+            sp: STACK,
+            pc: CODE,
+            flags: 0,
+            count: 0,
+            exclusive: [0; 4],
+        };
+        let float = FloatStatus {
+            fpsr: 0,
+            fpcr: 0,
+            tracking: false,
+        };
+        let page = RegisterPage::default();
+        for at in [piece.at - INSTRUCTION_SIZE, piece.at + INSTRUCTION_SIZE / 2] {
+            thread.enter(way, &state, page.clone(), &float, at);
+            assert_eq!(thread.run(&piece.mapping), Exit::Refused, "{at:#x}");
+        }
+        state.sp = OUTSIDE_THE_WINDOW;
+        thread.enter(way, &state, page.clone(), &float, piece.at);
+        assert_eq!(thread.run(&piece.mapping), Exit::Refused, "a stack outside");
+        state.sp = STACK;
+        thread.enter(way, &state, page, &float, piece.at);
+        assert!(
+            matches!(thread.run(&piece.mapping), Exit::Call(_)),
+            "the breakpoint's call"
+        );
+        let hardware = thread.hardware();
+        assert_eq!(hardware.x[usize::from(BASE)], way.window_base());
+        assert_eq!(hardware.x[usize::from(PAGE)], thread.frame_address());
     }
 }
