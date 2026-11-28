@@ -35,9 +35,8 @@ pub open spec fn permits<Shard: MemoryShard>(
 
 /// The part of an executor that runs one task's instructions on the task's memory.
 ///
-/// An implementation that is not proven is trusted for all of it: that it reaches only the bytes
-/// of the shards in `memory`, each only as its permissions allow; that it starts from `processor`
-/// and leaves there the state it stopped at; and that only the interruption it is given stops it.
+/// An unproven implementation is trusted to reach only the shards in `memory` as their permissions
+/// allow, to start from `processor` and leave its stop there, and to stop only by its interruption.
 pub trait ExecutorBoundary<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>>: Sized {
     type ProcessorState;
 

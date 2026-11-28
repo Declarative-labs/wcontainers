@@ -44,10 +44,6 @@ impl SparseBytes<'_> {
     }
 }
 
-#[allow(
-    reviewable::implementation_not_verified,
-    reason = "TODO: prove it against the trait's contract, then remove this line"
-)]
 impl VolatileBytes for SparseBytes<'_> {
     fn len(&self) -> u64 {
         self.length
@@ -85,10 +81,6 @@ impl VolatileBytes for SparseBytes<'_> {
     }
 }
 
-#[allow(
-    reviewable::implementation_not_verified,
-    reason = "TODO: prove it against the trait's contract, then remove this line"
-)]
 impl MemoryShard for SparseShard {
     type ByteView<'shard> = SparseBytes<'shard>;
 
@@ -117,10 +109,6 @@ struct SparseTable {
     shards: BTreeMap<u64, SparseShard>,
 }
 
-#[allow(
-    reviewable::implementation_not_verified,
-    reason = "TODO: prove it against the trait's contract, then remove this line"
-)]
 impl CapabilityTable<u64, SparseShard, MemoryShardConfig, MemoryError> for SparseTable {
     fn create(&mut self, identifier: u64, config: MemoryShardConfig) -> Result<(), CreateError<MemoryError>> {
         if self.shards.contains_key(&identifier) {
@@ -170,10 +158,6 @@ impl SparseTable {
     }
 }
 
-#[allow(
-    reviewable::implementation_not_verified,
-    reason = "TODO: prove it against the trait's contract, then remove this line"
-)]
 impl MemoryCapabilityTable<SparseShard> for SparseTable {
     fn set_permissions(&mut self, address: &u64, permissions: MemoryPermissions) -> Result<(), SetPermissionsError> {
         let shard = self.shards.get_mut(address).ok_or(SetPermissionsError::NothingHeld)?;
@@ -200,10 +184,6 @@ impl MemoryCapabilityTable<SparseShard> for SparseTable {
 
 struct SparseParts;
 
-#[allow(
-    reviewable::implementation_not_verified,
-    reason = "TODO: prove it against the trait's contract, then remove this line"
-)]
 impl TaskSource<SparseShard> for SparseParts {
     type Table = SparseTable;
 
