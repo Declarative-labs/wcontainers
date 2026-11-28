@@ -4841,7 +4841,6 @@ name = "wcontainers-kernel"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
- "vstd",
  "wcontainers-abi",
  "wcontainers-executor",
 ]
@@ -4894,6 +4893,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-memory-capability-table"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "vstd",
+ "wcontainers-capability-table",
+ "wcontainers-memory-shard",
+]
+
+[[package]]
+name = "wcontainers-memory-shard"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "vstd",
+ "wcontainers-capability-table",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
 name = "wcontainers-mesa-compiler"
 version = "0.1.0"
 
@@ -4913,26 +4932,6 @@ dependencies = [
  "serde_json",
  "wcontainers-mesa-compiler",
  "wcontainers-mesa-compiler-conformance",
-]
-
-[[package]]
-name = "wcontainers-memory-capability-table"
-version = "0.1.0"
-dependencies = [
- "thiserror",
- "vstd",
- "wcontainers-capability-table",
- "wcontainers-memory-shard",
-]
-
-[[package]]
-name = "wcontainers-memory-shard"
-version = "0.1.0"
-dependencies = [
- "thiserror",
- "vstd",
- "wcontainers-capability-table",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
