@@ -1,7 +1,6 @@
 #![no_std]
 
 use vstd::prelude::*;
-use wcontainers_kernel::TaskId;
 
 verus! {
 
@@ -14,41 +13,37 @@ pub trait CapabilityTable {
 
     type Error;
 
-    spec fn state(&self) -> Map<(TaskId, Self::Identifier), Self::Capability>;
+    spec fn state(&self) -> Map<Self::Identifier, Self::Capability>;
 
-    fn create(
-        &mut self,
-        task: TaskId,
-        identifier: Self::Identifier,
-        config: Self::Config,
-    ) -> (created: Result<(), CreateError<Self::Error>>)
+    fn create(&mut self, identifier: Self::Identifier, config: Self::Config) -> (created: Result<
+        (),
+        CreateError<Self::Error>,
+    >)
         ensures
             match created {
-                Ok(_) => !old(self).state().contains_key((task, identifier))
-                    && final(self).state().contains_key((task, identifier))
-                    && final(self).state().remove((task, identifier)) == old(self).state(),
-                Err(CreateError::IdentifierTaken) => old(self).state().contains_key(
-                    (task, identifier),
-                ) && final(self).state() == old(self).state(),
-                Err(CreateError::Failed(_)) => !old(self).state().contains_key((task, identifier))
+                Ok(_) => !old(self).state().contains_key(identifier)
+                    && final(self).state().contains_key(identifier) && final(self).state().remove(
+                    identifier,
+                ) == old(self).state(),
+                Err(CreateError::IdentifierTaken) => old(self).state().contains_key(identifier)
+                    && final(self).state() == old(self).state(),
+                Err(CreateError::Failed(_)) => !old(self).state().contains_key(identifier)
                     && final(self).state() == old(self).state(),
             },
     ;
 
-    fn get(&self, task: TaskId, identifier: &Self::Identifier) -> (capability: Option<
-        &Self::Capability,
-    >)
+    fn get(&self, identifier: &Self::Identifier) -> (capability: Option<&Self::Capability>)
         ensures
             match capability {
-                Some(capability) => self.state().contains_key((task, *identifier)) && *capability
-                    == self.state().index((task, *identifier)),
-                None => !self.state().contains_key((task, *identifier)),
+                Some(capability) => self.state().contains_key(*identifier) && *capability
+                    == self.state().index(*identifier),
+                None => !self.state().contains_key(*identifier),
             },
     ;
 
-    fn drop(&mut self, task: TaskId, identifier: &Self::Identifier)
+    fn drop(&mut self, identifier: &Self::Identifier)
         ensures
-            final(self).state() == old(self).state().remove((task, *identifier)),
+            final(self).state() == old(self).state().remove(*identifier),
     ;
 }
 
