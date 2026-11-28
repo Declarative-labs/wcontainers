@@ -18,16 +18,18 @@
 //! stack pointer's step) the meaning the Rust decomposer gives them comes from `decode.rs`, not from Arm's
 //! pseudocode: until `step` is bound to the instruction-proof model, every figure below is only as sound as decode.rs.
 //! (2) The memory map: an access through the stack pointer that moves it, and the probe after a stack step, end the run
-//! when they touch the slot's never mapped bytes (in [`stack_touches`] with `faults`). (3) The slot table: an exit into
-//! it goes on at the first word of the piece of its guest address with every register kept ([`whole_run`]); a floor
-//! call ends the run, and a run the floor resumes in the middle of a piece is not covered. (4) The pieces: only
-//! described pieces are covered.
+//! when they touch the slot's never mapped bytes (in [`stack_touches`] with `faults`). (3) The re-entry: the slot table
+//! holds no words in form I (never mapped), and after a step into it the executor enters some piece at its first word
+//! with a machine the entry rule allows ([`reenters`]: from what the run handed on; which piece, and the registers but
+//! x28, x24 and the stack pointer, are free). That is `InProcessThread::enter` and `run_instructions` (READ, not
+//! proven: the executor's Rust). A floor call ends the run, and a run the floor resumes in the middle of a piece is not
+//! covered. (4) The pieces: only described pieces are covered.
 //!
 //! WHAT IS DESCRIBED (measured by `tests/compose.rs` over 8 drawn words of each of the 4,429 forms, look-ahead none;
 //! each figure rests on (1): the meaning of each word is a hypothesis taken from decode.rs, and `step` is still free):
-//! in the window 35,424 of 35,432 pieces, every piece of 4,422 forms; displaced 35,426 of 35,432, every piece of 4,425.
-//! The rest: jumps through a register the run loads from the frame, and accesses through x23 holding no window
-//! address in these blocks.
+//! every piece, 35,432 of 35,432, both in the window and displaced. Over the 15 test programs zig builds, every piece of
+//! look-ahead none (100,584 both ways); of look-ahead bounded 16, 12,570 of 12,580: the rest are in-piece switch jumps
+//! (`adr x23`, `add x23, x23, xT, lsl #2`, `br x23` into a table of `b`s), whose index only a byte load bounds.
 
 use super::*;
 use super::meaning::*;
@@ -184,7 +186,7 @@ pub proof fn lemma_chained_confines(step: spec_fn(Machine, u32) -> Stepped, inst
 proof fn lemma_whole_segment(
     step: spec_fn(Machine, u32) -> Stepped,
     pieces: Seq<Piece>,
-    link: spec_fn(u64) -> int,
+    reenter: spec_fn(u64, Machine) -> (int, Machine),
     k: int,
     start: Machine,
     n: nat,
@@ -193,11 +195,11 @@ proof fn lemma_whole_segment(
         0 <= k < pieces.len(),
         one_window(pieces, pieces[k].a),
         forall|i: int| 0 <= i < pieces.len() ==> #[trigger] is_chained(step, pieces[i].instructions, pieces[i].a),
-        forall|pc: u64| 0 <= #[trigger] link(pc) < pieces.len(),
+        reenters(pieces, pieces[k].a, reenter),
         handed(pieces[k].a, start),
     ensures
         ({
-            let w = whole_run(step, pieces, link, k, start, n);
+            let w = whole_run(step, pieces, reenter, k, start, n);
             &&& 0 <= w.0 < pieces.len()
             &&& handed(pieces[w.0].a, r.0)
             &&& w.1 == run(step, pieces[w.0].instructions, pieces[w.0].a, r.0, r.1)
@@ -207,8 +209,8 @@ proof fn lemma_whole_segment(
     if n == 0 {
         (start, 0)
     } else {
-        let (s0, n0) = lemma_whole_segment(step, pieces, link, k, start, (n - 1) as nat);
-        let before = whole_run(step, pieces, link, k, start, (n - 1) as nat);
+        let (s0, n0) = lemma_whole_segment(step, pieces, reenter, k, start, (n - 1) as nat);
+        let before = whole_run(step, pieces, reenter, k, start, (n - 1) as nat);
         let i = before.0;
         let p = pieces[i];
         assert(run(step, p.instructions, p.a, s0, n0 + 1) == if runs(p.a, before.1) {
@@ -222,14 +224,12 @@ proof fn lemma_whole_segment(
             if !after.ended && in_table(p.a, after.pc) {
                 assert(is_chained(step, p.instructions, p.a));
                 assert(hands_on(p.a, after));
-                let next = link(after.pc);
-                let q = pieces[next].a;
-                assert(q.base == pieces[k].a.base && q.frame == pieces[k].a.frame && q.displaced == pieces[k].a.displaced);
-                assert(0 <= q.code <= PROCESS_SLOTS);
-                let s1 = Machine { pc: q.code as u64, ..after };
-                assert(handed(q, s1));
-                assert(run(step, pieces[next].instructions, q, s1, 0) == s1);
-                (s1, 0)
+                assert(p.a.base == pieces[k].a.base && p.a.frame == pieces[k].a.frame && p.a.displaced == pieces[k].a.displaced);
+                assert(hands_on(pieces[k].a, after));
+                let r = reenter(after.pc, after);
+                assert(0 <= r.0 < pieces.len() && handed(pieces[r.0].a, r.1));
+                assert(run(step, pieces[r.0].instructions, pieces[r.0].a, r.1, 0) == r.1);
+                (r.1, 0)
             } else {
                 (s0, n0 + 1)
             }
@@ -240,11 +240,12 @@ proof fn lemma_whole_segment(
 }
 
 /// THE CHAIN THEOREM: in a whole run of chained pieces of one window, from any machine a run hands on to any piece,
-/// every step is confined in the piece it is in.
+/// and re-entered after each step into the slot table as the executor does ([`reenters`]), every step is confined in
+/// the piece it is in.
 pub proof fn whole_run_is_confined(
     step: spec_fn(Machine, u32) -> Stepped,
     pieces: Seq<Piece>,
-    link: spec_fn(u64) -> int,
+    reenter: spec_fn(u64, Machine) -> (int, Machine),
     k: int,
     start: Machine,
     n: nat,
@@ -253,18 +254,18 @@ pub proof fn whole_run_is_confined(
         0 <= k < pieces.len(),
         one_window(pieces, pieces[k].a),
         forall|i: int| 0 <= i < pieces.len() ==> #[trigger] is_chained(step, pieces[i].instructions, pieces[i].a),
-        forall|pc: u64| 0 <= #[trigger] link(pc) < pieces.len(),
+        reenters(pieces, pieces[k].a, reenter),
         handed(pieces[k].a, start),
     ensures
         ({
-            let w = whole_run(step, pieces, link, k, start, n);
+            let w = whole_run(step, pieces, reenter, k, start, n);
             let p = pieces[w.0];
             &&& 0 <= w.0 < pieces.len()
             &&& runs(p.a, w.1) ==> confined_step(p.a, w.1, step(w.1, word_at(p.instructions, p.a, w.1.pc)))
         }),
 {
-    let (s0, n0) = lemma_whole_segment(step, pieces, link, k, start, n);
-    let w = whole_run(step, pieces, link, k, start, n);
+    let (s0, n0) = lemma_whole_segment(step, pieces, reenter, k, start, n);
+    let w = whole_run(step, pieces, reenter, k, start, n);
     assert(is_chained(step, pieces[w.0].instructions, pieces[w.0].a));
     assert(w.1 == run(step, pieces[w.0].instructions, pieces[w.0].a, s0, n0));
 }
@@ -335,8 +336,6 @@ pub enum Desc {
     Probes { j: int, c: int, from: int, off: int, bytes: nat, store: bool, bb: int },
     /// The exit to `guest`'s entry slot.
     Exit { j: int, guest: int },
-    /// The jump through `xN` into the slot table, or to `out` when its target is outside the window.
-    Jump { j: int, n: int, out: int },
     /// A call into the floor, `code` its entry.
     Call { j: int, code: int },
     /// A frame access or a move, after which the base is in `bb2`.
@@ -357,10 +356,14 @@ pub enum Desc {
     StackProbes { j: int, c: int, bytes: nat, store: bool, bb: int },
     /// `movz/movn x23, #off`, `add x23, sp, x23`, then an access of `bytes` at x23 loading `rt` and `rt2`.
     StackAt { j: int, off: int, rt: int, rt2: int, bytes: nat, bb: int, cut: int },
-    /// `mov xc, xc` of the cut: it stays.
-    Same { j: int, bb: int, cut: int },
-    /// The displaced jump through `xN` into slot 0's table, or to `out` when its target is too high.
-    DisplacedJump { j: int, n: int, out: int },
+    /// The jump's last words, entered with the cut in x23: `ubfiz`, `bfxil`, `eor` making the slot of x23's guest
+    /// address, with `link` three words writing x30, and `br x23` into the slot table.
+    TableJump { j: int, link: bool },
+    /// The displaced jump's last words: `ubfiz x23, xN` (31: the zero register), `bfxil`, `eor`, with `link` three
+    /// words writing x30, and `br x23` into slot 0's table.
+    DisplacedTableJump { j: int, n: int, link: bool },
+    /// `add/sub xc, xc, #k` of the cut, then an access of `bytes` at x[cut] loading `rt` and `rt2`.
+    ShiftThrough { j: int, k: int, rt: int, rt2: int, bytes: nat, bb: int, cut: int },
 }
 
 pub open spec fn entry_of(d: Desc) -> int {
@@ -374,7 +377,6 @@ pub open spec fn entry_of(d: Desc) -> int {
         Desc::Mark { j, .. } => j,
         Desc::Probes { j, .. } => j,
         Desc::Exit { j, .. } => j,
-        Desc::Jump { j, .. } => j,
         Desc::Call { j, .. } => j,
         Desc::Frame { j, .. } => j,
         Desc::Stop { j } => j,
@@ -384,9 +386,10 @@ pub open spec fn entry_of(d: Desc) -> int {
         Desc::StackAccess { j, .. } => j,
         Desc::StackVia { j, .. } => j,
         Desc::StackProbes { j, .. } => j,
-        Desc::Same { j, .. } => j,
-        Desc::DisplacedJump { j, .. } => j,
         Desc::StackAt { j, .. } => j,
+        Desc::TableJump { j, .. } => j,
+        Desc::DisplacedTableJump { j, .. } => j,
+        Desc::ShiftThrough { j, .. } => j,
     }
 }
 
@@ -402,7 +405,6 @@ pub open spec fn iface_ok(d: Desc, bb: int, cut: int) -> bool {
         Desc::Mark { bb: b, .. } => b == bb,
         Desc::Probes { bb: b, from, .. } => b == bb && needs_cut(from, cut),
         Desc::Exit { .. } => bb == 24,
-        Desc::Jump { .. } => bb == 24,
         Desc::Call { .. } => true,
         Desc::Frame { bb: b, cut: c, .. } => b == bb && needs_cut(c, cut),
         Desc::Stop { .. } => true,
@@ -412,9 +414,10 @@ pub open spec fn iface_ok(d: Desc, bb: int, cut: int) -> bool {
         Desc::StackAccess { bb: b, .. } => b == bb,
         Desc::StackVia { bb: b, cut: c, .. } => b == bb && needs_cut(c, cut),
         Desc::StackProbes { bb: b, .. } => b == bb,
-        Desc::Same { bb: b, cut: c, .. } => b == bb && c == cut,
-        Desc::DisplacedJump { .. } => bb == 24,
         Desc::StackAt { bb: b, cut: c, .. } => b == bb && needs_cut(c, cut),
+        Desc::TableJump { .. } => bb == 24 && cut == 23,
+        Desc::DisplacedTableJump { .. } => bb == 24,
+        Desc::ShiftThrough { bb: b, cut: c, .. } => b == bb && c == cut,
     }
 }
 
@@ -444,13 +447,9 @@ pub open spec fn mov_sp_from(c: int) -> u32 {
 
 pub const STACK_TO_X23: u32 = 0x9100_03f7;
 
-/// `mov xc, sp`; `mov xc, xc`.
+/// `mov xc, sp`.
 pub open spec fn mov_c_sp(c: int) -> u32 {
     (0x9100_03e0u32 | (c as u32)) as u32
-}
-
-pub open spec fn same_word(c: int) -> u32 {
-    (0x9100_0000u32 | ((c as u32) << 5u32) | (c as u32)) as u32
 }
 
 /// The cut after an access through it: gone if written back or loaded over.
@@ -479,30 +478,6 @@ pub open spec fn stack_probes_inv(a: Allowed, j: int, c: int, bytes: nat, store:
     &&& (i == j + 1 || (!store && i == j + 2)) ==> m.x[c] == m.sp
     &&& (store && i == j + 2) ==> m.x[c] == m.sp
     &&& (store && i == j + 3) ==> m.x[c] as int == m.sp + bytes - 1
-}
-
-/// The displaced jump's words (branch.rs `displaced_jump` without the count and its way to the floor): 6, the
-/// `cbnz` going to `out`.
-pub open spec fn displaced_jump_words(n: u32, j: int, out: int) -> Seq<u32> {
-    seq![check_x23(n), cbnz_c(23, (out - j - 1) * 4), ubfiz_x23(n), BFXIL_X23, EOR_X23_TABLE, BR_X23]
-}
-
-/// What the displaced jump's words do (Arm ARM; branch.rs `displaced_jump_means` with its `cbnz` going `by` bytes).
-pub open spec fn displaced_jump_main_means(step: spec_fn(Machine, u32) -> Stepped, n: u32, by: int) -> bool {
-    &&& writes(step, check_x23(n), 23, |m: Machine| (m.x[n as int] >> 32u64) & 0xff_ffffu64)
-    &&& branches_if(step, cbnz_c(23, by), 23, by, true)
-    &&& writes(step, ubfiz_x23(n), 23, |m: Machine| (m.x[n as int] & 0xffff_ffffu64) << 2u64)
-    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))
-    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23] ^ 0x4000_0000_0000u64)
-    &&& jumps(step, BR_X23, 23)
-}
-
-/// Where the displaced jump's run stands (branch.rs `displaced_jump_inv`, from its second word).
-pub open spec fn displaced_jump_at(a: Allowed, j: int, m: Machine) -> bool {
-    let o = (index(a, m.pc) - j) * 4;
-    &&& o == 12 ==> m.x[23] < 0x4_0000_0000u64 && m.x[23] & 3u64 == 0
-    &&& o == 16 ==> m.x[23] < 0x4_0000_0003
-    &&& o == 20 ==> PROCESS_SLOTS <= m.x[23] && m.x[23] < PROCESS_SLOTS + 0x4_0000_0003
 }
 
 /// `add xc, xfrom, xc` (x31: the stack pointer).
@@ -539,20 +514,23 @@ pub open spec fn from_value(m: Machine, from: int) -> int {
     if from == 31 { m.sp as int } else { m.x[from] as int }
 }
 
-/// The jump's words (branch.rs `jump` without the count and its way to the floor): 7, the `cbnz` going to `out`.
-pub open spec fn jump_words(n: u32, j: int, out: int) -> Seq<u32> {
-    seq![check_x23(n), cbnz_c(23, (out - j - 1) * 4), add_cut(n), UBFIZ_X23, BFXIL_X23, EOR_X23_TABLE, BR_X23]
+/// The low word of xN, or 0 for the zero register (31).
+pub open spec fn low_of(m: Machine, n: int) -> u64 {
+    if n == 31 { 0u64 } else { m.x[n] & 0xffff_ffffu64 }
 }
 
-/// What the jump's words do (Arm ARM; branch.rs `jump_means` with its `cbnz` going `by` bytes).
-pub open spec fn jump_main_means(step: spec_fn(Machine, u32) -> Stepped, n: u32, by: int) -> bool {
-    &&& writes(step, check_x23(n), 23, |m: Machine| (m.x[n as int] >> 32u64) & 0xff_ffffu64)
-    &&& branches_if(step, cbnz_c(23, by), 23, by, true)
-    &&& writes(step, add_cut(n), 23, |m: Machine| ((m.x[24] + (m.x[n as int] & 0xffff_ffffu64)) % two_to_64()) as u64)
-    &&& writes(step, UBFIZ_X23, 23, |m: Machine| (m.x[23] & 0xfff_ffff_ffffu64) << 2u64)
-    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))
-    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23] ^ 0x4000_0000_0000u64)
-    &&& jumps(step, BR_X23, 23)
+/// How many words writing x30 come before a table jump's `br x23` (a `blr`'s return address).
+pub open spec fn link_len(link: bool) -> int {
+    if link { 3 } else { 0 }
+}
+
+/// `add xc, xc, #k`, or `sub xc, xc, #-k` for a negative `k`.
+pub open spec fn shift_word(c: int, k: int) -> u32 {
+    if k >= 0 {
+        (0x9100_0000u32 | ((k as u32) << 10u32) | ((c as u32) << 5u32) | (c as u32)) as u32
+    } else {
+        (0xd100_0000u32 | (((-k) as u32) << 10u32) | ((c as u32) << 5u32) | (c as u32)) as u32
+    }
 }
 
 /// The words of `instructions` from `j` are `words`.
@@ -569,7 +547,7 @@ pub open spec fn shape_ok(instructions: Seq<u32>, a: Allowed, descs: Seq<Desc>, 
             0 <= j && j + 1 < len && base_ok(bb) && 0 <= cut <= 31 && reg_ok(rd, bb) && (sp ==> a.displaced)
             && accepts(descs, j + 1, bb, after_cut(cut, rd)),
         Desc::Cut { j, n, c, bb } =>
-            0 <= j && j + 1 < len && base_ok(bb) && 0 <= n < 31 && 0 <= c < 31 && c != bb && c != frame_register()
+            0 <= j && j + 1 < len && base_ok(bb) && 0 <= n <= 31 && 0 <= c < 31 && c != bb && c != frame_register()
             && instructions[j] == add_cut_into(n as u32, bb, c) && accepts(descs, j + 1, bb, c),
         Desc::Either { j, by, bb, cut } =>
             0 <= j && j + 1 < len && base_ok(bb) && 0 <= cut <= 31 && by % 4 == 0 && 0 <= j + by / 4 < len
@@ -594,9 +572,6 @@ pub open spec fn shape_ok(instructions: Seq<u32>, a: Allowed, descs: Seq<Desc>, 
             && accepts(descs, j + probes_length(store), bb, from),
         Desc::Exit { j, guest } =>
             0 <= guest && guest + 4 < 0x1_0000_0000 && holds_at(instructions, j, exit_words(exit_slot(a, guest + 4) as u64)),
-        Desc::Jump { j, n, out } =>
-            !a.displaced && 0 <= n < 31 && j + 1 < out < instructions.len() && holds_at(instructions, j, jump_words(n as u32, j, out))
-            && accepts(descs, out, 24, 31),
         Desc::Call { j, code } =>
             0 <= code < 256 && holds_at(instructions, j, floor_call(floor_entry(code))),
         Desc::Frame { j, f, bb, bb2, cut } =>
@@ -625,17 +600,22 @@ pub open spec fn shape_ok(instructions: Seq<u32>, a: Allowed, descs: Seq<Desc>, 
             !a.displaced && base_ok(bb) && 0 <= c < 31 && c != bb && c != frame_register() && 1 <= bytes <= 0x1_0000
             && j + stack_probes_length(store) < len && holds_at(instructions, j, stack_probes_words(c, bytes, store))
             && accepts(descs, j + stack_probes_length(store), bb, 31),
-        Desc::Same { j, bb, cut } =>
-            0 <= j && j + 1 < len && base_ok(bb) && 0 <= cut < 31 && instructions[j] == same_word(cut)
-            && accepts(descs, j + 1, bb, cut),
-        Desc::DisplacedJump { j, n, out } =>
-            a.displaced && 0 <= n < 31 && j + 1 < out < instructions.len()
-            && holds_at(instructions, j, displaced_jump_words(n as u32, j, out)) && accepts(descs, out, 24, 31),
         Desc::StackAt { j, off, rt, rt2, bytes, bb, cut } =>
             !a.displaced && 0 <= j && j + 3 < len && base_ok(bb) && 0 <= cut <= 31 && cut != 23
             && reg_ok(rt, bb) && reg_ok(rt2, bb) && (cut < 31 ==> rt != cut && rt2 != cut)
             && -0x400 <= off && 1 <= bytes && off + bytes <= 0x1_0000
             && holds_at(instructions, j, seq![movx_c(23, off), add_from_c(23, 31)]) && accepts(descs, j + 3, bb, cut),
+        Desc::TableJump { j, link } =>
+            !a.displaced && j + 3 + link_len(link) < len && holds_at(instructions, j, seq![UBFIZ_X23, BFXIL_X23, EOR_X23_TABLE])
+            && instructions[j + 3 + link_len(link)] == BR_X23,
+        Desc::DisplacedTableJump { j, n, link } =>
+            a.displaced && 0 <= n <= 31 && j + 3 + link_len(link) < len
+            && holds_at(instructions, j, seq![ubfiz_x23(n as u32), BFXIL_X23, EOR_X23_TABLE])
+            && instructions[j + 3 + link_len(link)] == BR_X23,
+        Desc::ShiftThrough { j, k, rt, rt2, bytes, bb, cut } =>
+            0 <= j && j + 2 < len && base_ok(bb) && 0 <= cut < 31 && cut != bb && cut != frame_register()
+            && reg_ok(rt, bb) && reg_ok(rt2, bb) && -0x1_0000 <= k && 1 <= bytes && k + bytes <= 0x1_0000
+            && instructions[j] == shift_word(cut, k) && accepts(descs, j + 2, bb, 31),
     }
 }
 
@@ -733,7 +713,7 @@ pub open spec fn meant(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq
     match d {
         Desc::Register { j, rd, sp, .. } => keeps_but(step, instructions[j], rd, sp),
         Desc::Cut { n, c, bb, .. } =>
-            writes(step, add_cut_into(n as u32, bb, c), c, |m: Machine| ((m.x[bb] + (m.x[n] & 0xffff_ffffu64)) % two_to_64()) as u64),
+            writes(step, add_cut_into(n as u32, bb, c), c, |m: Machine| ((m.x[bb] + low_of(m, n)) % two_to_64()) as u64),
         Desc::Either { j, by, .. } => goes_either(step, instructions[j], by),
         Desc::Branch { j, by, .. } => branches(step, instructions[j], by),
         Desc::Through { j, rt, rt2, back, off, bytes, cut, .. } =>
@@ -750,7 +730,6 @@ pub open spec fn meant(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq
             &&& !store ==> accesses(step, probe_load_c(c, bytes - 1), 31, |m: Machine| (m.x[c] + (bytes - 1)) % two_to_64(), 1)
         },
         Desc::Exit { .. } => exit_means(step),
-        Desc::Jump { j, n, out } => jump_main_means(step, n as u32, (out - j - 1) * 4),
         Desc::Call { .. } => floor_means(step),
         Desc::Frame { f, .. } => frame_access_means(step, f),
         Desc::Stop { j } => stops(step, instructions[j]),
@@ -774,14 +753,34 @@ pub open spec fn meant(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq
             &&& !store ==> accesses(step, probe_load_c(c, 0), 31, |m: Machine| (m.x[c] + 0) % two_to_64(), 1)
             &&& !store ==> accesses(step, probe_load_c(c, bytes - 1), 31, |m: Machine| (m.x[c] + (bytes - 1)) % two_to_64(), 1)
         },
-        Desc::Same { cut, .. } => writes(step, same_word(cut), cut, |m: Machine| m.x[cut]),
-        Desc::DisplacedJump { j, n, out } => displaced_jump_main_means(step, n as u32, (out - j - 1) * 4),
         Desc::StackAt { j, off, rt, rt2, bytes, .. } => {
             &&& writes(step, movx_c(23, off), 23, |m: Machine| wide(off) as u64)
             &&& writes(step, add_from_c(23, 31), 23, |m: Machine| ((m.sp + m.x[23]) % two_to_64()) as u64)
             &&& touches(step, instructions[j + 2], rt, rt2, 23, |m: Machine| m.x[23] as int, bytes)
         },
+        Desc::TableJump { j, link } => {
+            &&& writes(step, UBFIZ_X23, 23, |m: Machine| (m.x[23] & 0xfff_ffff_ffffu64) << 2u64)
+            &&& table_tail_means(step, instructions, j, link)
+        },
+        Desc::DisplacedTableJump { j, n, link } => {
+            &&& writes(step, ubfiz_x23(n as u32), 23, |m: Machine| low_of(m, n) << 2u64)
+            &&& table_tail_means(step, instructions, j, link)
+        },
+        Desc::ShiftThrough { j, k, rt, rt2, bytes, cut, .. } => {
+            &&& writes(step, shift_word(cut, k), cut, |m: Machine| ((m.x[cut] + k) % two_to_64()) as u64)
+            &&& touches(step, instructions[j + 1], rt, rt2, 31, |m: Machine| m.x[cut] as int, bytes)
+        },
     }
+}
+
+/// What a table jump's words after its first do (Arm ARM): `bfxil`, `eor`, with `link` three words writing x30 alone,
+/// and `br x23`.
+pub open spec fn table_tail_means(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, j: int, link: bool) -> bool {
+    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))
+    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23] ^ 0x4000_0000_0000u64)
+    &&& link ==> keeps_but(step, instructions[j + 3], 30, false) && keeps_but(step, instructions[j + 4], 30, false)
+        && keeps_but(step, instructions[j + 5], 30, false)
+    &&& jumps(step, BR_X23, 23)
 }
 
 /// The piece is described: the first block is entered at its first word with what a run hands on, and every block
@@ -837,12 +836,6 @@ pub open spec fn block_of(a: Allowed, d: Desc) -> Block {
             needs: |m: Machine| part(a, 24, 31, m),
             inv: |m: Machine| part(a, 24, 31, m) && at_exit(m, exit_slot(a, guest + 4) as u64, index(a, m.pc) - j),
         },
-        Desc::Jump { j, .. } => Block {
-            owns: |i: int| j <= i < j + 7,
-            entry: j,
-            needs: |m: Machine| part(a, 24, 31, m),
-            inv: |m: Machine| part(a, 24, 31, m) && jump_at(a, j, m),
-        },
         Desc::Call { j, code } => Block {
             owns: |i: int| j <= i < j + 5,
             entry: j,
@@ -869,7 +862,6 @@ pub open spec fn block_of(a: Allowed, d: Desc) -> Block {
             needs: |m: Machine| part(a, bb, 31, m),
             inv: |m: Machine| part(a, bb, 31, m) && stack_probes_inv(a, j, c, bytes, store, m),
         },
-        Desc::Same { j, bb, cut } => one(a, j, bb, cut),
         Desc::StackAt { j, off, bb, cut, .. } => Block {
             owns: |i: int| j <= i < j + 3,
             entry: j,
@@ -877,13 +869,43 @@ pub open spec fn block_of(a: Allowed, d: Desc) -> Block {
             inv: |m: Machine| part(a, bb, cut, m) && (index(a, m.pc) == j + 1 ==> m.x[23] as int == wide(off))
                 && (index(a, m.pc) == j + 2 ==> m.x[23] as int == m.sp + off),
         },
-        Desc::DisplacedJump { j, .. } => Block {
-            owns: |i: int| j <= i < j + 6,
+        Desc::TableJump { j, link } => Block {
+            owns: |i: int| j <= i < j + 4 + link_len(link),
+            entry: j,
+            needs: |m: Machine| part(a, 24, 23, m),
+            inv: |m: Machine| part(a, 24, 31, m) && table_jump_at(a, j, m),
+        },
+        Desc::DisplacedTableJump { j, link, .. } => Block {
+            owns: |i: int| j <= i < j + 4 + link_len(link),
             entry: j,
             needs: |m: Machine| part(a, 24, 31, m),
-            inv: |m: Machine| part(a, 24, 31, m) && displaced_jump_at(a, j, m),
+            inv: |m: Machine| part(a, 24, 31, m) && displaced_table_at(a, j, m),
+        },
+        Desc::ShiftThrough { j, k, bb, cut, .. } => Block {
+            owns: |i: int| j <= i < j + 2,
+            entry: j,
+            needs: |m: Machine| part(a, bb, cut, m),
+            inv: |m: Machine| (index(a, m.pc) == j ==> part(a, bb, cut, m))
+                && (index(a, m.pc) == j + 1 ==> part(a, bb, 31, m) && a.base + k <= m.x[cut] && m.x[cut] < a.base + WINDOW_BYTES + k),
         },
     }
+}
+
+/// Where the table jump's run stands: the cut, then four times it, then its slot, then in the slot table.
+pub open spec fn table_jump_at(a: Allowed, j: int, m: Machine) -> bool {
+    let o = index(a, m.pc) - j;
+    &&& o == 0 ==> in_window(a, m.x[23])
+    &&& o == 1 ==> a.base * 4 <= m.x[23] && m.x[23] < a.base * 4 + 0x4_0000_0000 && m.x[23] % 4 == 0
+    &&& o == 2 ==> a.base * 4 <= m.x[23] && m.x[23] < a.base * 4 + 0x4_0000_0003 && m.x[23] < 0x4000_0000_0000
+    &&& o >= 3 ==> slot_table(a) <= m.x[23] && m.x[23] < slot_table(a) + 0x4_0000_0003
+}
+
+/// Where the displaced table jump's run stands: four times a low word, its slot, then in slot 0's table.
+pub open spec fn displaced_table_at(a: Allowed, j: int, m: Machine) -> bool {
+    let o = index(a, m.pc) - j;
+    &&& o == 1 ==> m.x[23] < 0x4_0000_0000u64 && m.x[23] & 3u64 == 0
+    &&& o == 2 ==> m.x[23] < 0x4_0000_0003
+    &&& o >= 3 ==> PROCESS_SLOTS <= m.x[23] && m.x[23] < PROCESS_SLOTS + 0x4_0000_0003
 }
 
 /// A one-word block needing the part's fact.
@@ -897,15 +919,6 @@ pub open spec fn probes_inv(a: Allowed, j: int, c: int, from: int, off: int, byt
     &&& i == j + 1 ==> m.x[c] as int == wide(off)
     &&& (i == j + 2 || i == j + 3) ==> m.x[c] as int == from_value(m, from) + off
     &&& (store && i == j + 4) ==> m.x[c] as int == from_value(m, from) + off + bytes - 1
-}
-
-/// Where the jump's run stands (branch.rs `jump_inv`, from its second word).
-pub open spec fn jump_at(a: Allowed, j: int, m: Machine) -> bool {
-    let o = (index(a, m.pc) - j) * 4;
-    &&& o == 12 ==> in_window(a, m.x[23])
-    &&& o == 16 ==> a.base * 4 <= m.x[23] && m.x[23] < a.base * 4 + 0x4_0000_0000 && m.x[23] % 4 == 0
-    &&& o == 20 ==> a.base * 4 <= m.x[23] && m.x[23] < a.base * 4 + 0x4_0000_0003 && m.x[23] < 0x4000_0000_0000
-    &&& o == 24 ==> slot_table(a) <= m.x[23] && m.x[23] < slot_table(a) + 0x4_0000_0003
 }
 
 /// The blocks of a description.
@@ -1037,9 +1050,9 @@ proof fn lemma_cut(
         placed(a, instructions),
         0 <= b < blocks.len() && blocks[b] == one(a, j, bb, 31),
         0 <= j && j + 1 < instructions.len(),
-        base_ok(bb) && 0 <= n < 31 && 0 <= cr < 31 && cr != bb && cr != frame_register(),
+        base_ok(bb) && 0 <= n <= 31 && 0 <= cr < 31 && cr != bb && cr != frame_register(),
         instructions[j] == add_cut_into(n as u32, bb, cr),
-        writes(step, add_cut_into(n as u32, bb, cr), cr, |m: Machine| ((m.x[bb] + (m.x[n] & 0xffff_ffffu64)) % two_to_64()) as u64),
+        writes(step, add_cut_into(n as u32, bb, cr), cr, |m: Machine| ((m.x[bb] + low_of(m, n)) % two_to_64()) as u64),
         takes(blocks, c, j + 1, a, bb, cr),
     ensures
         block_holds(step, instructions, a, blocks, b),
@@ -1049,7 +1062,9 @@ proof fn lemma_cut(
         assert(word_at(instructions, a, m.pc) == instructions[j]);
         let s = step(m, instructions[j]);
         assert(m.pc as int == a.code + 4 * j);
-        lemma_low_word(m.x[n]);
+        if n < 31 {
+            lemma_low_word(m.x[n]);
+        }
         assert(part(a, bb, cr, s.after));
         lemma_goes_on(step, instructions, a, blocks, m, s, j + 1, c, bb, cr);
     }
@@ -1372,70 +1387,6 @@ proof fn lemma_exit_block(step: spec_fn(Machine, u32) -> Stepped, instructions: 
         assert(part(a, 24, 31, s.after));
         if i - j + 1 < 4 {
             assert(index(a, s.after.pc) == i + 1);
-            lemma_not_table(instructions, a, s, i + 1);
-        }
-    }
-}
-
-/// THE JUMP'S BLOCK HOLDS (branch.rs `jump_is_confined`, placed anywhere): it lands in the window's slot table with
-/// what a run hands on, or enters the block at `out` when its target is outside the window.
-proof fn lemma_jump_block(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, a: Allowed, blocks: Seq<Block>, b: int, j: int, n: int, out: int, c: int)
-    requires
-        placed(a, instructions),
-        0 <= b < blocks.len() && blocks[b] == block_of(a, Desc::Jump { j, n, out }),
-        !a.displaced && 0 <= n < 31 && j + 1 < out < instructions.len(),
-        holds_at(instructions, j, jump_words(n as u32, j, out)),
-        jump_main_means(step, n as u32, (out - j - 1) * 4),
-        takes(blocks, c, out, a, 24, 31),
-    ensures
-        block_holds(step, instructions, a, blocks, b),
-{
-    let k = blocks[b];
-    let w = jump_words(n as u32, j, out);
-    assert forall|i: int| 0 <= i < 7 implies instructions[j + i] == #[trigger] w[i] by {
-        assert(instructions.subrange(j, j + 7)[i] == instructions[j + i]);
-    }
-    assert forall|m: Machine| runs(a, m) && (k.owns)(index(a, m.pc)) && #[trigger] (k.inv)(m) implies steps_within(step, instructions, a, blocks, b, m) by {
-        let i = index(a, m.pc);
-        let o = (i - j) * 4;
-        assert(m.pc as int == a.code + 4 * i);
-        assert(word_at(instructions, a, m.pc) == instructions[i]);
-        let s = step(m, instructions[i]);
-        if o == 0 {
-            assert(instructions[i] == w[0]);
-        } else if o == 4 {
-            assert(instructions[i] == w[1]);
-            if s.after.pc != (m.pc + 4) as u64 {
-                assert(s.after.pc as int == a.code + 4 * out);
-                lemma_goes_on(step, instructions, a, blocks, m, s, out, c, 24, 31);
-            }
-        } else if o == 8 {
-            assert(instructions[i] == w[2]);
-            lemma_low_word(m.x[n]);
-        } else if o == 12 {
-            assert(instructions[i] == w[3]);
-            lemma_slot_address(m.x[23]);
-        } else if o == 16 {
-            assert(instructions[i] == w[4]);
-            let v = (m.x[23] / 4) as u64;
-            assert(m.x[23] == v * 4);
-            lemma_slot_address(v);
-        } else if o == 20 {
-            assert(instructions[i] == w[5]);
-            let u = m.x[23];
-            assert(u ^ 0x4000_0000_0000u64 == u + 0x4000_0000_0000u64) by (bit_vector)
-                requires
-                    u < 0x4000_0000_0000u64,
-            ;
-        } else {
-            assert(o == 24);
-            assert(instructions[i] == w[6]);
-            assert(hands_on(a, s.after));
-        }
-        if runs(a, s.after) && o < 24 && s.after.pc == (m.pc + 4) as u64 {
-            assert(index(a, s.after.pc) == i + 1);
-        }
-        if o < 24 && s.after.pc == (m.pc + 4) as u64 {
             lemma_not_table(instructions, a, s, i + 1);
         }
     }
@@ -1824,104 +1775,6 @@ proof fn lemma_stack_probes(
     }
 }
 
-/// THE MOVE OF THE CUT ONTO ITSELF HOLDS: it stays.
-proof fn lemma_same(
-    step: spec_fn(Machine, u32) -> Stepped,
-    instructions: Seq<u32>,
-    a: Allowed,
-    blocks: Seq<Block>,
-    b: int,
-    j: int,
-    bb: int,
-    cut: int,
-    c: int,
-)
-    requires
-        placed(a, instructions),
-        0 <= b < blocks.len() && blocks[b] == one(a, j, bb, cut),
-        0 <= j && j + 1 < instructions.len(),
-        base_ok(bb) && 0 <= cut < 31,
-        instructions[j] == same_word(cut),
-        writes(step, same_word(cut), cut, |m: Machine| m.x[cut]),
-        takes(blocks, c, j + 1, a, bb, cut),
-    ensures
-        block_holds(step, instructions, a, blocks, b),
-{
-    let k = blocks[b];
-    assert forall|m: Machine| runs(a, m) && (k.owns)(index(a, m.pc)) && #[trigger] (k.inv)(m) implies steps_within(step, instructions, a, blocks, b, m) by {
-        assert(word_at(instructions, a, m.pc) == instructions[j]);
-        let s = step(m, instructions[j]);
-        assert(m.pc as int == a.code + 4 * j);
-        assert(s.after.x =~= m.x);
-        assert(part(a, bb, cut, s.after));
-        lemma_goes_on(step, instructions, a, blocks, m, s, j + 1, c, bb, cut);
-    }
-}
-
-/// THE DISPLACED JUMP'S BLOCK HOLDS (branch.rs `displaced_jump_is_confined`, placed anywhere): it lands in slot 0's
-/// table with what a run hands on, or enters the block at `out`.
-proof fn lemma_displaced_jump_block(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, a: Allowed, blocks: Seq<Block>, b: int, j: int, n: int, out: int, c: int)
-    requires
-        placed(a, instructions),
-        0 <= b < blocks.len() && blocks[b] == block_of(a, Desc::DisplacedJump { j, n, out }),
-        a.displaced && 0 <= n < 31 && j + 1 < out < instructions.len(),
-        holds_at(instructions, j, displaced_jump_words(n as u32, j, out)),
-        displaced_jump_main_means(step, n as u32, (out - j - 1) * 4),
-        takes(blocks, c, out, a, 24, 31),
-    ensures
-        block_holds(step, instructions, a, blocks, b),
-{
-    let k = blocks[b];
-    let w = displaced_jump_words(n as u32, j, out);
-    assert forall|i: int| 0 <= i < 6 implies instructions[j + i] == #[trigger] w[i] by {
-        assert(instructions.subrange(j, j + 6)[i] == instructions[j + i]);
-    }
-    assert forall|m: Machine| runs(a, m) && (k.owns)(index(a, m.pc)) && #[trigger] (k.inv)(m) implies steps_within(step, instructions, a, blocks, b, m) by {
-        let i = index(a, m.pc);
-        let o = (i - j) * 4;
-        assert(m.pc as int == a.code + 4 * i);
-        assert(word_at(instructions, a, m.pc) == instructions[i]);
-        let s = step(m, instructions[i]);
-        if o == 0 {
-            assert(instructions[i] == w[0]);
-        } else if o == 4 {
-            assert(instructions[i] == w[1]);
-            if s.after.pc != (m.pc + 4) as u64 {
-                assert(s.after.pc as int == a.code + 4 * out);
-                lemma_goes_on(step, instructions, a, blocks, m, s, out, c, 24, 31);
-            }
-        } else if o == 8 {
-            assert(instructions[i] == w[2]);
-            lemma_low_word_times_four(m.x[n]);
-        } else if o == 12 {
-            assert(instructions[i] == w[3]);
-            let u = m.x[23];
-            assert(u <= ((u & !3u64) | ((u >> 2u64) & 3u64)) && ((u & !3u64) | ((u >> 2u64) & 3u64)) <= u + 3) by (bit_vector)
-                requires
-                    u & 3u64 == 0,
-                    u < 0x4_0000_0000u64,
-            ;
-        } else if o == 16 {
-            assert(instructions[i] == w[4]);
-            let u = m.x[23];
-            assert(u ^ 0x4000_0000_0000u64 == u + 0x4000_0000_0000u64) by (bit_vector)
-                requires
-                    u < 0x4_0000_0003u64,
-            ;
-        } else {
-            assert(o == 20);
-            assert(instructions[i] == w[5]);
-            assert(hands_on(a, s.after));
-        }
-        if runs(a, s.after) && o < 20 && s.after.pc == (m.pc + 4) as u64 {
-            assert(index(a, s.after.pc) == i + 1);
-        }
-        if o < 20 && s.after.pc == (m.pc + 4) as u64 {
-            lemma_not_table(instructions, a, s, i + 1);
-        }
-    }
-}
-
 /// THE ACCESS AT THE STACK POINTER PLUS AN OFFSET HOLDS.
 proof fn lemma_stack_at(
     step: spec_fn(Machine, u32) -> Stepped,
@@ -1979,6 +1832,211 @@ proof fn lemma_stack_at(
     }
 }
 
+/// A table jump's step at word `o` of its link words keeps x23 and goes on; at `br x23` it hands on.
+proof fn lemma_table_link(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, j: int, link: bool, i: int, m: Machine)
+    requires
+        link && j + 3 <= i < j + 6,
+        m.x.len() == 31,
+        table_tail_means(step, instructions, j, link),
+    ensures
+        ({
+            let s = step(m, instructions[i]);
+            &&& s.accesses.len() == 0 && !s.system_call && !s.after.ended
+            &&& s.after.unlisted == m.unlisted && s.after.pc == (m.pc + 4) as u64 && s.after.sp == m.sp
+            &&& s.after.x.len() == 31 && forall|r: int| 0 <= r < 31 && r != 30 ==> s.after.x[r] == m.x[r]
+        }),
+{
+    if i == j + 3 {
+        assert(keeps_but(step, instructions[j + 3], 30, false));
+    } else if i == j + 4 {
+        assert(keeps_but(step, instructions[j + 4], 30, false));
+    } else {
+        assert(keeps_but(step, instructions[j + 5], 30, false));
+    }
+}
+
+/// THE TABLE JUMP'S BLOCK HOLDS: from the cut in x23 it lands in the slot table with what a run hands on.
+proof fn lemma_table_jump(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, a: Allowed, blocks: Seq<Block>, b: int, j: int, link: bool)
+    requires
+        placed(a, instructions),
+        0 <= b < blocks.len() && blocks[b] == block_of(a, Desc::TableJump { j, link }),
+        !a.displaced && j + 3 + link_len(link) < instructions.len(),
+        holds_at(instructions, j, seq![UBFIZ_X23, BFXIL_X23, EOR_X23_TABLE]),
+        instructions[j + 3 + link_len(link)] == BR_X23,
+        meant(step, instructions, a, Desc::TableJump { j, link }),
+    ensures
+        block_holds(step, instructions, a, blocks, b),
+{
+    let k = blocks[b];
+    let w = seq![UBFIZ_X23, BFXIL_X23, EOR_X23_TABLE];
+    let last = 3 + link_len(link);
+    assert forall|i: int| 0 <= i < 3 implies instructions[j + i] == #[trigger] w[i] by {
+        assert(instructions.subrange(j, j + 3)[i] == instructions[j + i]);
+    }
+    assert forall|m: Machine| runs(a, m) && (k.owns)(index(a, m.pc)) && #[trigger] (k.inv)(m) implies steps_within(step, instructions, a, blocks, b, m) by {
+        let i = index(a, m.pc);
+        let o = i - j;
+        assert(m.pc as int == a.code + 4 * i);
+        assert(word_at(instructions, a, m.pc) == instructions[i]);
+        let s = step(m, instructions[i]);
+        if o == 0 {
+            assert(instructions[i] == w[0]);
+            lemma_slot_address(m.x[23]);
+        } else if o == 1 {
+            assert(instructions[i] == w[1]);
+            let v = (m.x[23] / 4) as u64;
+            assert(m.x[23] == v * 4);
+            lemma_slot_address(v);
+        } else if o == 2 {
+            assert(instructions[i] == w[2]);
+            let u = m.x[23];
+            assert(u ^ 0x4000_0000_0000u64 == u + 0x4000_0000_0000u64) by (bit_vector)
+                requires
+                    u < 0x4000_0000_0000u64,
+            ;
+        } else if o < last {
+            lemma_table_link(step, instructions, j, link, i, m);
+        } else {
+            assert(o == last);
+            assert(hands_on(a, s.after));
+        }
+        if runs(a, s.after) && o < last && s.after.pc == (m.pc + 4) as u64 {
+            assert(index(a, s.after.pc) == i + 1);
+        }
+        if o < last && s.after.pc == (m.pc + 4) as u64 {
+            lemma_not_table(instructions, a, s, i + 1);
+        }
+    }
+}
+
+/// THE DISPLACED TABLE JUMP'S BLOCK HOLDS: from four times xN's low word it lands in slot 0's table with what a run
+/// hands on.
+proof fn lemma_displaced_table_jump(
+    step: spec_fn(Machine, u32) -> Stepped,
+    instructions: Seq<u32>,
+    a: Allowed,
+    blocks: Seq<Block>,
+    b: int,
+    j: int,
+    n: int,
+    link: bool,
+)
+    requires
+        placed(a, instructions),
+        0 <= b < blocks.len() && blocks[b] == block_of(a, Desc::DisplacedTableJump { j, n, link }),
+        a.displaced && 0 <= n <= 31 && j + 3 + link_len(link) < instructions.len(),
+        holds_at(instructions, j, seq![ubfiz_x23(n as u32), BFXIL_X23, EOR_X23_TABLE]),
+        instructions[j + 3 + link_len(link)] == BR_X23,
+        meant(step, instructions, a, Desc::DisplacedTableJump { j, n, link }),
+    ensures
+        block_holds(step, instructions, a, blocks, b),
+{
+    let k = blocks[b];
+    let w = seq![ubfiz_x23(n as u32), BFXIL_X23, EOR_X23_TABLE];
+    let last = 3 + link_len(link);
+    assert forall|i: int| 0 <= i < 3 implies instructions[j + i] == #[trigger] w[i] by {
+        assert(instructions.subrange(j, j + 3)[i] == instructions[j + i]);
+    }
+    assert forall|m: Machine| runs(a, m) && (k.owns)(index(a, m.pc)) && #[trigger] (k.inv)(m) implies steps_within(step, instructions, a, blocks, b, m) by {
+        let i = index(a, m.pc);
+        let o = i - j;
+        assert(m.pc as int == a.code + 4 * i);
+        assert(word_at(instructions, a, m.pc) == instructions[i]);
+        let s = step(m, instructions[i]);
+        if o == 0 {
+            assert(instructions[i] == w[0]);
+            if n < 31 {
+                lemma_low_word_times_four(m.x[n]);
+            } else {
+                assert((0u64 << 2u64) < 0x4_0000_0000u64 && (0u64 << 2u64) & 3u64 == 0) by (bit_vector);
+            }
+        } else if o == 1 {
+            assert(instructions[i] == w[1]);
+            let u = m.x[23];
+            assert(u <= ((u & !3u64) | ((u >> 2u64) & 3u64)) && ((u & !3u64) | ((u >> 2u64) & 3u64)) <= u + 3) by (bit_vector)
+                requires
+                    u & 3u64 == 0,
+                    u < 0x4_0000_0000u64,
+            ;
+        } else if o == 2 {
+            assert(instructions[i] == w[2]);
+            let u = m.x[23];
+            assert(u ^ 0x4000_0000_0000u64 == u + 0x4000_0000_0000u64) by (bit_vector)
+                requires
+                    u < 0x4_0000_0003u64,
+            ;
+        } else if o < last {
+            lemma_table_link(step, instructions, j, link, i, m);
+        } else {
+            assert(o == last);
+            assert(hands_on(a, s.after));
+        }
+        if runs(a, s.after) && o < last && s.after.pc == (m.pc + 4) as u64 {
+            assert(index(a, s.after.pc) == i + 1);
+        }
+        if o < last && s.after.pc == (m.pc + 4) as u64 {
+            lemma_not_table(instructions, a, s, i + 1);
+        }
+    }
+}
+
+/// THE ACCESS THROUGH THE MOVED CUT'S BLOCK HOLDS: x[cut] moved by `k`, the access within 64 KiB of the window.
+proof fn lemma_shift_through(
+    step: spec_fn(Machine, u32) -> Stepped,
+    instructions: Seq<u32>,
+    a: Allowed,
+    blocks: Seq<Block>,
+    b: int,
+    j: int,
+    k: int,
+    rt: int,
+    rt2: int,
+    bytes: nat,
+    bb: int,
+    cut: int,
+    c: int,
+)
+    requires
+        placed(a, instructions),
+        0 <= b < blocks.len() && blocks[b] == block_of(a, Desc::ShiftThrough { j, k, rt, rt2, bytes, bb, cut }),
+        0 <= j && j + 2 < instructions.len(),
+        base_ok(bb) && 0 <= cut < 31 && cut != bb && cut != frame_register() && reg_ok(rt, bb) && reg_ok(rt2, bb),
+        -0x1_0000 <= k && 1 <= bytes && k + bytes <= 0x1_0000,
+        instructions[j] == shift_word(cut, k),
+        meant(step, instructions, a, Desc::ShiftThrough { j, k, rt, rt2, bytes, bb, cut }),
+        takes(blocks, c, j + 2, a, bb, 31),
+    ensures
+        block_holds(step, instructions, a, blocks, b),
+{
+    let blk = blocks[b];
+    assert forall|m: Machine| runs(a, m) && (blk.owns)(index(a, m.pc)) && #[trigger] (blk.inv)(m) implies steps_within(step, instructions, a, blocks, b, m) by {
+        let i = index(a, m.pc);
+        assert(m.pc as int == a.code + 4 * i);
+        assert(word_at(instructions, a, m.pc) == instructions[i]);
+        let s = step(m, instructions[i]);
+        if i == j {
+            assert((m.x[cut] + k) % two_to_64() == m.x[cut] + k);
+            assert(s.after.x[cut] as int == m.x[cut] + k);
+            assert(part(a, bb, 31, s.after));
+            lemma_not_table(instructions, a, s, j + 1);
+            if runs(a, s.after) {
+                assert(index(a, s.after.pc) == j + 1);
+            }
+        } else {
+            assert(i == j + 1);
+            lemma_in_slot(a, m.x[cut] as int, bytes);
+            assert(touches_allowed(a, s.accesses[0].0, s.accesses[0].1));
+            lemma_not_table(instructions, a, s, j + 2);
+            if !s.after.ended {
+                assert(part(a, bb, 31, s.after));
+                assert(in_sequence(a, s.after.pc));
+                assert(index(a, s.after.pc) == j + 2);
+                assert((blocks[c].needs)(s.after));
+            }
+        }
+    }
+}
+
 /// Every block of a described piece holds alone.
 proof fn lemma_block(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, a: Allowed, descs: Seq<Desc>, b: int)
     requires
@@ -2027,10 +2085,6 @@ proof fn lemma_block(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u
         Desc::Exit { j, guest } => {
             lemma_exit_block(step, instructions, a, blocks, b, j, guest);
         },
-        Desc::Jump { j, n, out } => {
-            let c = lemma_accepts(a, descs, out, 24, 31);
-            lemma_jump_block(step, instructions, a, blocks, b, j, n, out, c);
-        },
         Desc::Call { j, code } => {
             lemma_call_block(step, instructions, a, blocks, b, j, code);
         },
@@ -2065,17 +2119,19 @@ proof fn lemma_block(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u
             let next = lemma_accepts(a, descs, j + stack_probes_length(store), bb, 31);
             lemma_stack_probes(step, instructions, a, blocks, b, j, c, bytes, store, bb, next);
         },
-        Desc::Same { j, bb, cut } => {
-            let c = lemma_accepts(a, descs, j + 1, bb, cut);
-            lemma_same(step, instructions, a, blocks, b, j, bb, cut, c);
-        },
         Desc::StackAt { j, off, rt, rt2, bytes, bb, cut } => {
             let c = lemma_accepts(a, descs, j + 3, bb, cut);
             lemma_stack_at(step, instructions, a, blocks, b, j, off, rt, rt2, bytes, bb, cut, c);
         },
-        Desc::DisplacedJump { j, n, out } => {
-            let c = lemma_accepts(a, descs, out, 24, 31);
-            lemma_displaced_jump_block(step, instructions, a, blocks, b, j, n, out, c);
+        Desc::TableJump { j, link } => {
+            lemma_table_jump(step, instructions, a, blocks, b, j, link);
+        },
+        Desc::DisplacedTableJump { j, n, link } => {
+            lemma_displaced_table_jump(step, instructions, a, blocks, b, j, n, link);
+        },
+        Desc::ShiftThrough { j, k, rt, rt2, bytes, bb, cut } => {
+            let c = lemma_accepts(a, descs, j + 2, bb, 31);
+            lemma_shift_through(step, instructions, a, blocks, b, j, k, rt, rt2, bytes, bb, cut, c);
         },
     }
 }
@@ -2120,12 +2176,12 @@ pub proof fn described_is_chained(step: spec_fn(Machine, u32) -> Stepped, instru
                 assert(instructions.subrange(j, j + probes_words(c, from, off, bytes, store).len()).len() > 0);
             },
             Desc::Exit { j, guest } => { assert(instructions.subrange(j, j + 4).len() == 4); },
-            Desc::Jump { j, .. } => { assert(instructions.subrange(j, j + 7).len() == 7); },
             Desc::Call { j, .. } => { assert(instructions.subrange(j, j + 5).len() == 5); },
             Desc::StackProbes { j, c, bytes, store, .. } => {
                 assert(instructions.subrange(j, j + stack_probes_words(c, bytes, store).len()).len() > 0);
             },
-            Desc::DisplacedJump { j, .. } => { assert(instructions.subrange(j, j + 6).len() == 6); },
+            Desc::TableJump { j, .. } => { assert(instructions.subrange(j, j + 3).len() == 3); },
+            Desc::DisplacedTableJump { j, .. } => { assert(instructions.subrange(j, j + 3).len() == 3); },
             _ => {},
         }
     }
@@ -2170,7 +2226,7 @@ proof fn pin_store_tested_loop() { assert(described(seq![0x92400837u32, 0xb40003
 proof fn pin_post_load_loop() { assert(described(seq![0x91000652u32, 0xd360dc2fu32, 0xb50001afu32, 0x8b214317u32, 0x9240082fu32, 0xb50001afu32, 0x9100202fu32, 0xf84086e2u32, 0xaa0f03e1u32, 0xf1000400u32, 0x54fffec1u32, 0xd2880617u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x91001eefu32, 0x927d21efu32, 0xb400004fu32, 0x17fffff1u32, 0xd280000fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39401dffu32, 0x17ffffecu32, 0x17ffffe5u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32], pin_at(false), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 2, by: 52, bb: 24, cut: 31 }, Desc::Cut { j: 3, n: 1, c: 23, bb: 24 }, Desc::Register { j: 4, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 5, by: 52, bb: 24, cut: 23 }, Desc::Register { j: 6, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Through { j: 7, rt: 2, rt2: 31, back: true, off: 0, bytes: 8, bb: 24, cut: 23 }, Desc::Register { j: 8, rd: 1, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 9, rd: 0, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 10, by: -40, bb: 24, cut: 31 }, Desc::Exit { j: 11, guest: 0x401008 }, Desc::Mark { j: 15, bb: 24, c: 15 }, Desc::Register { j: 18, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 19, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 20, by: 8, bb: 24, cut: 23 }, Desc::Branch { j: 21, by: -60, bb: 24, cut: 23 }, Desc::Probes { j: 22, c: 15, from: 23, off: 0, bytes: 8, store: false, bb: 24 }, Desc::Branch { j: 26, by: -80, bb: 24, cut: 23 }])) by (compute); }
 proof fn pin_post_store_loop() { assert(described(seq![0x91000652u32, 0xd360dc2fu32, 0xb50001afu32, 0x8b214317u32, 0x9240082fu32, 0xb50001afu32, 0x9100202fu32, 0xf80086e2u32, 0xaa0f03e1u32, 0xf1000400u32, 0x54fffec1u32, 0xd2880617u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x91001eefu32, 0x927d21efu32, 0xb400004fu32, 0x17fffff1u32, 0xd280000fu32, 0x8b2f62efu32, 0x383f01ffu32, 0x91001defu32, 0x383f01ffu32, 0x17ffffebu32, 0x17ffffe4u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32], pin_at(false), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 2, by: 52, bb: 24, cut: 31 }, Desc::Cut { j: 3, n: 1, c: 23, bb: 24 }, Desc::Register { j: 4, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 5, by: 52, bb: 24, cut: 23 }, Desc::Register { j: 6, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Through { j: 7, rt: 31, rt2: 31, back: true, off: 0, bytes: 8, bb: 24, cut: 23 }, Desc::Register { j: 8, rd: 1, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 9, rd: 0, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 10, by: -40, bb: 24, cut: 31 }, Desc::Exit { j: 11, guest: 0x401008 }, Desc::Mark { j: 15, bb: 24, c: 15 }, Desc::Register { j: 18, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 19, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 20, by: 8, bb: 24, cut: 23 }, Desc::Branch { j: 21, by: -60, bb: 24, cut: 23 }, Desc::Probes { j: 22, c: 15, from: 23, off: 0, bytes: 8, store: true, bb: 24 }, Desc::Branch { j: 27, by: -84, bb: 24, cut: 23 }])) by (compute); }
 proof fn pin_post_load_line() { assert(described(seq![0xd360dc2fu32, 0xb500018fu32, 0x8b214317u32, 0x9240082fu32, 0xb500018fu32, 0x9100202fu32, 0xf84086e2u32, 0xaa0f03e1u32, 0xf1000400u32, 0xd2880417u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x91001eefu32, 0x927d21efu32, 0xb400004fu32, 0x17fffff2u32, 0xd280000fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39401dffu32, 0x17ffffedu32], pin_at(false), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 48, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 1, c: 23, bb: 24 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 4, by: 48, bb: 24, cut: 23 }, Desc::Register { j: 5, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Through { j: 6, rt: 2, rt2: 31, back: true, off: 0, bytes: 8, bb: 24, cut: 23 }, Desc::Register { j: 7, rd: 1, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 8, rd: 0, sp: false, bb: 24, cut: 31 }, Desc::Exit { j: 9, guest: 0x401004 }, Desc::Mark { j: 13, bb: 24, c: 15 }, Desc::Register { j: 16, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 17, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 18, by: 8, bb: 24, cut: 23 }, Desc::Branch { j: 19, by: -56, bb: 24, cut: 23 }, Desc::Probes { j: 20, c: 15, from: 23, off: 0, bytes: 8, store: false, bb: 24 }, Desc::Branch { j: 24, by: -76, bb: 24, cut: 23 }])) by (compute); }
-proof fn pin_line_to_jump() { assert(described(seq![0x91000652u32, 0x91000400u32, 0xd360dfd7u32, 0xb50000d7u32, 0x8b3e4317u32, 0xd37eaef7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd61f02e0u32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(false), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 0, sp: false, bb: 24, cut: 31 }, Desc::Jump { j: 2, n: 30, out: 9 }, Desc::Branch { j: 9, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 10, code: 7 }])) by (compute); }
+proof fn pin_line_to_jump() { assert(described(seq![0x91000652u32, 0x91000400u32, 0xd360dfd7u32, 0xb50000d7u32, 0x8b3e4317u32, 0xd37eaef7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd61f02e0u32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(false), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 0, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 2, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 3, by: 24, bb: 24, cut: 31 }, Desc::Cut { j: 4, n: 30, c: 23, bb: 24 }, Desc::TableJump { j: 5, link: false }, Desc::Branch { j: 9, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 10, code: 7 }])) by (compute); }
 proof fn pin_stand_in_add_line() { assert(described(seq![0xf9004f9du32, 0xaa1803fdu32, 0xf9404798u32, 0x91000718u32, 0x91000400u32, 0xf9004798u32, 0xaa1d03f8u32, 0xf9404f9du32, 0xd2880417u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32], pin_at(false), seq![Desc::Frame { j: 0, f: FrameAccess { word: 0xf9004f9du32, rt: 31, off: 152, moves: false }, bb: 24, bb2: 24, cut: 31 }, Desc::Frame { j: 1, f: FrameAccess { word: 0xaa1803fdu32, rt: 29, off: 24, moves: true }, bb: 24, bb2: 29, cut: 31 }, Desc::Frame { j: 2, f: FrameAccess { word: 0xf9404798u32, rt: 24, off: 136, moves: false }, bb: 29, bb2: 29, cut: 31 }, Desc::Register { j: 3, rd: 24, sp: false, bb: 29, cut: 31 }, Desc::Register { j: 4, rd: 0, sp: false, bb: 29, cut: 31 }, Desc::Frame { j: 5, f: FrameAccess { word: 0xf9004798u32, rt: 31, off: 136, moves: false }, bb: 29, bb2: 29, cut: 31 }, Desc::Frame { j: 6, f: FrameAccess { word: 0xaa1d03f8u32, rt: 24, off: 29, moves: true }, bb: 29, bb2: 24, cut: 31 }, Desc::Frame { j: 7, f: FrameAccess { word: 0xf9404f9du32, rt: 29, off: 152, moves: false }, bb: 24, bb2: 24, cut: 31 }, Desc::Exit { j: 8, guest: 0x401004 }])) by (compute); }
 proof fn pin_stand_in_load_line() { assert(described(seq![0xf9004f9du32, 0xaa1803fdu32, 0xf9404798u32, 0xd360df0fu32, 0xb50001afu32, 0x8b3843b7u32, 0x92400b0fu32, 0xb50001afu32, 0xf94002e2u32, 0x91000442u32, 0xf9004798u32, 0xaa1d03f8u32, 0xf9404f9du32, 0xd2880417u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd26003afu32, 0x397ffdffu32, 0x00000000u32, 0x91001eefu32, 0x927d21efu32, 0xb400004fu32, 0x17fffff1u32, 0xd280000fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39401dffu32, 0x17ffffecu32], pin_at(false), seq![Desc::Frame { j: 0, f: FrameAccess { word: 0xf9004f9du32, rt: 31, off: 152, moves: false }, bb: 24, bb2: 24, cut: 31 }, Desc::Frame { j: 1, f: FrameAccess { word: 0xaa1803fdu32, rt: 29, off: 24, moves: true }, bb: 24, bb2: 29, cut: 31 }, Desc::Frame { j: 2, f: FrameAccess { word: 0xf9404798u32, rt: 24, off: 136, moves: false }, bb: 29, bb2: 29, cut: 31 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 29, cut: 31 }, Desc::Either { j: 4, by: 52, bb: 29, cut: 31 }, Desc::Cut { j: 5, n: 24, c: 23, bb: 29 }, Desc::Register { j: 6, rd: 15, sp: false, bb: 29, cut: 23 }, Desc::Either { j: 7, by: 52, bb: 29, cut: 23 }, Desc::Through { j: 8, rt: 2, rt2: 31, back: false, off: 0, bytes: 8, bb: 29, cut: 23 }, Desc::Register { j: 9, rd: 2, sp: false, bb: 29, cut: 23 }, Desc::Frame { j: 10, f: FrameAccess { word: 0xf9004798u32, rt: 31, off: 136, moves: false }, bb: 29, bb2: 29, cut: 23 }, Desc::Frame { j: 11, f: FrameAccess { word: 0xaa1d03f8u32, rt: 24, off: 29, moves: true }, bb: 29, bb2: 24, cut: 23 }, Desc::Frame { j: 12, f: FrameAccess { word: 0xf9404f9du32, rt: 29, off: 152, moves: false }, bb: 24, bb2: 24, cut: 23 }, Desc::Exit { j: 13, guest: 0x401004 }, Desc::Mark { j: 17, bb: 29, c: 15 }, Desc::Register { j: 20, rd: 15, sp: false, bb: 29, cut: 23 }, Desc::Register { j: 21, rd: 15, sp: false, bb: 29, cut: 23 }, Desc::Either { j: 22, by: 8, bb: 29, cut: 23 }, Desc::Branch { j: 23, by: -60, bb: 29, cut: 23 }, Desc::Probes { j: 24, c: 15, from: 23, off: 0, bytes: 8, store: false, bb: 29 }, Desc::Branch { j: 28, by: -80, bb: 29, cut: 23 }])) by (compute); }
 proof fn pin_load_4096() { assert(described(seq![0xd360dc2fu32, 0xb500012fu32, 0x8b214317u32, 0x9240082fu32, 0xb500012fu32, 0xf94802e2u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x91001eefu32, 0x927d21efu32, 0xb400004fu32, 0x17fffff5u32, 0xd282000fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39401dffu32, 0x17fffff0u32], pin_at(false), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 36, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 1, c: 23, bb: 24 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 4, by: 36, bb: 24, cut: 23 }, Desc::Through { j: 5, rt: 2, rt2: 31, back: false, off: 4096, bytes: 8, bb: 24, cut: 23 }, Desc::Exit { j: 6, guest: 0x401000 }, Desc::Mark { j: 10, bb: 24, c: 15 }, Desc::Register { j: 13, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 14, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 15, by: 8, bb: 24, cut: 23 }, Desc::Branch { j: 16, by: -44, bb: 24, cut: 23 }, Desc::Probes { j: 17, c: 15, from: 23, off: 4096, bytes: 8, store: false, bb: 24 }, Desc::Branch { j: 21, by: -64, bb: 24, cut: 23 }])) by (compute); }
@@ -2178,7 +2234,7 @@ proof fn pin_store_4096() { assert(described(seq![0xd360dc2fu32, 0xb500012fu32, 
 proof fn pin_load_32760() { assert(described(seq![0xd360dc2fu32, 0xb500012fu32, 0x8b214317u32, 0x9240082fu32, 0xb500012fu32, 0xf97ffee2u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x913ffeefu32, 0x927d21efu32, 0xb400004fu32, 0x17fffff5u32, 0xd28fff0fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39401dffu32, 0x17fffff0u32], pin_at(false), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 36, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 1, c: 23, bb: 24 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 4, by: 36, bb: 24, cut: 23 }, Desc::Through { j: 5, rt: 2, rt2: 31, back: false, off: 32760, bytes: 8, bb: 24, cut: 23 }, Desc::Exit { j: 6, guest: 0x401000 }, Desc::Mark { j: 10, bb: 24, c: 15 }, Desc::Register { j: 13, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 14, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 15, by: 8, bb: 24, cut: 23 }, Desc::Branch { j: 16, by: -44, bb: 24, cut: 23 }, Desc::Probes { j: 17, c: 15, from: 23, off: 32760, bytes: 8, store: false, bb: 24 }, Desc::Branch { j: 21, by: -64, bb: 24, cut: 23 }])) by (compute); }
 proof fn pin_load_word_4096() { assert(described(seq![0xd360dc2fu32, 0xb500012fu32, 0x8b214317u32, 0x9240042fu32, 0xb500012fu32, 0xb95002e2u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x91000eefu32, 0x927e25efu32, 0xb400004fu32, 0x17fffff5u32, 0xd282000fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39400dffu32, 0x17fffff0u32], pin_at(false), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 36, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 1, c: 23, bb: 24 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 4, by: 36, bb: 24, cut: 23 }, Desc::Through { j: 5, rt: 2, rt2: 31, back: false, off: 4096, bytes: 4, bb: 24, cut: 23 }, Desc::Exit { j: 6, guest: 0x401000 }, Desc::Mark { j: 10, bb: 24, c: 15 }, Desc::Register { j: 13, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 14, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 15, by: 8, bb: 24, cut: 23 }, Desc::Branch { j: 16, by: -44, bb: 24, cut: 23 }, Desc::Probes { j: 17, c: 15, from: 23, off: 4096, bytes: 4, store: false, bb: 24 }, Desc::Branch { j: 21, by: -64, bb: 24, cut: 23 }])) by (compute); }
 proof fn pin_load_byte_4095() { assert(described(seq![0xd360dc2fu32, 0xb50000efu32, 0x8b214317u32, 0x397ffee2u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32], pin_at(false), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 28, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 1, c: 23, bb: 24 }, Desc::Through { j: 3, rt: 2, rt2: 31, back: false, off: 4095, bytes: 1, bb: 24, cut: 23 }, Desc::Exit { j: 4, guest: 0x401000 }, Desc::Mark { j: 8, bb: 24, c: 15 }])) by (compute); }
-proof fn pin_load_4096_to_jump() { assert(described(seq![0x91000652u32, 0xd360dc2fu32, 0xb500018fu32, 0x8b214317u32, 0x9240082fu32, 0xb500018fu32, 0xf94802e2u32, 0xd360dfd7u32, 0xb5000257u32, 0x8b3e4317u32, 0xd37eaef7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x91001eefu32, 0x927d21efu32, 0xb400004fu32, 0x17fffff2u32, 0xd282000fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39401dffu32, 0x17ffffedu32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(false), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 2, by: 48, bb: 24, cut: 31 }, Desc::Cut { j: 3, n: 1, c: 23, bb: 24 }, Desc::Register { j: 4, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 5, by: 48, bb: 24, cut: 23 }, Desc::Through { j: 6, rt: 2, rt2: 31, back: false, off: 4096, bytes: 8, bb: 24, cut: 23 }, Desc::Jump { j: 7, n: 30, out: 26 }, Desc::Mark { j: 14, bb: 24, c: 15 }, Desc::Register { j: 17, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 18, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 19, by: 8, bb: 24, cut: 23 }, Desc::Branch { j: 20, by: -56, bb: 24, cut: 23 }, Desc::Probes { j: 21, c: 15, from: 23, off: 4096, bytes: 8, store: false, bb: 24 }, Desc::Branch { j: 25, by: -76, bb: 24, cut: 23 }, Desc::Branch { j: 26, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 27, code: 7 }])) by (compute); }
+proof fn pin_load_4096_to_jump() { assert(described(seq![0x91000652u32, 0xd360dc2fu32, 0xb500018fu32, 0x8b214317u32, 0x9240082fu32, 0xb500018fu32, 0xf94802e2u32, 0xd360dfd7u32, 0xb5000257u32, 0x8b3e4317u32, 0xd37eaef7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x91001eefu32, 0x927d21efu32, 0xb400004fu32, 0x17fffff2u32, 0xd282000fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39401dffu32, 0x17ffffedu32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(false), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 2, by: 48, bb: 24, cut: 31 }, Desc::Cut { j: 3, n: 1, c: 23, bb: 24 }, Desc::Register { j: 4, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 5, by: 48, bb: 24, cut: 23 }, Desc::Through { j: 6, rt: 2, rt2: 31, back: false, off: 4096, bytes: 8, bb: 24, cut: 23 }, Desc::Register { j: 7, rd: 23, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 8, by: 72, bb: 24, cut: 31 }, Desc::Cut { j: 9, n: 30, c: 23, bb: 24 }, Desc::TableJump { j: 10, link: false }, Desc::Mark { j: 14, bb: 24, c: 15 }, Desc::Register { j: 17, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 18, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 19, by: 8, bb: 24, cut: 23 }, Desc::Branch { j: 20, by: -56, bb: 24, cut: 23 }, Desc::Probes { j: 21, c: 15, from: 23, off: 4096, bytes: 8, store: false, bb: 24 }, Desc::Branch { j: 25, by: -76, bb: 24, cut: 23 }, Desc::Branch { j: 26, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 27, code: 7 }])) by (compute); }
 proof fn pin_store_tested_loop_displaced() { assert(described(seq![0x92400837u32, 0xb40003f7u32, 0x91000652u32, 0xd360dc2fu32, 0xb500016fu32, 0x8b214317u32, 0x9240082fu32, 0xb500016fu32, 0xf90002e2u32, 0xf1000400u32, 0x54fffec1u32, 0xd2880617u32, 0xf2a02017u32, 0xf2c80017u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x91001eefu32, 0x927d21efu32, 0xb400004fu32, 0x17fffff3u32, 0xd280000fu32, 0x8b2f62efu32, 0x383f01ffu32, 0x91001defu32, 0x383f01ffu32, 0x17ffffedu32, 0x17ffffe4u32, 0xf2a02017u32, 0xf2c80017u32, 0xd61f02e0u32, 0x91000652u32, 0xd360dc2fu32, 0xb500010fu32, 0xf8214b02u32, 0xf1000400u32, 0x54ffff61u32, 0xd2880617u32, 0xf2a02017u32, 0xf2c80017u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x17fffff3u32, 0xf2a02017u32, 0xf2c80017u32, 0xd61f02e0u32], pin_at(true), seq![Desc::Register { j: 0, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 124, bb: 24, cut: 31 }, Desc::Register { j: 2, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 4, by: 44, bb: 24, cut: 31 }, Desc::Cut { j: 5, n: 1, c: 23, bb: 24 }, Desc::Register { j: 6, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 7, by: 44, bb: 24, cut: 23 }, Desc::Through { j: 8, rt: 31, rt2: 31, back: false, off: 0, bytes: 8, bb: 24, cut: 23 }, Desc::Register { j: 9, rd: 0, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 10, by: -40, bb: 24, cut: 23 }, Desc::Exit { j: 11, guest: 0x401008 }, Desc::Mark { j: 15, bb: 24, c: 15 }, Desc::Register { j: 18, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 19, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 20, by: 8, bb: 24, cut: 23 }, Desc::Branch { j: 21, by: -52, bb: 24, cut: 23 }, Desc::Probes { j: 22, c: 15, from: 23, off: 0, bytes: 8, store: true, bb: 24 }, Desc::Branch { j: 27, by: -76, bb: 24, cut: 23 }, Desc::Register { j: 32, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 33, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 34, by: 32, bb: 24, cut: 31 }, Desc::Own { j: 35, n: 1, rt: 31, rt2: 31, bytes: 8, bb: 24 }, Desc::Register { j: 36, rd: 0, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 37, by: -20, bb: 24, cut: 31 }, Desc::Exit { j: 38, guest: 0x401008 }, Desc::Mark { j: 42, bb: 24, c: 15 }])) by (compute); }
 proof fn pin_stack_step() { assert(described(seq![0xd10043ffu32, 0xb94003ffu32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32], pin_at(false), seq![Desc::StackStep { j: 0, k: -16, off: 0, bb: 24, cut: 31 }, Desc::Exit { j: 2, guest: 0x401000 }])) by (compute); }
 proof fn pin_stack_step_up() { assert(described(seq![0x910043ffu32, 0xb85fc3ffu32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32], pin_at(false), seq![Desc::StackStep { j: 0, k: 16, off: -4, bb: 24, cut: 31 }, Desc::Exit { j: 2, guest: 0x401000 }])) by (compute); }
@@ -2192,8 +2248,15 @@ proof fn pin_stack_short_probes() { assert(described(seq![0x910003f7u32, 0x92402
 proof fn pin_pair_through_cut() { assert(described(seq![0x92400f2fu32, 0xb500012fu32, 0xd360df2fu32, 0xb500010fu32, 0x8b394317u32, 0x48287ee0u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0x14000004u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0xf9002f9eu32, 0xd2800c1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffff7u32], pin_at(false), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 36, bb: 24, cut: 31 }, Desc::Register { j: 2, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 3, by: 32, bb: 24, cut: 31 }, Desc::Cut { j: 4, n: 25, c: 23, bb: 24 }, Desc::Through { j: 5, rt: 8, rt2: 9, back: false, off: 0, bytes: 16, bb: 24, cut: 23 }, Desc::Exit { j: 6, guest: 0x401000 }, Desc::Branch { j: 10, by: 16, bb: 24, cut: 31 }, Desc::Mark { j: 11, bb: 24, c: 15 }, Desc::Call { j: 14, code: 6 }])) by (compute); }
 proof fn pin_cut_into_x29() { assert(described(seq![0xf9004b9du32, 0xf940438fu32, 0x924008b7u32, 0xb5000437u32, 0xd360dcbdu32, 0xb500041du32, 0x8b25431du32, 0xf9403397u32, 0xd27d02f7u32, 0xb5000257u32, 0xf9403797u32, 0xcb3760b7u32, 0x9240def7u32, 0xb50001d7u32, 0xf9001f80u32, 0xd3407d20u32, 0xb3607da0u32, 0xf9403b97u32, 0xc8b77fa0u32, 0xf900339fu32, 0xf9403b8fu32, 0xca1701efu32, 0xb500004fu32, 0x14000002u32, 0xd280002fu32, 0xf9401f80u32, 0x14000004u32, 0xf83f03bfu32, 0xf900339fu32, 0xd280002fu32, 0xf900438fu32, 0xf9404b9du32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0x14000004u32, 0xd260031du32, 0x397fffbfu32, 0x00000000u32, 0xf9002f9eu32, 0xd2800c1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffff7u32], pin_at(false), seq![Desc::Frame { j: 0, f: FrameAccess { word: 0xf9004b9du32, rt: 31, off: 144, moves: false }, bb: 24, bb2: 24, cut: 31 }, Desc::Frame { j: 1, f: FrameAccess { word: 0xf940438fu32, rt: 15, off: 128, moves: false }, bb: 24, bb2: 24, cut: 31 }, Desc::Register { j: 2, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 3, by: 132, bb: 24, cut: 31 }, Desc::Register { j: 4, rd: 29, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 5, by: 128, bb: 24, cut: 31 }, Desc::Cut { j: 6, n: 5, c: 29, bb: 24 }, Desc::Frame { j: 7, f: FrameAccess { word: 0xf9403397u32, rt: 23, off: 96, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Register { j: 8, rd: 23, sp: false, bb: 24, cut: 29 }, Desc::Either { j: 9, by: 72, bb: 24, cut: 29 }, Desc::Frame { j: 10, f: FrameAccess { word: 0xf9403797u32, rt: 23, off: 104, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Register { j: 11, rd: 23, sp: false, bb: 24, cut: 29 }, Desc::Register { j: 12, rd: 23, sp: false, bb: 24, cut: 29 }, Desc::Either { j: 13, by: 56, bb: 24, cut: 29 }, Desc::Frame { j: 14, f: FrameAccess { word: 0xf9001f80u32, rt: 31, off: 56, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Register { j: 15, rd: 0, sp: false, bb: 24, cut: 29 }, Desc::Register { j: 16, rd: 0, sp: false, bb: 24, cut: 29 }, Desc::Frame { j: 17, f: FrameAccess { word: 0xf9403b97u32, rt: 23, off: 112, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Through { j: 18, rt: 23, rt2: 31, back: false, off: 0, bytes: 8, bb: 24, cut: 29 }, Desc::Frame { j: 19, f: FrameAccess { word: 0xf900339fu32, rt: 31, off: 96, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Frame { j: 20, f: FrameAccess { word: 0xf9403b8fu32, rt: 15, off: 112, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Register { j: 21, rd: 15, sp: false, bb: 24, cut: 29 }, Desc::Either { j: 22, by: 8, bb: 24, cut: 29 }, Desc::Branch { j: 23, by: 8, bb: 24, cut: 29 }, Desc::Register { j: 24, rd: 15, sp: false, bb: 24, cut: 29 }, Desc::Frame { j: 25, f: FrameAccess { word: 0xf9401f80u32, rt: 0, off: 56, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Branch { j: 26, by: 16, bb: 24, cut: 29 }, Desc::Through { j: 27, rt: 31, rt2: 31, back: false, off: 0, bytes: 8, bb: 24, cut: 29 }, Desc::Frame { j: 28, f: FrameAccess { word: 0xf900339fu32, rt: 31, off: 96, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Register { j: 29, rd: 15, sp: false, bb: 24, cut: 29 }, Desc::Frame { j: 30, f: FrameAccess { word: 0xf900438fu32, rt: 31, off: 128, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Frame { j: 31, f: FrameAccess { word: 0xf9404b9du32, rt: 29, off: 144, moves: false }, bb: 24, bb2: 24, cut: 29 }, Desc::Exit { j: 32, guest: 0x401000 }, Desc::Branch { j: 36, by: 16, bb: 24, cut: 31 }, Desc::Mark { j: 37, bb: 24, c: 29 }, Desc::Call { j: 40, code: 6 }])) by (compute); }
 proof fn pin_negative_probes() { assert(described(seq![0xd360dcefu32, 0xb500014fu32, 0x8b274317u32, 0x913e8eefu32, 0x927d21efu32, 0xb400012fu32, 0x28338ae6u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x92800c6fu32, 0x8b2f62efu32, 0x383f01ffu32, 0x91001defu32, 0x383f01ffu32, 0x17fffff3u32], pin_at(false), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 40, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 7, c: 23, bb: 24 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 4, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 5, by: 36, bb: 24, cut: 23 }, Desc::Through { j: 6, rt: 31, rt2: 31, back: false, off: -100, bytes: 8, bb: 24, cut: 23 }, Desc::Exit { j: 7, guest: 0x401000 }, Desc::Mark { j: 11, bb: 24, c: 15 }, Desc::Probes { j: 14, c: 15, from: 23, off: -100, bytes: 8, store: true, bb: 24 }, Desc::Branch { j: 19, by: -52, bb: 24, cut: 23 }])) by (compute); }
-proof fn pin_same_displaced() { assert(described(seq![0xd360de8fu32, 0xb50001afu32, 0x8b344317u32, 0x91003eefu32, 0x927c1defu32, 0xb400018fu32, 0xd104628fu32, 0x910002f7u32, 0xfd4002e1u32, 0xaa0f03f4u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80017u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0xd280000fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39403dffu32, 0x17fffff1u32], pin_at(true), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 52, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 20, c: 23, bb: 24 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 4, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 5, by: 48, bb: 24, cut: 23 }, Desc::Register { j: 6, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Same { j: 7, bb: 24, cut: 23 }, Desc::Through { j: 8, rt: 31, rt2: 31, back: false, off: 0, bytes: 8, bb: 24, cut: 23 }, Desc::Register { j: 9, rd: 20, sp: false, bb: 24, cut: 23 }, Desc::Exit { j: 10, guest: 0x401000 }, Desc::Mark { j: 14, bb: 24, c: 15 }, Desc::Probes { j: 17, c: 15, from: 23, off: 0, bytes: 16, store: false, bb: 24 }, Desc::Branch { j: 21, by: -60, bb: 24, cut: 23 }])) by (compute); }
-proof fn pin_jump_displaced() { assert(described(seq![0x91000652u32, 0xd360dcf7u32, 0xb50000b7u32, 0xd37e7cf7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd61f02e0u32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(true), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::DisplacedJump { j: 1, n: 7, out: 7 }, Desc::Branch { j: 7, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 8, code: 7 }])) by (compute); }
+proof fn pin_same_displaced() { assert(described(seq![0xd360de8fu32, 0xb50001afu32, 0x8b344317u32, 0x91003eefu32, 0x927c1defu32, 0xb400018fu32, 0xd104628fu32, 0x910002f7u32, 0xfd4002e1u32, 0xaa0f03f4u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80017u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0xd280000fu32, 0x8b2f62efu32, 0x394001ffu32, 0x39403dffu32, 0x17fffff1u32], pin_at(true), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 52, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 20, c: 23, bb: 24 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 4, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 5, by: 48, bb: 24, cut: 23 }, Desc::Register { j: 6, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::ShiftThrough { j: 7, k: 0, rt: 31, rt2: 31, bytes: 8, bb: 24, cut: 23 }, Desc::Register { j: 9, rd: 20, sp: false, bb: 24, cut: 31 }, Desc::Exit { j: 10, guest: 0x401000 }, Desc::Mark { j: 14, bb: 24, c: 15 }, Desc::Probes { j: 17, c: 15, from: 23, off: 0, bytes: 16, store: false, bb: 24 }, Desc::Branch { j: 21, by: -60, bb: 24, cut: 23 }])) by (compute); }
+proof fn pin_jump_displaced() { assert(described(seq![0x91000652u32, 0xd360dcf7u32, 0xb50000b7u32, 0xd37e7cf7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd61f02e0u32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(true), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 2, by: 20, bb: 24, cut: 31 }, Desc::DisplacedTableJump { j: 3, n: 7, link: false }, Desc::Branch { j: 7, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 8, code: 7 }])) by (compute); }
 proof fn pin_stack_cut_displaced() { assert(described(seq![0x9100001fu32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80017u32, 0xd61f02e0u32], pin_at(true), seq![Desc::Register { j: 0, rd: 31, sp: true, bb: 24, cut: 31 }, Desc::Exit { j: 1, guest: 0x401000 }])) by (compute); }
+proof fn pin_jump_frame() { assert(described(seq![0x91000652u32, 0xf9400b97u32, 0xd360def7u32, 0xb50000f7u32, 0xf9400b97u32, 0x8b374317u32, 0xd37eaef7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd61f02e0u32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(false), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Frame { j: 1, f: FrameAccess { word: 0xf9400b97u32, rt: 23, off: 16, moves: false }, bb: 24, bb2: 24, cut: 31 }, Desc::Register { j: 2, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 3, by: 28, bb: 24, cut: 31 }, Desc::Frame { j: 4, f: FrameAccess { word: 0xf9400b97u32, rt: 23, off: 16, moves: false }, bb: 24, bb2: 24, cut: 31 }, Desc::Cut { j: 5, n: 23, c: 23, bb: 24 }, Desc::TableJump { j: 6, link: false }, Desc::Branch { j: 10, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 11, code: 7 }])) by (compute); }
+proof fn pin_call_link() { assert(described(seq![0x91000652u32, 0xd360dfd7u32, 0xb5000137u32, 0x8b3e4317u32, 0xd37eaef7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd282009eu32, 0xf2a0081eu32, 0xf2c0001eu32, 0xd61f02e0u32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(false), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 2, by: 36, bb: 24, cut: 31 }, Desc::Cut { j: 3, n: 30, c: 23, bb: 24 }, Desc::TableJump { j: 4, link: true }, Desc::Branch { j: 11, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 12, code: 7 }])) by (compute); }
+proof fn pin_return_zero() { assert(described(seq![0x91000652u32, 0xd2800017u32, 0xf2a00017u32, 0xf2c00017u32, 0xca1f02f7u32, 0xb5000057u32, 0x14000002u32, 0x14000008u32, 0xd360dff7u32, 0xb50001b7u32, 0x8b3f4317u32, 0xd37eaef7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd61f02e0u32, 0xf9002f9eu32, 0xd280101eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffff3u32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(false), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 2, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 3, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 4, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 5, by: 8, bb: 24, cut: 31 }, Desc::Branch { j: 6, by: 8, bb: 24, cut: 31 }, Desc::Branch { j: 7, by: 32, bb: 24, cut: 31 }, Desc::Register { j: 8, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 9, by: 52, bb: 24, cut: 31 }, Desc::Cut { j: 10, n: 31, c: 23, bb: 24 }, Desc::TableJump { j: 11, link: false }, Desc::Call { j: 15, code: 8 }, Desc::Branch { j: 22, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 23, code: 7 }])) by (compute); }
+proof fn pin_jump_zero_displaced() { assert(described(seq![0x91000652u32, 0xd360dff7u32, 0xb50000b7u32, 0xd37e7ff7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd61f02e0u32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(true), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Register { j: 1, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 2, by: 20, bb: 24, cut: 31 }, Desc::DisplacedTableJump { j: 3, n: 31, link: false }, Desc::Branch { j: 7, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 8, code: 7 }])) by (compute); }
+proof fn pin_call_frame_displaced() { assert(described(seq![0x91000652u32, 0xf9400b97u32, 0xd360def7u32, 0xb5000137u32, 0xf9400b97u32, 0xd37e7ef7u32, 0xb3420ef7u32, 0xd25202f7u32, 0xd282009eu32, 0xf2a0081eu32, 0xf2c0001eu32, 0xd61f02e0u32, 0x14000001u32, 0xf9002f9eu32, 0xd2800e1eu32, 0xf2a0001eu32, 0xf2c4003eu32, 0xd63f03c0u32, 0xf9402f9eu32, 0x17fffffau32], pin_at(true), seq![Desc::Register { j: 0, rd: 18, sp: false, bb: 24, cut: 31 }, Desc::Frame { j: 1, f: FrameAccess { word: 0xf9400b97u32, rt: 23, off: 16, moves: false }, bb: 24, bb2: 24, cut: 31 }, Desc::Register { j: 2, rd: 23, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 3, by: 36, bb: 24, cut: 31 }, Desc::Frame { j: 4, f: FrameAccess { word: 0xf9400b97u32, rt: 23, off: 16, moves: false }, bb: 24, bb2: 24, cut: 31 }, Desc::DisplacedTableJump { j: 5, n: 23, link: true }, Desc::Branch { j: 12, by: 4, bb: 24, cut: 31 }, Desc::Call { j: 13, code: 7 }])) by (compute); }
+proof fn pin_shift_through() { assert(described(seq![0xd360ddafu32, 0xb500016fu32, 0x8b2d4317u32, 0x913b5eefu32, 0x927c1defu32, 0xb400014fu32, 0xd104e2f7u32, 0xfd4002e1u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80317u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x928026efu32, 0x8b2f62efu32, 0x394001ffu32, 0x39403dffu32, 0x17fffff3u32], pin_at(false), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 44, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 13, c: 23, bb: 24 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 4, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 5, by: 40, bb: 24, cut: 23 }, Desc::ShiftThrough { j: 6, k: -312, rt: 31, rt2: 31, bytes: 8, bb: 24, cut: 23 }, Desc::Exit { j: 8, guest: 0x401000 }, Desc::Mark { j: 12, bb: 24, c: 15 }, Desc::Probes { j: 15, c: 15, from: 23, off: -312, bytes: 16, store: false, bb: 24 }, Desc::Branch { j: 19, by: -52, bb: 24, cut: 23 }])) by (compute); }
+proof fn pin_shift_through_displaced() { assert(described(seq![0xd360dcefu32, 0xb500016fu32, 0x8b274317u32, 0x913b1eefu32, 0x927c1defu32, 0xb400014fu32, 0xd10522f7u32, 0xfd4002f6u32, 0xd2880217u32, 0xf2a02017u32, 0xf2c80017u32, 0xd61f02e0u32, 0xd260030fu32, 0x397ffdffu32, 0x00000000u32, 0x928028efu32, 0x8b2f62efu32, 0x394001ffu32, 0x39403dffu32, 0x17fffff3u32], pin_at(true), seq![Desc::Register { j: 0, rd: 15, sp: false, bb: 24, cut: 31 }, Desc::Either { j: 1, by: 44, bb: 24, cut: 31 }, Desc::Cut { j: 2, n: 7, c: 23, bb: 24 }, Desc::Register { j: 3, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Register { j: 4, rd: 15, sp: false, bb: 24, cut: 23 }, Desc::Either { j: 5, by: 40, bb: 24, cut: 23 }, Desc::ShiftThrough { j: 6, k: -328, rt: 31, rt2: 31, bytes: 8, bb: 24, cut: 23 }, Desc::Exit { j: 8, guest: 0x401000 }, Desc::Mark { j: 12, bb: 24, c: 15 }, Desc::Probes { j: 15, c: 15, from: 23, off: -328, bytes: 16, store: false, bb: 24 }, Desc::Branch { j: 19, by: -52, bb: 24, cut: 23 }])) by (compute); }
 
 } // verus!

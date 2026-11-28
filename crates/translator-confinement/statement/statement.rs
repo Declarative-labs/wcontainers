@@ -199,22 +199,34 @@ pub struct Piece {
     pub a: Allowed,
 }
 
-/// The pieces share one window, its reservation, frame and way, and lie below the slot tables.
+/// The pieces share one window, frame and way, and lie below the slot tables. (Each step is confined in its own
+/// piece's `Allowed`, reservation below the window included, so the pieces need not share one.)
 pub open spec fn one_window(pieces: Seq<Piece>, a: Allowed) -> bool {
     forall|i: int| 0 <= i < pieces.len() ==> {
         let b = #[trigger] pieces[i].a;
-        &&& b.base == a.base && b.below == a.below && b.frame == a.frame && b.displaced == a.displaced
+        &&& b.base == a.base && b.frame == a.frame && b.displaced == a.displaced
         &&& 0 <= b.code <= PROCESS_SLOTS
     }
 }
 
+/// THE RE-ENTRY: where a run goes on after a step into the slot table. In form I the slot table holds no words (it is
+/// never mapped, `reserve_slot`): the step faults, and the executor enters the piece of the slot's guest address at its
+/// first instruction (`InProcessThread::enter`, which sets x28 and x24, then `run_instructions`, which refuses a pc or
+/// stack pointer the piece may not start with). Stated: from any machine a run hands on, the executor goes on in some
+/// piece at a machine the entry rule allows; which piece, and every other register, are the executor's.
+pub open spec fn reenters(pieces: Seq<Piece>, a: Allowed, reenter: spec_fn(u64, Machine) -> (int, Machine)) -> bool {
+    forall|pc: u64, m: Machine| #![trigger reenter(pc, m)] hands_on(a, m) ==> {
+        let r = reenter(pc, m);
+        0 <= r.0 < pieces.len() && handed(pieces[r.0].a, r.1)
+    }
+}
+
 /// A WHOLE RUN of a program, piece `k` the one it is in: each step is its piece's, and a step into the slot table goes
-/// on at the first instruction of piece `link(pc)` with every register as the step left it. That is what the slot
-/// table's words do once exit linking wrote them: ASSUMED here, not proven (they are not the translator's pieces).
+/// on where `reenter` has the executor enter.
 pub open spec fn whole_run(
     step: spec_fn(Machine, u32) -> Stepped,
     pieces: Seq<Piece>,
-    link: spec_fn(u64) -> int,
+    reenter: spec_fn(u64, Machine) -> (int, Machine),
     k: int,
     m: Machine,
     n: nat,
@@ -224,12 +236,12 @@ pub open spec fn whole_run(
     if n == 0 {
         (k, m)
     } else {
-        let before = whole_run(step, pieces, link, k, m, (n - 1) as nat);
+        let before = whole_run(step, pieces, reenter, k, m, (n - 1) as nat);
         let p = pieces[before.0];
         if runs(p.a, before.1) {
             let after = step(before.1, word_at(p.instructions, p.a, before.1.pc)).after;
             if !after.ended && in_table(p.a, after.pc) {
-                (link(after.pc), Machine { pc: pieces[link(after.pc)].a.code as u64, ..after })
+                reenter(after.pc, after)
             } else {
                 (before.0, after)
             }
