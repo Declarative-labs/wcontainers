@@ -1513,6 +1513,7 @@ other = 'It does not start with a verb: a noun phrase, or a sentence with its ow
 "Runs the program in the kernel inside the machine at the look-ahead the environment gives." = { answer = "third_person_verb", confidence = 0.8976061979516782, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Runs the state's instruction on a CPU side, where `run_one` must stop a thread after exactly one instruction." = { answer = "third_person_verb", confidence = 0.842499651893568, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Runs the static program `image` under the emulator to its exit and counts what it executed." = { answer = "third_person_verb", confidence = 0.8659027593292182, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs the task's instructions until it stops, and returns why it stopped." = { answer = "third_person_verb", confidence = 0.8724442807214636, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Runs to the end: the first process's wait status, or what the system ended it with." = { answer = "third_person_verb", confidence = 0.5603726741894203, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Runs until a trap terminates the execution or the executor must wait." = { answer = "third_person_verb", confidence = 0.7561410762780708, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Runs until an exit." = { answer = "third_person_verb", confidence = 0.7088048903180747, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -1611,6 +1612,7 @@ other = 'It does not start with a verb: a noun phrase, or a sentence with its ow
 "Simulates applying this instruction to the before state." = { answer = "third_person_verb", confidence = 0.902287457145404, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Simulates applying this instruction to the given processor + memory." = { answer = "third_person_verb", confidence = 0.8571515857555356, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Slots in use." = { answer = "other", confidence = 0.8448816578782556, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Splits a shard `offset` bytes in, into two views of its allocation with its permissions." = { answer = "third_person_verb", confidence = 0.8757388680769663, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Starts a TCP connection to `to`, without waiting; its number." = { answer = "third_person_verb", confidence = 0.901800793902314, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Starts a connection's probe timer at `until` on the monotonic clock; its id, to stop it." = { answer = "third_person_verb", confidence = 0.9060092462001168, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Starts a timer of the kernel's own that fires once at `until` on the monotonic clock." = { answer = "third_person_verb", confidence = 0.9462151628864336, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -1631,6 +1633,7 @@ other = 'It does not start with a verb: a noun phrase, or a sentence with its ow
 "Stops and removes a container by name, whatever state it is in." = { answer = "third_person_verb", confidence = 0.8002084220633288, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Stops noting for a kernel no process of which runs in it any more." = { answer = "third_person_verb", confidence = 0.9150546550949442, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Stops recording: the allocator is free for another list." = { answer = "third_person_verb", confidence = 0.7747349476421194, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Stops the execution this was prepared with; does nothing once it has run." = { answer = "third_person_verb", confidence = 0.8721545370177253, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Stops watching the socket and gives it back open." = { answer = "third_person_verb", confidence = 0.9814932224670322, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Stores `items` into `slots` from `start`, growing it as needed." = { answer = "third_person_verb", confidence = 0.8924216481911972, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Stores and post-indexed loads through one base, the last crossing onto a page that allows nothing." = { answer = "third_person_verb", confidence = 0.4126247638524129, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
@@ -6086,6 +6089,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "enum\tStepMode\tpub enum StepMode {\tWhether a stream advances per vertex or per instance." = { answer = "adds_information", confidence = 0.871682877483998, model = "perplexity/pplx-decider-v1.2-20261016" }
 "enum\tStop\tpub enum Stop {\tWhere control went or why the thread stopped, as ARM64 can." = { answer = "adds_information", confidence = 0.9140826244533348, model = "perplexity/pplx-decider-v1.2-20261016" }
 "enum\tStop\tpub enum Stop {\tWhere control went or why the thread stopped, in terms both sides share." = { answer = "adds_information", confidence = 0.9154578668518708, model = "perplexity/pplx-decider-v1.2-20261016" }
+"enum\tStop\tpub enum Stop {\tWhy a task stopped running." = { answer = "adds_information", confidence = 0.5981737646876915, model = "perplexity/pplx-decider-v1.2-20261016" }
 "enum\tStop\tpub enum Stop {\tWhy the guest stopped." = { answer = "adds_information", confidence = 0.625866628955247, model = "perplexity/pplx-decider-v1.2-20261016" }
 "enum\tStopPlan\tenum StopPlan {\tHow [`Stopper`] takes stopped.c's child." = { answer = "adds_information", confidence = 0.8513036455350216, model = "perplexity/pplx-decider-v1.2-20261016" }
 "enum\tStopped\tpub enum Stopped {\tWhy `run` came back." = { answer = "adds_information", confidence = 0.6609847579207029, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -7204,6 +7208,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "field\tleases\tpub leases: Vec<crate::syscall::lease::Lease>,\tThe leases open files hold on it." = { answer = "adds_information", confidence = 0.8289954566502955, model = "perplexity/pplx-decider-v1.2-20261016" }
 "field\tlength\tlength: Option<Handle<Function>>,\tTyped buffers: the length. Images: the size query's value." = { answer = "adds_information", confidence = 0.7399711493939634, model = "perplexity/pplx-decider-v1.2-20261016" }
 "field\tlength\tpub length: u64,\tBytes used of the link's bytes." = { answer = "adds_information", confidence = 0.7920616950618633, model = "perplexity/pplx-decider-v1.2-20261016" }
+"field\tlength\tpub length: u64,\tThe length of the shard in bytes." = { answer = "adds_information", confidence = 0.9528380076520656, model = "perplexity/pplx-decider-v1.2-20261016" }
 "field\tlengths\tlengths: HashMap<u32, u32>,\tThe element count of every resource declaration, by declaring id." = { answer = "adds_information", confidence = 0.8959032726047134, model = "perplexity/pplx-decider-v1.2-20261016" }
 "field\tlet_go_locks\tlet_go_locks: bool,\tWhether a close let go of record locks, whose waiters try again." = { answer = "adds_information", confidence = 0.9029416982578986, model = "perplexity/pplx-decider-v1.2-20261016" }
 "field\tlevel_zero\tlevel_zero: Option<(Id, glow::Sampler)>,\tIts twin whose minimum level of detail is 0, for units that gathers read, where its own minimum is above 0." = { answer = "adds_information", confidence = 0.931766064284403, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -12490,6 +12495,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "fn\tinterpolated_bc4_and_bc5_values\tpub fn interpolated_bc4_and_bc5_values<H: Host>() {\tEvery interpolated value of BC4 and BC5 blocks (unsigned and signed, both modes: six values between the endpoints, and four with the two extremes) loaded into a 32-bit float target. Stored decoded (`BlockDecoded`), each must be the formula's value (bcdec_rs's float decoder) to the half float it is stored as. Natively compressed, the GPU decodes it as Direct3D on the same GPU does; that route's largest difference from the formula is printed, as a measurement." = { answer = "adds_information", confidence = 0.971210050841996, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\tinterpolation\tfn interpolation(ep: &Function, argument: usize) -> (Interpolation, Option<Sampling>) {\tHow the input of argument `argument` is interpolated: its interpolation (the reader leaves an array's unset: perspective then) and sampling." = { answer = "restates_name", confidence = 0.21192829187325324, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "fn\tinterpolation\tfn interpolation<B: Backend>(ps: Option<&Shader<B>>) -> Vec<(u32, Interpolation)> {\tThe interpolation the pixel shader `ps` reads its inputs with where it is not the default, by location: the stage before it writes its outputs so." = { answer = "adds_information", confidence = 0.8947940361793401, model = "perplexity/pplx-decider-v1.2-20261016" }
+"fn\tinterrupt\tfn interrupt(&self);\tStops the execution this was prepared with; does nothing once it has run." = { answer = "adds_information", confidence = 0.8516872702485749, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\tinterrupt_controller\tfn interrupt_controller(vm: &VmFd) -> Result<DeviceFd> {\tMakes the interrupt controller, a GICv3 with its distributor and redistributors where the inside finds them. It is set up once every virtual CPU is made." = { answer = "adds_information", confidence = 0.9558759235283292, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\tinterrupt_return\tfn interrupt_return<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {\t`iret`: general protection with NT set, before anything is read; then the frame in the reference's order, cs tested once rip is read, ss after its slot and rsp's, the rip's canonical test last; then rflags as `popf` loads it, rsp and the return." = { answer = "adds_information", confidence = 0.8755649801579573, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\tinterrupt_time\tfn interrupt_time() -> u64 {\tReal time in 100-nanosecond units, from a clock the frame clock does not replace." = { answer = "adds_information", confidence = 0.9875948468418154, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -15526,6 +15532,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "fn\trun\tfn run(directory: &Path, arguments: &[&str], backend: bool) -> (u64, u64) {\tOne run of the guest with `arguments`, the root on the backend when `backend`; its wall time in nanoseconds and the allocations made meanwhile." = { answer = "adds_information", confidence = 0.9656157053886614, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\trun\tfn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {\tRuns `module` once with the uniform block `uniform`; `arrays` binds the textures and samplers as binding arrays, otherwise an element per binding. Gives the outputs' bits." = { answer = "adds_information", confidence = 0.9131768858859411, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\trun\tfn run(seconds: f64) {\tHandles the application's events for `seconds`; windows learn they are visible from them." = { answer = "adds_information", confidence = 0.8900643517976794, model = "perplexity/pplx-decider-v1.2-20261016" }
+"fn\trun\tfn run(self) -> (stop: Stop)\tRuns the task's instructions until it stops, and returns why it stopped." = { answer = "adds_information", confidence = 0.30722231041551384, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "fn\trun\tfn run(self, handler: &mut impl TrapHandler)\tRuns until a trap terminates the execution or the executor must wait." = { answer = "adds_information", confidence = 0.8884749457706989, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\trun\tfn run(space: &AddressSpace, pc: u64, x1: u64, x2: u64) -> Run {\tRuns the guest's level in `space` from `pc` with x1 and x2 set." = { answer = "restates_name", confidence = 0.2122830366438333, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "fn\trun\tfn run<G: GuestTest>(\tRun at none after `prepare` has done something to the machine; the stop and the fields after." = { answer = "adds_information", confidence = 0.4614771540094426, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
@@ -16295,6 +16302,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "fn\tspin\tfn spin(look_ahead: LookAhead, restored: bool) -> Vec<(String, u64)> {\tRuns the spin for one counted turn, on an executor brought back from a save when `restored`; the executor's warnings." = { answer = "adds_information", confidence = 0.8469575418414812, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\tsplat\tfn splat(element: u8, value: u64) -> i128 {\tA v128 with every element of `element` bytes holding `value`." = { answer = "adds_information", confidence = 0.7122165340175493, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\tsplat_bits\tpub(crate) fn splat_bits(element: u8, bits: u64) -> i128 {\tA v128 whose `element` byte elements all hold `bits`." = { answer = "adds_information", confidence = 0.4305850610931383, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"fn\tsplit\tfn split(&mut self, address: &u64, offset: u64) -> (split: Result<(), SplitError>)\tSplits a shard `offset` bytes in, into two views of its allocation with its permissions." = { answer = "adds_information", confidence = 0.6586701479454509, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\tsplit\tfn split(&self, frames: &mut Frames, va: u64, block: u64) -> Result<(), Full> {\tBreaks the block holding `va` into pages over the same frames with the same attributes." = { answer = "adds_information", confidence = 0.8295860885423023, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\tsplit\tfn split(item: &Path) -> Option<(PathBuf, String)> {\tA corpus item's shader file and variant, when the item is Godot's." = { answer = "adds_information", confidence = 0.9676312827643028, model = "perplexity/pplx-decider-v1.2-20261016" }
 "fn\tsplit\tfn split(path: &[u8]) -> impl DoubleEndedIterator<Item = &[u8]> {\tThe parts of a path, without empty ones." = { answer = "adds_information", confidence = 0.890791453221164, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -19597,6 +19605,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "struct\tMemoryAccess\tpub struct MemoryAccess<R> {\tOne memory access: address `segment + base + index + displacement`, worked out modulo 2^`address_bits`." = { answer = "adds_information", confidence = 0.956288892840991, model = "perplexity/pplx-decider-v1.2-20261016" }
 "struct\tMemoryId\tpub struct MemoryId(pub u32);\tOne guest memory: the whole address space of one process. Threads of a process share it." = { answer = "adds_information", confidence = 0.9240401408653344, model = "perplexity/pplx-decider-v1.2-20261016" }
 "struct\tMemoryIds\tstruct MemoryIds {\tKeeps the memory id each process is announced with at each of its hooks." = { answer = "adds_information", confidence = 0.9417237849257728, model = "perplexity/pplx-decider-v1.2-20261016" }
+"struct\tMemoryPermissions\tpub struct MemoryPermissions {\tWhat the instructions of a task may do with the bytes of a shard." = { answer = "adds_information", confidence = 0.841068188689011, model = "perplexity/pplx-decider-v1.2-20261016" }
 "struct\tMemorySnapshot\tpub struct MemorySnapshot<'snapshot, 'memory, Architecture: ProcessorArchitecture> {\tMemory as the mutations applied to it from a fully zeroed out state, in chronological order." = { answer = "adds_information", confidence = 0.9384370096284864, model = "perplexity/pplx-decider-v1.2-20261016" }
 "struct\tMemoryType\tpub struct MemoryType {\tA [memory type](https://webassembly.github.io/spec/core/syntax/types.html#memory-types)." = { answer = "adds_information", confidence = 0.9650155180119476, model = "perplexity/pplx-decider-v1.2-20261016" }
 "struct\tMessage\tpub struct Message<'a> {\tWhat one `recvmsg` gave: its byte count, flags, sender and control messages." = { answer = "adds_information", confidence = 0.925649801524441, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -20340,6 +20349,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "trait\tEmitter\tpub trait Emitter<G: Guest> {\tWhere a meaning's registers, flags and control flow go. Each look-ahead implements it, and so does the recorder of [`crate::effects`]." = { answer = "adds_information", confidence = 0.9624094594855646, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tExecution\tpub trait Execution {\tOne execution of a guest thread, not yet run." = { answer = "adds_information", confidence = 0.9201370719137908, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tExecution\tpub trait Execution: Cpu + Sized {\tThe executor: runs guest threads behind the kernel's [`Cpu`] side." = { answer = "adds_information", confidence = 0.8060699573599024, model = "perplexity/pplx-decider-v1.2-20261016" }
+"trait\tExecution\tpub trait Execution<'task, Task: 'task, Memory: TaskMemory<Task> + ?Sized>: Sized {\tOne run of a task, which borrows the task until it has run." = { answer = "adds_information", confidence = 0.618593163135785, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tExecutor\tpub trait Executor: BehaviorSource {\tThe runner of guest threads." = { answer = "adds_information", confidence = 0.6638907666907758, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tExecutor\tpub trait Executor: Execution {\tWhat runs a container's guest threads; the runtime makes one for each container." = { answer = "adds_information", confidence = 0.90370434467544, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tFunctionStore\tpub trait FunctionStore {\tThe part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [function instances](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances)." = { answer = "adds_information", confidence = 0.9886678323070022, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -20357,8 +20367,11 @@ restates_name = "The paragraph only says again what the name and the declaration
 "trait\tHypervisor\tpub trait Hypervisor {\tA way of making hardware virtual machines." = { answer = "adds_information", confidence = 0.7673435355201579, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tIcmpSockets\tpub trait IcmpSockets:\tSockets for [ICMP](https://man7.org/linux/man-pages/man7/icmp.7.html) echo requests and replies." = { answer = "adds_information", confidence = 0.9784796966978916, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tInterrupter\tpub trait Interrupter: Send + Sync {\tA handle that interrupts a container's run, idempotently." = { answer = "adds_information", confidence = 0.9139005515713616, model = "perplexity/pplx-decider-v1.2-20261016" }
+"trait\tInterrupter\tpub trait Interrupter: Send + Sync {\tWhat stops the one execution it was prepared with." = { answer = "adds_information", confidence = 0.27055536966692206, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"trait\tKernelCore\tpub trait KernelCore: TaskMemory<Self::Task> + TaskProcessorState<Self::Task> {\tAll of a kernel except its userspace ABI." = { answer = "adds_information", confidence = 0.7708224869100706, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tMachine\tpub trait Machine {\tOne CPU's part of the runner." = { answer = "adds_information", confidence = 0.8202830801074705, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tMemory\tpub(crate) trait Memory {\tThe calling thread's memory as the walk sees it." = { answer = "adds_information", confidence = 0.8060867414977644, model = "perplexity/pplx-decider-v1.2-20261016" }
+"trait\tMemoryCapabilityTable\tpub trait MemoryCapabilityTable<Shard: MemoryShard>: CapabilityTable<\tThe memory a task holds, as shards under their starting virtual addresses." = { answer = "adds_information", confidence = 0.6169478641017292, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tMemoryReader\tpub trait MemoryReader {\tWhere the parts of a read of a process's memory go, in order." = { answer = "adds_information", confidence = 0.7735156959914689, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tMemorySpace\tpub trait MemorySpace: Sized {\tAn address space, shared by everyone who runs on it: every address is all zeros and allows nothing until it is written or given permissions." = { answer = "adds_information", confidence = 0.9367660570346156, model = "perplexity/pplx-decider-v1.2-20261016" }
 "trait\tMemoryStore\tpub trait MemoryStore {\tThe part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [memory instances](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances)." = { answer = "adds_information", confidence = 0.9899334817406932, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -20576,6 +20589,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "type\tResults\tpub type Results = [i64; 2];\tWhat a hook call gives back: two i64 results." = { answer = "adds_information", confidence = 0.4791696503878209, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "type\tRoom\tpub(crate) type Room = smallbox::space::S32;\tThe room a waiting call has in its cell; a larger one is kept on the heap (counted)." = { answer = "adds_information", confidence = 0.9323596555201475, model = "perplexity/pplx-decider-v1.2-20261016" }
 "type\tRootSignature\tpub type RootSignature = std::sync::Arc<RootSignatureDesc>;\tA root signature object: shared by the program's object, the pipelines made with it and the lists that set it." = { answer = "adds_information", confidence = 0.7689234751713898, model = "perplexity/pplx-decider-v1.2-20261016" }
+"type\tSavedProcessorState\ttype SavedProcessorState;\tThe registers of the processor as they were saved when a task last stopped running." = { answer = "adds_information", confidence = 0.9046962752995802, model = "perplexity/pplx-decider-v1.2-20261016" }
 "type\tSet\ttype Set<B> = Rc<Kept<B, <B as Backend>::QuerySet>>;\tAn occlusion set, shared by the stretches counted into it." = { answer = "adds_information", confidence = 0.8447527377457564, model = "perplexity/pplx-decider-v1.2-20261016" }
 'type	SetOne	type SetOne = unsafe extern "C" fn(u32);	`glClientActiveTexture` and `glEnableClientState`.' = { answer = "adds_information", confidence = 0.8999445345483221, model = "perplexity/pplx-decider-v1.2-20261016" }
 'type	SetTwo	type SetTwo = unsafe extern "C" fn(u32, u32);	`glClipControl` and `glClampColor`.' = { answer = "adds_information", confidence = 0.929076217442365, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -20611,6 +20625,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "type\tTagAddress\ttype TagAddress: Clone;\tThe [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [tag instance](https://webassembly.github.io/spec/core/exec/runtime.html#tag-instances)." = { answer = "adds_information", confidence = 0.9670691016841492, model = "perplexity/pplx-decider-v1.2-20261016" }
 "type\tTarget\ttype Target = Option<(Kind, u32)>;\tA colour target's kind and the components of each texel the program writes." = { answer = "adds_information", confidence = 0.731062116368445, model = "perplexity/pplx-decider-v1.2-20261016" }
 "type\tTargets\tpub type Targets = Vec<(u32, ScalarKind)>;\tThe kind of the target at each location." = { answer = "adds_information", confidence = 0.37883261036039495, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"type\tTask\ttype Task;\tAn individual thread of execution, with its own set of capabilities." = { answer = "adds_information", confidence = 0.9059646944041247, model = "perplexity/pplx-decider-v1.2-20261016" }
 'type	TexStorage3DMultisample	type TexStorage3DMultisample = unsafe extern "C" fn(u32, i32, u32, i32, i32, i32, u8);	`glTexStorage3DMultisample`, which glow does not have.' = { answer = "adds_information", confidence = 0.13433914965517513, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "type\tTexelPlace\tpub type TexelPlace = (Format, u32, u32);\tA typed buffer view's format, the byte of its first element in its bound range and its element count." = { answer = "adds_information", confidence = 0.9495577453018504, model = "perplexity/pplx-decider-v1.2-20261016" }
 "type\tTouches\ttype Touches = Arc<Mutex<Vec<(u32, u64, AccessKind, bool)>>>;\tWhat a watching test saw at each hook: the process, the address, how, and whether the watched page still held what it held when the process started." = { answer = "adds_information", confidence = 0.898390135580331, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -21184,6 +21199,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "variant\tIntegerToFloat\tIntegerToFloat {\tscvtf and ucvtf, with `shift` fraction bits." = { answer = "adds_information", confidence = 0.955045428456662, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tIntegerToFloat\tIntegerToFloat {\tscvtf and ucvtf: an integer divided by 2 to the `fraction_bits`." = { answer = "adds_information", confidence = 0.9026549372555994, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tInterrupt\tInterrupt,\tAn interrupt." = { answer = "restates_name", confidence = 0.9789936580652924, model = "perplexity/pplx-decider-v1.2-20261016" }
+"variant\tInterrupt\tInterrupt,\tThe execution's interrupter stopped it." = { answer = "restates_name", confidence = 0.28027110546985234, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "variant\tInvalid\tInvalid(&'static str),\tThe call breaks Direct3D 12's rules (`E_INVALIDARG`)." = { answer = "adds_information", confidence = 0.9453396071708418, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tInvalid\tInvalid(&'static str),\tThe call broke a rule of this interface. Always a bug in the front, reported with its rule." = { answer = "adds_information", confidence = 0.9435743959029346, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tInvalid\tInvalid(String),\tThe converted module failed naga's validation." = { answer = "adds_information", confidence = 0.933777562290222, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -21279,6 +21295,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "variant\tMemory\tMemory,\t`mem_write`: into the process's memory." = { answer = "adds_information", confidence = 0.41941340172267494, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "variant\tMemoryFault\tMemoryFault {\tAn access the page refused, at this address." = { answer = "adds_information", confidence = 0.5986270837102565, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tMemoryFault\tMemoryFault { address: u64, access: Access },\tAn access the page's permissions do not allow. `pc` is the instruction that tried." = { answer = "adds_information", confidence = 0.5890321768347124, model = "perplexity/pplx-decider-v1.2-20261016" }
+"variant\tMemoryFault\tMemoryFault { address: u64, access: Access },\tThe task accessed an address in a way that nothing it holds allows." = { answer = "adds_information", confidence = 0.5756835676489525, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tMemoryFaultWithoutRegisters\tMemoryFaultWithoutRegisters,\tAn access outside the whole address space, stopped by the host's engine. The registers are lost, so the process can only be killed; no handler may run." = { answer = "adds_information", confidence = 0.963298589260516, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tMemoryModelFeatures\tMemoryModelFeatures,\tID_AA64MMFR0_EL1." = { answer = "adds_information", confidence = 0.8102097673173041, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tMesa\tMesa(&'static str),\tMesa refused the input, at the named step." = { answer = "adds_information", confidence = 0.8920341781682266, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -21716,6 +21733,7 @@ restates_name = "The paragraph only says again what the name and the declaration
 "variant\tSystem\tSystem(SystemRegister),\tA system register by its encoding." = { answer = "adds_information", confidence = 0.4466510021223904, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "variant\tSystemAsked\tSystemAsked,\tThe system needs no thread in `run` before the kernel is asked what is next." = { answer = "adds_information", confidence = 0.8128503643077565, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tSystemCall\tSystemCall,\tA syscall-stop of a tracee without `PTRACE_O_TRACESYSGOOD`." = { answer = "adds_information", confidence = 0.9459159464230248, model = "perplexity/pplx-decider-v1.2-20261016" }
+"variant\tSystemCall\tSystemCall,\tThe task made a system call." = { answer = "adds_information", confidence = 0.4481860651306002, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "variant\tSystemCallMarked\tSystemCallMarked,\tA syscall-stop of a tracee with `PTRACE_O_TRACESYSGOOD`." = { answer = "adds_information", confidence = 0.9079044664034152, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tSystemVSegment\tSystemVSegment(SystemVSegmentId),\tA [System V shared memory segment](https://man7.org/linux/man-pages/man7/sysvipc.7.html#:~:text=Shared%20memory%20segments)." = { answer = "adds_information", confidence = 0.9620023922166514, model = "perplexity/pplx-decider-v1.2-20261016" }
 "variant\tTable\tTable {\ttbl and tbx: bytes of `registers` consecutive registers from `rn`, picked by the bytes of `rm`. Out of range picks give zero, or with `extend` keep the destination's byte." = { answer = "adds_information", confidence = 0.9162656717756616, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -22301,6 +22319,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "A workgroup's size along x, y and z, as naga's entry points hold it." = { answer = "noun_phrase", confidence = 0.844810739873063, model = "perplexity/pplx-decider-v1.2-20261016" }
 "ARM64 has no slow path of its own beyond the translator's." = { answer = "sentence_with_a_verb", confidence = 0.7676089704578019, model = "perplexity/pplx-decider-v1.2-20261016" }
 "ARM64's words of the thread state after the block, which the kernel never sees." = { answer = "noun_phrase", confidence = 0.7375203071941666, model = "perplexity/pplx-decider-v1.2-20261016" }
+"All of a kernel except its userspace ABI." = { answer = "noun_phrase", confidence = 0.9285609596015444, model = "perplexity/pplx-decider-v1.2-20261016" }
 "All state that some instruction might mutate during execution." = { answer = "sentence_with_a_verb", confidence = 0.6715350319328169, model = "perplexity/pplx-decider-v1.2-20261016", disputed = "it is a noun phrase: its head is the noun state, and the verb sits inside the clause that describes it" }
 "All stateful components of the processor." = { answer = "noun_phrase", confidence = 0.9620889293542768, model = "perplexity/pplx-decider-v1.2-20261016" }
 "An 80-bit value: sign, biased 15-bit exponent and the 64-bit significand with its explicit integer bit." = { answer = "noun_phrase", confidence = 0.9499540565779252, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -22339,6 +22358,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "An image's contents and shape." = { answer = "noun_phrase", confidence = 0.9748531250610296, model = "perplexity/pplx-decider-v1.2-20261016" }
 "An immutable block, made once per distinct value." = { answer = "noun_phrase", confidence = 0.8709857907822255, model = "perplexity/pplx-decider-v1.2-20261016" }
 "An index on the way into a variable." = { answer = "noun_phrase", confidence = 0.9216944396255808, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An individual thread of execution, with its own set of capabilities." = { answer = "noun_phrase", confidence = 0.972595960441442, model = "perplexity/pplx-decider-v1.2-20261016" }
 "An inode of the backend: its node number there, and what keeps its place in the tree." = { answer = "noun_phrase", confidence = 0.9036155210271232, model = "perplexity/pplx-decider-v1.2-20261016" }
 "An instruction at its most granular division." = { answer = "noun_phrase", confidence = 0.9603144104632148, model = "perplexity/pplx-decider-v1.2-20261016" }
 "An instruction with a specific pinned behavior that should be expected of it." = { answer = "noun_phrase", confidence = 0.9363696157918442, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -22641,6 +22661,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "One resource: Gallium's struct first, so that a `pipe_resource` pointer is one to it." = { answer = "noun_phrase", confidence = 0.1918268389643057, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "One ring [`crate::Backend::write_buffer_ring`] writes into." = { answer = "sentence_with_a_verb", confidence = 0.45048723271667385, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "One route (`fib_dump_info`, `rt6_fill_node`)." = { answer = "noun_phrase", confidence = 0.5414243345599193, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One run of a task, which borrows the task until it has run." = { answer = "noun_phrase", confidence = 0.6047192442278309, model = "perplexity/pplx-decider-v1.2-20261016" }
 "One running invocation of an entry point." = { answer = "noun_phrase", confidence = 0.9135793658314734, model = "perplexity/pplx-decider-v1.2-20261016" }
 "One running server, reached over one connection to its container." = { answer = "noun_phrase", confidence = 0.3541302921339909, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "One sampler state and how `ps_filter` is asked to sample." = { answer = "noun_phrase", confidence = 0.4636595888875176, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
@@ -22934,6 +22955,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "The loop's answer to the running thread's exits." = { answer = "noun_phrase", confidence = 0.8551207919585648, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The loop's part: takes the one exit and leaves." = { answer = "sentence_with_a_verb", confidence = 0.24229998153983837, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "The loop, one step at a time, for a caller with its own event loop." = { answer = "noun_phrase", confidence = 0.501977300553133, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The memory a task holds, as shards under their starting virtual addresses." = { answer = "noun_phrase", confidence = 0.823597492964431, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The memory behind a shared mapping, in one order on every host, so announcements are." = { answer = "noun_phrase", confidence = 0.19724396490548352, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "The memory behind a shared mapping." = { answer = "noun_phrase", confidence = 0.94124724877981, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The memory formats, and the register itself." = { answer = "noun_phrase", confidence = 0.825095318134066, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -23021,6 +23043,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "The register [MIDR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/MIDR-EL1--Main-ID-Register)." = { answer = "noun_phrase", confidence = 0.8144190486694416, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The registers a guest gives the model." = { answer = "sentence_with_a_verb", confidence = 0.3860051913209708, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "The registers a program at EL0 can see or change, and the exception its last instruction raised." = { answer = "noun_phrase", confidence = 0.7965552322076486, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The registers of the processor as they were saved when a task last stopped running." = { answer = "noun_phrase", confidence = 0.9233894417493452, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The registers of the system call instruction: the number, the six arguments and the result." = { answer = "noun_phrase", confidence = 0.920803548405836, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The request being sent and the reply being read, kept so that a lookup allocates no buffer once they have grown." = { answer = "noun_phrase", confidence = 0.41437004302454195, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "The requests a host implementation could not honour, counted by reason without a lock, each warned of at its first count." = { answer = "noun_phrase", confidence = 0.8240838479268754, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -23323,6 +23346,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "What runs the guest's instructions behind the kernel: the translator's WebAssembly." = { answer = "noun_phrase", confidence = 0.3927523013688576, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "What sending a datagram longer than a route's MTU came to." = { answer = "noun_phrase", confidence = 0.3484179211156003, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "What stopped the emulator, recorded by its hooks." = { answer = "noun_phrase", confidence = 0.14243946866034102, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What stops the one execution it was prepared with." = { answer = "sentence_with_a_verb", confidence = 0.26512047218821433, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "What storage must share to stand in for another." = { answer = "noun_phrase", confidence = 0.492311225565657, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "What the analysis of one function decides." = { answer = "sentence_with_a_verb", confidence = 0.11797450215712656, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "What the back end last set beyond [`GlValues`], by id." = { answer = "noun_phrase", confidence = 0.4828315979730021, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
@@ -23347,6 +23371,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "What the host's engine does, in the cache key." = { answer = "noun_phrase", confidence = 0.24507219039639652, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "What the index adds to the address." = { answer = "sentence_with_a_verb", confidence = 0.3455306672762213, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "What the inside asks." = { answer = "noun_phrase", confidence = 0.2182978988350524, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the instructions of a task may do with the bytes of a shard." = { answer = "noun_phrase", confidence = 0.5144516524636145, model = "perplexity/pplx-decider-v1.2-20261016" }
 "What the kernel keeps for a process, read when asked." = { answer = "sentence_with_a_verb", confidence = 0.127312488546551, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "What the kernel tells the host: its warnings." = { answer = "noun_phrase", confidence = 0.4291984998901474, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "What the kernel wants done next." = { answer = "noun_phrase", confidence = 0.4146701897047867, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
@@ -23472,6 +23497,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "Why a shader did not convert." = { answer = "noun_phrase", confidence = 0.3426225548030785, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "Why a shader did not reach the common form." = { answer = "noun_phrase", confidence = 0.3619452422291755, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "Why a swap chain call failed." = { answer = "noun_phrase", confidence = 0.58795789572662, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Why a task stopped running." = { answer = "noun_phrase", confidence = 0.6409606735730583, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Why a text is no recording." = { answer = "noun_phrase", confidence = 0.34530450570805016, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "Why a thread leaves `run`, for an executor that counts leaving as a slow path." = { answer = "noun_phrase", confidence = 0.2685084633559482, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "Why a virtual CPU came back to the monitor." = { answer = "noun_phrase", confidence = 0.3086734134527648, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
@@ -25172,6 +25198,7 @@ create_swap_chain = { answer = "first_word", confidence = 0.9893300756996306, mo
 create_swap_chain_for_composition = { answer = "first_word", confidence = 0.983241846629971, model = "perplexity/pplx-decider-v1.2-20261016" }
 create_swap_chain_for_core_window = { answer = "first_word", confidence = 0.9896939402382374, model = "perplexity/pplx-decider-v1.2-20261016" }
 create_swap_chain_for_hwnd = { answer = "first_word", confidence = 0.9914829081480538, model = "perplexity/pplx-decider-v1.2-20261016" }
+create_task = { answer = "first_word", confidence = 0.9945482378906312, model = "perplexity/pplx-decider-v1.2-20261016" }
 create_texture = { answer = "first_word", confidence = 0.998993191534034, model = "perplexity/pplx-decider-v1.2-20261016" }
 create_texture1_d = { answer = "first_word", confidence = 0.996474694325716, model = "perplexity/pplx-decider-v1.2-20261016" }
 create_texture1_d10 = { answer = "first_word", confidence = 0.9972016962543284, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -25574,6 +25601,8 @@ dump_size = { answer = "first_word", confidence = 0.8667161423873705, model = "p
 dup = { answer = "first_word", confidence = 0.6708109931165281, model = "perplexity/pplx-decider-v1.2-20261016" }
 dup3 = { answer = "no_verb", confidence = 0.3582216836681964, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 duplicate = { answer = "first_word", confidence = 0.9546519920954673, model = "perplexity/pplx-decider-v1.2-20261016" }
+duplicate_from = { answer = "first_word", confidence = 0.9633483386634448, model = "perplexity/pplx-decider-v1.2-20261016" }
+duplicate_within = { answer = "first_word", confidence = 0.9124546012627598, model = "perplexity/pplx-decider-v1.2-20261016" }
 dxbc_input_control_points = { answer = "no_verb", confidence = 0.5910126771538452, model = "perplexity/pplx-decider-v1.2-20261016" }
 dxbc_signature = { answer = "no_verb", confidence = 0.9528845074448794, model = "perplexity/pplx-decider-v1.2-20261016" }
 dxgi = { answer = "no_verb", confidence = 0.9577734248850394, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -27473,6 +27502,8 @@ memfd_secret = { answer = "no_verb", confidence = 0.830454306224501, model = "pe
 memory = { answer = "no_verb", confidence = 0.9778942147209704, model = "perplexity/pplx-decider-v1.2-20261016" }
 memory_access = { answer = "no_verb", confidence = 0.6768708900108669, model = "perplexity/pplx-decider-v1.2-20261016" }
 memory_bytes = { answer = "no_verb", confidence = 0.9964266791283812, model = "perplexity/pplx-decider-v1.2-20261016" }
+memory_capabilities = { answer = "no_verb", confidence = 0.9616517926207508, model = "perplexity/pplx-decider-v1.2-20261016" }
+memory_capabilities_mut = { answer = "no_verb", confidence = 0.8856757311936657, model = "perplexity/pplx-decider-v1.2-20261016" }
 memory_drop = { answer = "later_word", confidence = 0.5744869973622831, model = "perplexity/pplx-decider-v1.2-20261016" }
 memory_duplicate = { answer = "later_word", confidence = 0.7461695267000407, model = "perplexity/pplx-decider-v1.2-20261016" }
 memory_fault = { answer = "no_verb", confidence = 0.923825962986914, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -29317,6 +29348,8 @@ save_passed = { answer = "first_word", confidence = 0.8290256717061044, model = 
 save_passed_in_only = { answer = "first_word", confidence = 0.9657479205371304, model = "perplexity/pplx-decider-v1.2-20261016" }
 save_registers = { answer = "first_word", confidence = 0.9975299491251798, model = "perplexity/pplx-decider-v1.2-20261016" }
 save_vectors = { answer = "first_word", confidence = 0.9985741289873034, model = "perplexity/pplx-decider-v1.2-20261016" }
+saved_processor_state = { answer = "first_word", confidence = 0.6503575924036153, model = "perplexity/pplx-decider-v1.2-20261016" }
+saved_processor_state_mut = { answer = "first_word", confidence = 0.40995014200180785, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 saved_slot = { answer = "first_word", confidence = 0.8176835974717268, model = "perplexity/pplx-decider-v1.2-20261016" }
 saved_synchronize_is_taken_once = { answer = "first_word", confidence = 0.3275541365949945, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 saver = { answer = "no_verb", confidence = 0.6026733731354978, model = "perplexity/pplx-decider-v1.2-20261016" }
