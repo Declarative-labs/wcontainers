@@ -6,7 +6,7 @@ use wcontainers_kernel_core::execution::{Access, Interrupter, Stop};
 use wcontainers_kernel_core::memory::MemoryCapabilityTable;
 use wcontainers_memory_shard::{MemoryPermissions, MemoryShard};
 
-use crate::disjoint_memory::{DisjointMemory, contains_address};
+use crate::disjoint_memory::DisjointMemory;
 
 verus! {
 
@@ -25,7 +25,7 @@ pub open spec fn permits<Shard: MemoryShard>(
     access: Access,
 ) -> bool {
     exists|start: u64| #[trigger]
-        shards.contains_key(start) && contains_address(shards, start, address) && allows(
+        shards.contains_key(start) && crate::disjoint_memory::contains_address(shards, start, address) && allows(
             shards.index(start).spec_permissions(),
             access,
         )

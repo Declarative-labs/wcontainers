@@ -15,13 +15,12 @@ wcontainers-kernel-core = { path = "../.." }
 wcontainers-capability-table = { path = "../../../capability-table" }
 wcontainers-memory-shard = { path = "../../../memory-shard" }
 wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
-wcontainers-executor = { path = "../../../executor" }
-wcontainers-abi.workspace = true
-spin = { version = "0.10.1", default-features = false, features = ["mutex", "spin_mutex"] }
 vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 wcontainers-kernel-core-conformance = { path = "../../conformance" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 
 [package.metadata.verus]
 verify = true

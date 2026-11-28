@@ -6,7 +6,6 @@ extern crate alloc;
 
 pub mod byte_code;
 pub mod disjoint_memory;
-pub mod executor;
 pub mod executor_boundary;
 
 use core::marker::PhantomData;

@@ -6,7 +6,7 @@ use core::marker::PhantomData;
 use vstd::prelude::*;
 use wcontainers_capability_table::{CapabilityConfig, CapabilityTable, CreateError, DuplicateError};
 use wcontainers_kernel_core::memory::{
-    MemoryCapabilityTable, MemoryError, SetPermissionsError, SplitError, shards_are_disjoint,
+    MemoryCapabilityTable, MemoryError, SetPermissionsError, SplitError,
 };
 use wcontainers_memory_shard::{MemoryPermissions, MemoryShard, MemoryShardConfig};
 
@@ -135,14 +135,14 @@ proof fn lemma_insert_keeps_apart<Shard: MemoryShard>(
     start: u64,
 )
     requires
-        shards_are_disjoint(before),
+        wcontainers_kernel_core::memory::shards_are_disjoint(before),
         fit_in_address_space(before),
         !before.contains_key(start),
         after == before.insert(start, after.index(start)),
         misses_every_shard(before, start, after.index(start).spec_len()),
         start + after.index(start).spec_len() <= u64::MAX,
     ensures
-        shards_are_disjoint(after),
+        wcontainers_kernel_core::memory::shards_are_disjoint(after),
         fit_in_address_space(after),
 {
     assert forall|first: u64, second: u64|
@@ -175,12 +175,12 @@ proof fn lemma_split_keeps_apart<Shard: MemoryShard>(
     offset: u64,
 )
     requires
-        shards_are_disjoint(before),
+        wcontainers_kernel_core::memory::shards_are_disjoint(before),
         fit_in_address_space(before),
         follows_split(before, after, address, offset, Ok(())),
     ensures
         !before.contains_key((address + offset) as u64),
-        shards_are_disjoint(after),
+        wcontainers_kernel_core::memory::shards_are_disjoint(after),
         fit_in_address_space(after),
         forall|start: u64| #[trigger]
             after.contains_key(start) ==> before.contains_key(start) || start == (address
@@ -242,7 +242,7 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> Parts<Shard, Table
     spec fn is_consistent(&self) -> bool {
         &&& forall|start: u64| #[trigger]
             self.table.state().contains_key(start) ==> self.starts@.contains(start)
-        &&& shards_are_disjoint(self.table.state())
+        &&& wcontainers_kernel_core::memory::shards_are_disjoint(self.table.state())
         &&& fit_in_address_space(self.table.state())
     }
 
@@ -253,7 +253,7 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> Parts<Shard, Table
         ensures
             missed == misses_every_shard(self.table.state(), start, length),
     {
-        let mut index: usize = 0;
+        let mut index = usize::MIN;
         while index < self.starts.len()
             invariant
                 index <= self.starts.len(),
@@ -308,7 +308,7 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> Parts<Shard, Table
                     ),
             },
     {
-        let mut index: usize = 0;
+        let mut index = usize::MIN;
         while index < self.starts.len()
             invariant
                 index <= self.starts.len(),
@@ -352,7 +352,7 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> Parts<Shard, Table
                 final(self).table.state().contains_key(start) && start != removed ==> final(self).starts@.contains(start),
     {
         let mut kept: Vec<u64> = Vec::new();
-        let mut index: usize = 0;
+        let mut index = usize::MIN;
         while index < self.starts.len()
             invariant
                 index <= self.starts.len(),
@@ -652,7 +652,7 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> DisjointMemory<Sha
 
     pub proof fn lemma_shards_are_disjoint(memory: Self)
         ensures
-            shards_are_disjoint(memory.state()),
+            wcontainers_kernel_core::memory::shards_are_disjoint(memory.state()),
             fit_in_address_space(memory.state()),
     {
     }
@@ -710,7 +710,7 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> CapabilityTable<
 > for DisjointMemory<Shard, Table> {
     closed spec fn state(&self) -> Map<u64, Shard> {
         match self.parts {
-            Some(parts) => if shards_are_disjoint(parts.table.state()) && fit_in_address_space(
+            Some(parts) => if wcontainers_kernel_core::memory::shards_are_disjoint(parts.table.state()) && fit_in_address_space(
                 parts.table.state(),
             ) {
                 parts.table.state()
