@@ -22,7 +22,8 @@
 //! holds no words in form I (never mapped), and after a step into it the executor enters some piece at its first word
 //! with a machine the entry rule allows ([`reenters`]: from what the run handed on; which piece, and the registers but
 //! x28, x24 and the stack pointer, are free). That is `InProcessThread::enter` and `run_instructions` (READ, not
-//! proven: the executor's Rust). A floor call ends the run, and a run the floor resumes in the middle of a piece is not
+//! proven: the executor's Rust). What the words can show of it is proven ([`whole_run_leaves_the_slot_tables_alone`]):
+//! no step of a whole run touches a slot table or is a system call, so only the executor maps one. A floor call ends the run, and a run the floor resumes in the middle of a piece is not
 //! covered. (4) The pieces: only described pieces are covered.
 //!
 //! WHAT IS DESCRIBED (measured by `tests/compose.rs` over 8 drawn words of each of the 4,429 forms, look-ahead none;
@@ -84,7 +85,7 @@ pub open spec fn somewhere(blocks: Seq<Block>, a: Allowed, m: Machine) -> bool {
 }
 
 /// An invariant that every machine the chain's entry rule allows meets and every step keeps holds after any steps.
-proof fn lemma_chain_holds(
+pub proof fn lemma_chain_holds(
     step: spec_fn(Machine, u32) -> Stepped,
     instructions: Seq<u32>,
     a: Allowed,
@@ -183,7 +184,7 @@ pub proof fn lemma_chained_confines(step: spec_fn(Machine, u32) -> Stepped, inst
 }
 
 /// The run of a whole program so far is a run of its present piece from a machine some run handed on.
-proof fn lemma_whole_segment(
+pub proof fn lemma_whole_segment(
     step: spec_fn(Machine, u32) -> Stepped,
     pieces: Seq<Piece>,
     reenter: spec_fn(u64, Machine) -> (int, Machine),
@@ -203,6 +204,7 @@ proof fn lemma_whole_segment(
             &&& 0 <= w.0 < pieces.len()
             &&& handed(pieces[w.0].a, r.0)
             &&& w.1 == run(step, pieces[w.0].instructions, pieces[w.0].a, r.0, r.1)
+            &&& since_look(step, pieces, reenter, k, start, n) == r.1
         }),
     decreases n,
 {
@@ -268,6 +270,54 @@ pub proof fn whole_run_is_confined(
     let w = whole_run(step, pieces, reenter, k, start, n);
     assert(is_chained(step, pieces[w.0].instructions, pieces[w.0].a));
     assert(w.1 == run(step, pieces[w.0].instructions, pieces[w.0].a, s0, n0));
+}
+
+/// Where every slot table of the process lies: from slot 0's to past the last window's (bases below 2^44, placed).
+pub open spec fn in_slot_tables(first: int, bytes: nat) -> bool {
+    PROCESS_SLOTS < first + bytes && first < 2 * PROCESS_SLOTS + SLOT_TABLE_BYTES
+}
+
+/// The frame lies apart from every slot table (the executor's: its frames are in the process's own memory).
+pub open spec fn frame_apart(a: Allowed) -> bool {
+    a.frame + FRAME_BYTES <= PROCESS_SLOTS || a.frame >= 2 * PROCESS_SLOTS + SLOT_TABLE_BYTES
+}
+
+/// WHAT THE RE-ENTRY TAKES ON TRUST, AS FAR AS THE WORDS GO: no step of a whole run touches a byte of any slot table
+/// or is a system call, so nothing the run does maps or fills one. That the slot table is never mapped is then the
+/// executor's alone (`reserve_slot`, and no `map_instructions` there), as is what it does after the fault.
+pub proof fn whole_run_leaves_the_slot_tables_alone(
+    step: spec_fn(Machine, u32) -> Stepped,
+    pieces: Seq<Piece>,
+    reenter: spec_fn(u64, Machine) -> (int, Machine),
+    k: int,
+    start: Machine,
+    n: nat,
+)
+    requires
+        0 <= k < pieces.len(),
+        one_window(pieces, pieces[k].a),
+        forall|i: int| 0 <= i < pieces.len() ==> #[trigger] is_chained(step, pieces[i].instructions, pieces[i].a),
+        forall|i: int| 0 <= i < pieces.len() ==> placed(#[trigger] pieces[i].a, pieces[i].instructions) && frame_apart(pieces[i].a),
+        reenters(pieces, pieces[k].a, reenter),
+        handed(pieces[k].a, start),
+    ensures
+        ({
+            let w = whole_run(step, pieces, reenter, k, start, n);
+            let p = pieces[w.0];
+            let s = step(w.1, word_at(p.instructions, p.a, w.1.pc));
+            runs(p.a, w.1) ==> !s.system_call && forall|q: int| 0 <= q < s.accesses.len() ==> !in_slot_tables(#[trigger] s.accesses[q].0, s.accesses[q].1)
+        }),
+{
+    whole_run_is_confined(step, pieces, reenter, k, start, n);
+    let w = whole_run(step, pieces, reenter, k, start, n);
+    let p = pieces[w.0];
+    assert(placed(p.a, p.instructions) && frame_apart(p.a));
+    let s = step(w.1, word_at(p.instructions, p.a, w.1.pc));
+    if runs(p.a, w.1) {
+        assert forall|q: int| 0 <= q < s.accesses.len() implies !in_slot_tables(#[trigger] s.accesses[q].0, s.accesses[q].1) by {
+            assert(touches_allowed(p.a, s.accesses[q].0, s.accesses[q].1));
+        }
+    }
 }
 
 /// The part's fact without the stack pointer: the frame in x28, the window's base in `bb`, a window address in `cut`
@@ -1833,7 +1883,7 @@ proof fn lemma_stack_at(
 }
 
 /// A table jump's step at word `o` of its link words keeps x23 and goes on; at `br x23` it hands on.
-proof fn lemma_table_link(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, j: int, link: bool, i: int, m: Machine)
+pub proof fn lemma_table_link(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, j: int, link: bool, i: int, m: Machine)
     requires
         link && j + 3 <= i < j + 6,
         m.x.len() == 31,
@@ -2136,7 +2186,7 @@ proof fn lemma_block(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u
     }
 }
 
-proof fn lemma_shapes(instructions: Seq<u32>, a: Allowed, all: Seq<Desc>, k: int, i: int)
+pub proof fn lemma_shapes(instructions: Seq<u32>, a: Allowed, all: Seq<Desc>, k: int, i: int)
     requires
         shapes_ok(instructions, a, all, k),
         0 <= i < k <= all.len(),
@@ -2157,6 +2207,23 @@ pub proof fn described_is_chained(step: spec_fn(Machine, u32) -> Stepped, instru
         all_meant(step, instructions, a, descs),
     ensures
         is_chained(step, instructions, a),
+{
+    lemma_described_blocks(step, instructions, a, descs);
+    lemma_blocks_chain(step, instructions, a, blocks_of(a, descs));
+}
+
+/// A described piece's blocks: the first is entered at its first word with what a run hands on, and each holds alone.
+pub proof fn lemma_described_blocks(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, a: Allowed, descs: Seq<Desc>)
+    requires
+        placed(a, instructions),
+        described(instructions, a, descs),
+        all_meant(step, instructions, a, descs),
+    ensures
+        a.length == instructions.len() * 4,
+        instructions.len() > 0,
+        blocks_of(a, descs).len() > 0 && blocks_of(a, descs)[0].entry == 0,
+        forall|m: Machine| handed(a, m) ==> #[trigger] (blocks_of(a, descs)[0].needs)(m),
+        forall|b: int| 0 <= b < blocks_of(a, descs).len() ==> #[trigger] block_holds(step, instructions, a, blocks_of(a, descs), b),
 {
     let blocks = blocks_of(a, descs);
     assert forall|b: int| 0 <= b < blocks.len() implies #[trigger] block_holds(step, instructions, a, blocks, b) by {
@@ -2185,7 +2252,6 @@ pub proof fn described_is_chained(step: spec_fn(Machine, u32) -> Stepped, instru
             _ => {},
         }
     }
-    lemma_blocks_chain(step, instructions, a, blocks);
 }
 
 /// THE COMPOSITION: every described piece whose words mean what its description says is confined.

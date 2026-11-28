@@ -749,13 +749,13 @@ fn describe_with(
             next(Desc::DisplacedTableJump { j, n, link }, &[]);
             continue;
         }
-        // An access through the cut moved by a constant.
+        // An access through the cut moved by a constant. compose.rs's `cut != frame_register()` needs no test here: no
+        // block hands x28 on as the cut (Cut refuses it, and every other block hands on 31, the cut it was given or a
+        // `from` that `needs_cut` allows only as 31 or the cut). The word is `shift_word`'s, so it adds to the cut itself.
         if cut != bb
-            && cut != 28
             && let Step::Plain(writes) = decode(word)
-            && let [(Reg::X(r), Made::AddConstant(Source::Reg(Reg::X(from)), k))] = writes.as_slice()
+            && let [(Reg::X(r), Made::AddConstant(Source::Reg(Reg::X(_)), k))] = writes.as_slice()
             && i64::from(*r) == cut
-            && i64::from(*from) == cut
             && word == shift_word(cut, *k)
             && let Some(Step::Access(access)) = at(j + 1).map(decode)
             && access.base == Base::Reg(Source::Reg(Reg::X(cut as u8)))
@@ -994,9 +994,9 @@ fn describe_with(
                 };
                 match (access.base, offset, access.moved) {
                     (Base::Reg(Source::Reg(Reg::X(b))), Offset::Constant(off, high), moved)
+                        // As for the moved cut above, no block hands x28 on as the cut.
                         if i64::from(b) == cut
                             && cut != bb
-                            && cut != 28
                             && off == high
                             && off >= -0x1_0000
                             && bytes >= 1
@@ -3101,4 +3101,278 @@ fn the_composition_covers_this_much_of_the_instruction_list() {
         measured,
         [(4429, 4429, 35432, 35432), (4429, 4429, 35432, 35432)]
     );
+}
+
+// ---- The interrupt bound (statement/interrupt.rs).
+
+const INTERRUPT: &str = include_str!("../statement/interrupt.rs");
+
+/// interrupt.rs `goes_to`: each word a block owns, with the words it can go on to inside the piece.
+fn goes(d: &Desc) -> Vec<(i64, Vec<i64>)> {
+    let line = |j: i64, n: i64, last_leaves: bool| {
+        (j..j + n)
+            .map(|i| {
+                let leaves = last_leaves && i == j + n - 1;
+                (i, if leaves { vec![] } else { vec![i + 1] })
+            })
+            .collect::<Vec<_>>()
+    };
+    match *d {
+        Desc::Either { j, by, .. } => vec![(j, vec![j + 1, j + by / 4])],
+        Desc::Branch { j, by, .. } => vec![(j, vec![j + by / 4])],
+        Desc::Stop { j } => vec![(j, vec![])],
+        Desc::Mark { j, .. } => line(j, 3, true),
+        Desc::Probes { j, store, .. } => line(j, if store { 5 } else { 4 }, false),
+        Desc::Exit { j, .. } => line(j, 4, true),
+        Desc::Call { j, .. } => line(j, 5, true),
+        Desc::StackStep { j, .. } | Desc::StackVia { j, .. } | Desc::ShiftThrough { j, .. } => {
+            line(j, 2, false)
+        }
+        Desc::StackProbes { j, store, .. } => line(j, if store { 4 } else { 3 }, false),
+        Desc::StackAt { j, .. } => line(j, 3, false),
+        Desc::TableJump { j, link } | Desc::DisplacedTableJump { j, link, .. } => {
+            line(j, 4 + if link { 3 } else { 0 }, true)
+        }
+        Desc::Register { j, .. }
+        | Desc::Cut { j, .. }
+        | Desc::Through { j, .. }
+        | Desc::Own { j, .. }
+        | Desc::Frame { j, .. }
+        | Desc::StackCut { j, .. }
+        | Desc::StackMove { j, .. }
+        | Desc::StackAccess { j, .. } => line(j, 1, false),
+    }
+}
+
+/// interrupt.rs `ranked`: a rank below `len` for each word that every move inside the piece raises (the order in
+/// which a depth-first walk leaves the words, reversed); else a word of a loop.
+fn rank(descs: &[Desc], len: usize) -> Result<Vec<i64>, usize> {
+    let mut next: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); len];
+    for d in descs {
+        for (i, ts) in goes(d) {
+            for t in ts
+                .into_iter()
+                .filter_map(|t| usize::try_from(t).ok().filter(|&t| t < len))
+            {
+                next[usize::try_from(i).expect("a block's word is in the piece")].insert(t);
+            }
+        }
+    }
+    // 0: not seen, 1: on the walk, 2: left.
+    let mut state = vec![0u8; len];
+    let mut left = Vec::with_capacity(len);
+    for root in 0..len {
+        if state[root] != 0 {
+            continue;
+        }
+        let mut walk = vec![(root, next[root].iter().copied().collect::<Vec<_>>())];
+        state[root] = 1;
+        while let Some((i, rest)) = walk.last_mut() {
+            match rest.pop() {
+                Some(t) if state[t] == 1 => return Err(t),
+                Some(t) if state[t] == 0 => {
+                    state[t] = 1;
+                    walk.push((t, next[t].iter().copied().collect()));
+                }
+                Some(_) => {}
+                None => {
+                    state[*i] = 2;
+                    left.push(*i);
+                    walk.pop();
+                }
+            }
+        }
+    }
+    let mut ranks = vec![0i64; len];
+    for (r, &i) in left.iter().rev().enumerate() {
+        ranks[i] = r as i64;
+    }
+    Ok(ranks)
+}
+
+/// The most words a run of the piece makes from its first: the longest path of moves from word 0.
+fn longest(descs: &[Desc], len: usize, ranks: &[i64]) -> usize {
+    let mut order: Vec<usize> = (0..len).collect();
+    order.sort_by_key(|&i| ranks[i]);
+    let mut far = vec![0usize; len];
+    far[0] = 1;
+    let moves: Vec<(i64, Vec<i64>)> = descs.iter().flat_map(goes).collect();
+    for &i in &order {
+        if far[i] == 0 {
+            continue;
+        }
+        for (_, ts) in moves.iter().filter(|(from, _)| *from == i as i64) {
+            for &t in ts.iter().filter(|&&t| (0..len as i64).contains(&t)) {
+                far[t as usize] = far[t as usize].max(far[i] + 1);
+            }
+        }
+    }
+    far.into_iter().max().unwrap_or(0)
+}
+
+/// A pin line of interrupt.rs.
+fn rank_pin(name: &str, descs: &[Desc], ranks: &[i64]) -> String {
+    let descs: Vec<String> = descs.iter().map(Desc::verus).collect();
+    let ranks: Vec<String> = ranks.iter().map(i64::to_string).collect();
+    format!(
+        "proof fn pin_ranked_{name}() {{ assert(ranked(seq![{}], seq![{}], {})) by (compute); }}",
+        descs.join(", "),
+        ranks.join(", "),
+        ranks.len()
+    )
+}
+
+/// Hand-written moves: a line, a branch forward, a branch back to the word before (a loop), a branch to itself, and
+/// an out-of-line path that comes back to the main line (no loop).
+#[test]
+fn a_rank_exists_exactly_where_the_moves_make_no_loop() {
+    let reg = |j: i64| Desc::Register {
+        j,
+        rd: 0,
+        sp: false,
+        bb: 24,
+        cut: 31,
+    };
+    let branch = |j: i64, by: i64| Desc::Branch {
+        j,
+        by,
+        bb: 24,
+        cut: 31,
+    };
+    let either = |j: i64, by: i64| Desc::Either {
+        j,
+        by,
+        bb: 24,
+        cut: 31,
+    };
+    let stop = |j: i64| Desc::Stop { j };
+    // The rank found raises every move (interrupt.rs `rank_step`) and is below the length (`ranks_below`).
+    let raises = |descs: &[Desc], len: usize| {
+        let ranks = rank(descs, len).expect("no loop");
+        let below = ranks.iter().all(|&r| (0..len as i64).contains(&r));
+        let up = descs.iter().flat_map(goes).all(|(i, ts)| {
+            ts.iter()
+                .filter(|&&t| (0..len as i64).contains(&t))
+                .all(|&t| ranks[i as usize] < ranks[t as usize])
+        });
+        below && up
+    };
+    assert!(raises(&[reg(0), reg(1), stop(2)], 3));
+    assert!(raises(&[branch(0, 8), stop(1), stop(2)], 3));
+    assert!(raises(&[either(0, 8), reg(1), stop(2)], 3));
+    assert_eq!(rank(&[reg(0), branch(1, -4), stop(2)], 3), Err(0));
+    assert_eq!(rank(&[branch(0, 0)], 1), Err(0));
+    assert_eq!(rank(&[either(0, 0), stop(1)], 2), Err(0));
+    // 0 goes out of line to 2, which comes back to 1.
+    assert_eq!(
+        rank(&[branch(0, 8), stop(1), branch(2, -4)], 3),
+        Ok(vec![0, 2, 1])
+    );
+    // A move out of the piece is no move inside it.
+    assert_eq!(rank(&[branch(0, 400)], 1), Ok(vec![0]));
+    // Nor is a move to the word just past the piece.
+    assert_eq!(rank(&[reg(0)], 1), Ok(vec![0]));
+    assert_eq!(
+        longest(&[branch(0, 8), stop(1), branch(2, -4)], 3, &[0, 2, 1]),
+        3
+    );
+    assert_eq!(longest(&[reg(0), reg(1), stop(2)], 3, &[0, 1, 2]), 3);
+    // The words a multi-word block owns go on to the next, but the last of an exit, a mark and a floor call leaves.
+    let exit = Desc::Exit { j: 0, guest: 0 };
+    assert_eq!(
+        goes(&exit),
+        vec![(0, vec![1]), (1, vec![2]), (2, vec![3]), (3, vec![])]
+    );
+    let call = Desc::Call { j: 1, code: 0 };
+    assert_eq!(goes(&call).last(), Some(&(5, vec![])));
+    let table = Desc::TableJump { j: 0, link: true };
+    assert_eq!(goes(&table).len(), 7);
+    assert_eq!(goes(&table).last(), Some(&(6, vec![])));
+}
+
+/// The guest branches to themselves are loops inside one piece even with no look-ahead: the in-process executor's
+/// pieces have no look inside, so between two of its looks such a piece runs its one guest instruction without end.
+#[test]
+fn a_branch_to_itself_is_the_only_loop_of_look_ahead_none() {
+    for (name, code, looped) in [
+        ("b .", vec![0x1400_0000u32], true),
+        ("cbnz x0, .", vec![0xb500_0000], true),
+        ("tbz x0, #0, .", vec![0x3600_0000], true),
+        ("b.ne .", vec![0x5400_0001], true),
+        ("b .+4", vec![0x1400_0001], false),
+        (
+            "subs x0, x0, #1; b.ne .-4",
+            vec![0xf100_0400, 0x54ff_ffe1],
+            false,
+        ),
+        ("ret", vec![0xd65f_03c0], false),
+        ("svc #0", vec![0xd400_0001], false),
+    ] {
+        for displaced in [false, true] {
+            let words = translated(&code, LookAhead::None, displaced).expect(name);
+            let descs = describe(&words, displaced).expect(name);
+            assert_eq!(rank(&descs, words.len()).is_err(), looped, "{name}");
+        }
+    }
+    // With look-ahead, the countdown's loop is inside one piece too.
+    let words =
+        translated(&[0xf100_0400, 0x54ff_ffe1], LookAhead::Bounded(16), false).expect("countdown");
+    let descs = describe(&words, false).expect("countdown");
+    assert!(rank(&descs, words.len()).is_err());
+}
+
+#[test]
+fn every_rank_pin_of_the_interrupt_bound_is_what_the_translator_emits_ranked() {
+    let lines: Vec<&str> = INTERRUPT
+        .lines()
+        .filter(|l| l.starts_with("proof fn pin_ranked_"))
+        .collect();
+    let made: Vec<String> = pinned()
+        .iter()
+        .filter_map(|(name, code, look_ahead, displaced)| {
+            let words = translated(code, *look_ahead, *displaced)?;
+            let descs = describe(&words, *displaced).ok()?;
+            let ranks = rank(&descs, words.len()).ok()?;
+            Some(rank_pin(name, &descs, &ranks))
+        })
+        .collect();
+    if lines != made {
+        for line in &made {
+            println!("{line}");
+        }
+    }
+    assert_eq!(
+        lines, made,
+        "each rank pin is the rank of a pin of compose.rs"
+    );
+}
+
+#[test]
+fn no_piece_of_the_instruction_list_holds_a_loop() {
+    let all = forms::all();
+    let mut rng = fastrand::Rng::with_seed(0x2545_f491_4f6c_dd1d);
+    // Per way: pieces, ranked, the most words a run makes from a piece's first, the most words of a piece.
+    let mut counts = [(0u64, 0u64, 0usize, 0usize); 2];
+    for form in all {
+        for (displaced, count) in [false, true].into_iter().zip(counts.iter_mut()) {
+            for _ in 0..8 {
+                let word = form.word(rng.u32(..));
+                let Some(words) = translated(&[word], LookAhead::None, displaced) else {
+                    continue;
+                };
+                let Ok(descs) = describe(&words, displaced) else {
+                    continue;
+                };
+                count.0 += 1;
+                if let Ok(ranks) = rank(&descs, words.len()) {
+                    count.1 += 1;
+                    count.2 = count.2.max(longest(&descs, words.len(), &ranks));
+                    count.3 = count.3.max(words.len());
+                }
+            }
+        }
+    }
+    println!("ranked (pieces, ranked, longest run, most words): {counts:?}");
+    // Measured 2026-11-28 (eighth run), the same draws as the coverage test.
+    assert_eq!(counts, [(35432, 35432, 47, 62), (35432, 35432, 44, 59)]);
 }

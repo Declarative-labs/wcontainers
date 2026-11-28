@@ -14,7 +14,8 @@
 //! confined, whatever its shape; the other modules prove whole pieces one shape at a time.
 //! [`compose::described_is_chained`] adds that every exit of such a piece hands on what the next piece's entry needs
 //! ([`is_chained`]), and [`compose::whole_run_is_confined`] proves, by induction over the steps, every step of a
-//! [`whole_run`] of such pieces confined; what it still takes on trust is listed there.
+//! [`whole_run`] of such pieces confined; what it still takes on trust is listed there. [`interrupt`] proves the
+//! interrupt bound ([`looks_within`]) for described pieces that hold no loop.
 
 #![no_std]
 
@@ -199,13 +200,12 @@ pub struct Piece {
     pub a: Allowed,
 }
 
-/// The pieces share one window, frame and way, and lie below the slot tables. (Each step is confined in its own
-/// piece's `Allowed`, reservation below the window included, so the pieces need not share one.)
+/// The pieces share one window, frame and way. (Each step is confined in its own piece's `Allowed`, reservation below
+/// the window included, so the pieces need not share one; where a piece lies is its own description's `placed`.)
 pub open spec fn one_window(pieces: Seq<Piece>, a: Allowed) -> bool {
     forall|i: int| 0 <= i < pieces.len() ==> {
         let b = #[trigger] pieces[i].a;
-        &&& b.base == a.base && b.frame == a.frame && b.displaced == a.displaced
-        &&& 0 <= b.code <= PROCESS_SLOTS
+        b.base == a.base && b.frame == a.frame && b.displaced == a.displaced
     }
 }
 
@@ -251,6 +251,67 @@ pub open spec fn whole_run(
     }
 }
 
+/// THE LOOK at the stop flag: the executor's, before it enters a piece (in-process execution.rs:478, its
+/// `interruption.requested.swap` before `enter` at :501). In a whole run that is its start and each re-entry after a
+/// step into the slot table; the translated code itself looks at nothing (ARM64 writes no stop check: guest-cpu
+/// native.rs:125). The steps of a whole run since its last look, every step counted once it is made.
+pub open spec fn since_look(
+    step: spec_fn(Machine, u32) -> Stepped,
+    pieces: Seq<Piece>,
+    reenter: spec_fn(u64, Machine) -> (int, Machine),
+    k: int,
+    m: Machine,
+    n: nat,
+) -> nat
+    decreases n,
+{
+    if n == 0 {
+        0
+    } else {
+        let before = whole_run(step, pieces, reenter, k, m, (n - 1) as nat);
+        let p = pieces[before.0];
+        let after = step(before.1, word_at(p.instructions, p.a, before.1.pc)).after;
+        if runs(p.a, before.1) && !after.ended && in_table(p.a, after.pc) {
+            0
+        } else {
+            since_look(step, pieces, reenter, k, m, (n - 1) as nat) + 1
+        }
+    }
+}
+
+/// THE INTERRUPT BOUND, in the steps of the translated code: in a whole run, a step is made only within `bound` steps
+/// of the run's last look. The bound in guest instructions follows from it piece by piece: a piece that runs no word
+/// twice between two looks ([`runs_each_word_once`]) runs each of its guest instructions at most once, so between two
+/// looks at most as many guest instructions run as one piece holds (look-ahead none, the in-process executor's: one).
+pub open spec fn looks_within(
+    step: spec_fn(Machine, u32) -> Stepped,
+    pieces: Seq<Piece>,
+    reenter: spec_fn(u64, Machine) -> (int, Machine),
+    k: int,
+    start: Machine,
+    bound: nat,
+) -> bool {
+    forall|n: nat| #![trigger whole_run(step, pieces, reenter, k, start, n)] {
+        let w = whole_run(step, pieces, reenter, k, start, n);
+        runs(pieces[w.0].a, w.1) ==> since_look(step, pieces, reenter, k, start, n) < bound
+    }
+}
+
+/// A piece's run, from any machine a run hands on, goes on for fewer than `bound` steps.
+pub open spec fn leaves_within(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, a: Allowed, bound: nat) -> bool {
+    forall|start: Machine, n: nat|
+        #![trigger run(step, instructions, a, start, n)]
+        handed(a, start) && runs(a, run(step, instructions, a, start, n)) ==> n < bound
+}
+
+/// A piece's run, from any machine a run hands on, is at no word twice.
+pub open spec fn runs_each_word_once(step: spec_fn(Machine, u32) -> Stepped, instructions: Seq<u32>, a: Allowed) -> bool {
+    forall|start: Machine, n1: nat, n2: nat|
+        #![trigger run(step, instructions, a, start, n1), run(step, instructions, a, start, n2)]
+        handed(a, start) && n1 < n2 && runs(a, run(step, instructions, a, start, n2))
+            ==> run(step, instructions, a, start, n1).pc != run(step, instructions, a, start, n2).pc
+}
+
 } // verus!
 
 #[cfg(verus_keep_ghost)]
@@ -279,5 +340,7 @@ mod withheld_access;
 mod look_ahead;
 #[cfg(verus_keep_ghost)]
 mod compose;
+#[cfg(verus_keep_ghost)]
+mod interrupt;
 #[cfg(verus_keep_ghost)]
 mod plants;
