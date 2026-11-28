@@ -11,11 +11,19 @@ mod foreign_implementation {
     mod vector;
 }
 
+use vstd::prelude::*;
+
+verus! {
+
 /// A sink of bytes.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ByteSink {
     type Error;
 
     /// Writes bytes from the start of the buffer, once, and returns the number of bytes written.
-    fn write(&mut self, bytes: &[u8]) -> Result<usize, Self::Error>;
+    fn write(&mut self, bytes: &[u8]) -> (written: Result<usize, Self::Error>)
+        ensures
+            written matches Ok(count) ==> count <= bytes@.len(),
+    ;
+}
+
 }
