@@ -55,6 +55,20 @@
                 } : ${pkgs.rust-bin.stable."1.100.0".minimal}/lib
             done
           '';
+          # Verus's formatter, which `cargo reviewable format` runs on the inside of every `verus! { }` block.
+          # Built as `cargo install verusfmt --locked` builds it, without the self-updater (`--update`).
+          verusfmt = pkgs.rustPlatform.buildRustPackage rec {
+            pname = "verusfmt";
+            version = "0.7.4";
+            src = pkgs.fetchCrate {
+              inherit pname version;
+              hash = "sha256-Exq6giEM4ixc9+mUZ32EaFR2/sAnyYcqswkN+nj7gRI=";
+            };
+            cargoHash = "sha256-10NzNvo2exwyx0SeO6wjRT504WE92jHM7vYBoJuUK0U=";
+            buildNoDefaultFeatures = true;
+            # The published crate leaves out the tests and their helper crate.
+            doCheck = false;
+          };
         in
         {
           _module.args.pkgs = import inputs.nixpkgs {
@@ -82,6 +96,7 @@
                 pkgs.creduce
                 # proving code correct
                 verus
+                verusfmt
               ];
               # driving the installed Chrome from Node, for the browser runner
               WC_PLAYWRIGHT_CORE = "${pkgs.playwright-driver}";

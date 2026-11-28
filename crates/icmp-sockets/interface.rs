@@ -18,6 +18,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
     reason = "each method is one call on the host's socket and fails only the ways that call does"
 )]
 /// Sockets for [ICMP](https://man7.org/linux/man-pages/man7/icmp.7.html) echo requests and replies.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait IcmpSockets:
     for<'a> Configurable<Self::Socket, IpSocketSetting<'a>> + Readiness<Self::Socket>
 {

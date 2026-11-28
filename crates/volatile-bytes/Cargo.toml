@@ -7,8 +7,12 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
 wcontainers-byte-sink = { path = "../byte-sink" }
 wcontainers-byte-source = { path = "../byte-source" }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

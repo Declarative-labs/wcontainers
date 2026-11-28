@@ -23,6 +23,7 @@ use wcontainers_tcp_sockets::TcpSockets;
 use wcontainers_udp_sockets::UdpSockets;
 use wcontainers_volatile_bytes::VolatileBytes;
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait System:
     ProcessTracer
     + ProcessorInputs
@@ -44,6 +45,7 @@ pub trait System:
 }
 
 /// The observer and controller of a process's execution.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ProcessTracer {
     type ProcessState: Clone + Send;
     type Kernel: Kernel;
@@ -129,6 +131,7 @@ pub trait ProcessTracer {
 }
 
 /// The answers to what a program reads from its processor directly (without a [system call](https://man7.org/linux/man-pages/man2/syscalls.2.html)).
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ProcessorInputs: ProcessTracer {
     fn choose_processor_features<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
@@ -149,6 +152,7 @@ pub trait ProcessorInputs: ProcessTracer {
     ) -> u64;
 }
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait MachineDescription: ProcessTracer {
     /// Returns the number of [processors the process is told are online](https://man7.org/linux/man-pages/man3/sysconf.3.html#:~:text=The%20number%20of%20processors%20currently%20online).
     fn report_online_processors<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
@@ -164,6 +168,7 @@ pub trait MachineDescription: ProcessTracer {
     -> u64;
 }
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait TaskIdAllocator {
     fn allocate_task_id(&self, previous: TaskId) -> TaskId {
         let next = previous.0 + 1;
@@ -187,6 +192,7 @@ pub const FIRST_TASK_ID_AFTER_WRAPPING: u32 = 300;
     reason = "both directions of one stream fail the same ways and the kernel tells only would-block from hung up"
 )]
 /// A transport of byte streams to and from endpoints.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait StreamTransport: Readiness<Self::Endpoint> {
     type Endpoint: Ord;
 
@@ -204,6 +210,7 @@ pub trait StreamTransport: Readiness<Self::Endpoint> {
 }
 
 // When a fallback implementation is used internally somewhere, this will fire.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait FallbackObserver<Fallback> {
     fn on_fallback_used(&self, which: &Fallback) {}
 }
@@ -213,6 +220,7 @@ pub trait FallbackObserver<Fallback> {
     reason = "both methods use the one connection to the server, so both fail only when there is no server or it is gone"
 )]
 /// A [FUSE](https://man7.org/linux/man-pages/man4/fuse.4.html) server.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait FuseServer {
     type Reply: Deref<Target = [u8]>;
     type Notice: Deref<Target = [u8]>;
@@ -231,6 +239,7 @@ pub trait FuseServer {
 }
 
 /// A [DNS resolver](https://man7.org/linux/man-pages/man5/resolv.conf.5.html).
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait DomainNameResolver {
     type AnswerBytes: AsRef<[u8]>;
 
