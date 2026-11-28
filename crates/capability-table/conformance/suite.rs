@@ -1,8 +1,7 @@
 //! The tests every implementation of wcontainers-capability-table runs, written against its trait alone.
 //!
-//! Each takes functions that make a table, name a number's identifier, give a config that makes its capability and one
-//! that fails, tell all that a config asks for and all that a capability is, and write and read a mark that only the
-//! same capability shares.
+//! Each takes functions that make a table, name a number's identifier, give the config of a number and one that fails,
+//! tell all that a config asks for and all that a capability is, and write and read a mark the same capability shares.
 
 #![no_std]
 
@@ -34,7 +33,7 @@ type Value<T, Identifier, Capability, Config, Look> = (
     fn(&Capability) -> u8,
 );
 
-// Returns what the config of the number asks for, with the mark, as a lookup of the capability it makes would.
+// Returns what a lookup gives of the capability the config of the number makes, carrying the mark.
 fn held<T, Identifier, Capability, Config, Look>(
     value: &Value<T, Identifier, Capability, Config, Look>,
     number: u8,
@@ -123,9 +122,9 @@ pub fn creates_on_a_free_identifier<T, Identifier, Capability, Config, Error, Lo
     let (_, name, config, _, _, _, _, _) = value;
     assert!(matches!(table.create(name(SECOND), config(SECOND)), Ok(())));
     mark(&table, &value, SECOND, SECOND);
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, SECOND, SECOND));
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a create on a taken identifier is refused, whatever its config, and keeps every capability.
@@ -146,8 +145,8 @@ pub fn refuses_to_create_on_a_taken_identifier<T, Identifier, Capability, Config
         table.create(name(FIRST), failing()),
         Err(CreateError::IdentifierTaken)
     ));
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a create whose config fails says so and keeps every capability.
@@ -165,8 +164,8 @@ pub fn changes_nothing_when_a_create_fails<T, Identifier, Capability, Config, Er
         Err(CreateError::Failed(_))
     ));
     assert_eq!(lookup(&table, &value, SECOND), None);
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a table made anew lends nothing.
@@ -195,11 +194,11 @@ pub fn gets_nothing_after_a_drop<T, Identifier, Capability, Config, Error, Look>
     let (_, name, config, _, _, _, _, _) = value;
     table.drop(&name(FIRST));
     assert_eq!(lookup(&table, &value, FIRST), None);
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
     assert!(matches!(table.create(name(FIRST), config(SECOND)), Ok(())));
     mark(&table, &value, FIRST, SECOND);
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, SECOND, SECOND));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a dropped identifier stays empty when another identifier takes a new capability.
@@ -215,8 +214,8 @@ pub fn forgets_a_dropped_identifier<T, Identifier, Capability, Config, Error, Lo
     table.drop(&name(FIRST));
     create(&mut table, &value, SECOND);
     assert_eq!(lookup(&table, &value, FIRST), None);
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, SECOND, SECOND));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that identifiers hold their own capabilities, and that dropping one leaves the others.
@@ -230,13 +229,13 @@ pub fn keeps_identifiers_apart<T, Identifier, Capability, Config, Error, Look>(
     let mut table = filled(&value);
     let (_, name, _, _, _, _, _, _) = value;
     create(&mut table, &value, SECOND);
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, SECOND, SECOND));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
     table.drop(&name(FIRST));
     assert_eq!(lookup(&table, &value, FIRST), None);
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, SECOND, SECOND));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that dropping an identifier that holds nothing keeps every capability.
@@ -251,8 +250,8 @@ pub fn drops_nothing_where_nothing_is_held<T, Identifier, Capability, Config, Er
     let (_, name, _, _, _, _, _, _) = value;
     table.drop(&name(SECOND));
     assert_eq!(lookup(&table, &value, SECOND), None);
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a duplicate within the table puts the same capability under the new identifier and keeps the rest.
@@ -269,10 +268,10 @@ pub fn duplicates_within_the_table<T, Identifier, Capability, Config, Error, Loo
         table.duplicate_within(&name(FIRST), name(SECOND)),
         Ok(())
     ));
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, FIRST, FIRST));
     mark(&table, &value, SECOND, SECOND);
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, SECOND));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, SECOND));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a duplicate within the table of an identifier holding nothing is refused, even onto a taken identifier.
@@ -300,9 +299,9 @@ pub fn refuses_to_duplicate_nothing_within_the_table<
         table.duplicate_within(&name(SECOND), name(SECOND)),
         Err(DuplicateError::NothingHeld)
     ));
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
     assert_eq!(lookup(&table, &value, SECOND), None);
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a duplicate within the table onto a taken identifier, the held one itself too, is refused and keeps all.
@@ -331,9 +330,9 @@ pub fn refuses_to_duplicate_within_onto_a_taken_identifier<
         table.duplicate_within(&name(FIRST), name(FIRST)),
         Err(DuplicateError::IdentifierTaken)
     ));
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, SECOND, SECOND));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a duplicate within the table of a held capability onto a free identifier succeeds or changes nothing.
@@ -356,15 +355,15 @@ pub fn changes_nothing_when_a_duplicate_within_fails<
     let mut table = filled(&value);
     let (_, name, _, _, _, _, _, _) = value;
     let expected = match table.duplicate_within(&name(FIRST), name(SECOND)) {
-        Ok(()) => held(&value, FIRST, FIRST),
+        Ok(()) => predict_lookup(&value, FIRST, FIRST),
         Err(DuplicateError::Failed(_)) => None,
         Err(DuplicateError::NothingHeld | DuplicateError::IdentifierTaken) => {
             panic!("a duplicate of a held capability onto a free identifier was refused")
         }
     };
     assert_eq!(lookup(&table, &value, SECOND), expected);
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a duplicate from another table puts the other's same capability under the new identifier, and keeps all.
@@ -387,13 +386,13 @@ pub fn duplicates_from_another_table<T, Identifier, Capability, Config, Error, L
         table.duplicate_from(&other, &name(FIRST), name(SECOND)),
         Ok(())
     ));
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, FIRST, FIRST));
     mark(&table, &value, SECOND, THIRD);
-    assert_eq!(lookup(&other, &value, FIRST), held(&value, FIRST, THIRD));
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, SECOND, SECOND));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&other, &value, FIRST), predict_lookup(&value, FIRST, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
     assert_eq!(lookup(&other, &value, SECOND), None);
-    assert_eq!(lookup(&other, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&other, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a duplicate from another table holding nothing under the identifier is refused and changes nothing.
@@ -422,9 +421,9 @@ pub fn refuses_to_duplicate_nothing_from_another_table<
         Err(DuplicateError::NothingHeld)
     ));
     assert_eq!(lookup(&table, &value, SECOND), None);
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
-    assert_eq!(lookup(&other, &value, SECOND), held(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
+    assert_eq!(lookup(&other, &value, SECOND), predict_lookup(&value, SECOND, SECOND));
 }
 
 /// Checks that a duplicate from another table onto an identifier this table holds is refused and keeps all.
@@ -454,15 +453,15 @@ pub fn refuses_to_duplicate_from_onto_a_taken_identifier<
         table.duplicate_from(&other, &name(SECOND), name(FIRST)),
         Err(DuplicateError::IdentifierTaken)
     ));
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, SECOND, SECOND));
     assert_eq!(lookup(&table, &value, SECOND), None);
     let mut empty = make();
     assert!(matches!(
         empty.duplicate_from(&other, &name(FIRST), name(SECOND)),
         Ok(())
     ));
-    assert_eq!(lookup(&empty, &value, SECOND), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&other, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&empty, &value, SECOND), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&other, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a duplicate from another table of a held capability onto a free identifier succeeds or changes nothing.
@@ -481,15 +480,15 @@ pub fn changes_nothing_when_a_duplicate_from_fails<T, Identifier, Capability, Co
     create(&mut table, &value, THIRD);
     let (_, name, _, _, _, _, _, _) = value;
     let expected = match table.duplicate_from(&other, &name(FIRST), name(FIRST)) {
-        Ok(()) => held(&value, FIRST, FIRST),
+        Ok(()) => predict_lookup(&value, FIRST, FIRST),
         Err(DuplicateError::Failed(_)) => None,
         Err(DuplicateError::NothingHeld | DuplicateError::IdentifierTaken) => {
             panic!("a duplicate of a held capability onto a free identifier was refused")
         }
     };
     assert_eq!(lookup(&table, &value, FIRST), expected);
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, SECOND, SECOND));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that a duplicate of the second capability, within the table and from another, is that same capability.
@@ -507,16 +506,16 @@ pub fn duplicates_the_second_capability<T, Identifier, Capability, Config, Error
         table.duplicate_within(&name(SECOND), name(FIRST)),
         Ok(())
     ));
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, SECOND, SECOND));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, SECOND, SECOND));
     let mut copy = make();
     assert!(matches!(
         copy.duplicate_from(&table, &name(SECOND), name(SECOND)),
         Ok(())
     ));
     mark(&copy, &value, SECOND, FIRST);
-    assert_eq!(lookup(&copy, &value, SECOND), held(&value, SECOND, FIRST));
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, SECOND, FIRST));
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, SECOND, FIRST));
+    assert_eq!(lookup(&copy, &value, SECOND), predict_lookup(&value, SECOND, FIRST));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, SECOND, FIRST));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, SECOND, FIRST));
     assert_eq!(lookup(&copy, &value, FIRST), None);
 }
 
@@ -549,9 +548,9 @@ pub fn keeps_a_duplicate_after_the_original_is_dropped<
     table.drop(&name(FIRST));
     assert_eq!(lookup(&table, &value, FIRST), None);
     mark(&copy, &value, FIRST, SECOND);
-    assert_eq!(lookup(&table, &value, SECOND), held(&value, FIRST, SECOND));
-    assert_eq!(lookup(&copy, &value, FIRST), held(&value, FIRST, SECOND));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, SECOND), predict_lookup(&value, FIRST, SECOND));
+    assert_eq!(lookup(&copy, &value, FIRST), predict_lookup(&value, FIRST, SECOND));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Checks that the original keeps its capability when a duplicate of it, within the table or from another, is dropped.
@@ -584,8 +583,8 @@ pub fn keeps_the_original_after_a_duplicate_is_dropped<
     copy.drop(&name(FIRST));
     assert_eq!(lookup(&table, &value, SECOND), None);
     assert_eq!(lookup(&copy, &value, FIRST), None);
-    assert_eq!(lookup(&table, &value, FIRST), held(&value, FIRST, FIRST));
-    assert_eq!(lookup(&table, &value, THIRD), held(&value, THIRD, THIRD));
+    assert_eq!(lookup(&table, &value, FIRST), predict_lookup(&value, FIRST, FIRST));
+    assert_eq!(lookup(&table, &value, THIRD), predict_lookup(&value, THIRD, THIRD));
 }
 
 /// Runs each suite function above as its own test on a value made anew for every test.

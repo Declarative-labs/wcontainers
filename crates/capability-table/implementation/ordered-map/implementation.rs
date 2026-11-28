@@ -21,9 +21,7 @@ use wcontainers_capability_table::{
     CapabilityConfig, CapabilityTable, CreateError, DuplicateError,
 };
 use wcontainers_memory_capability_table::MemoryError;
-use wcontainers_memory_shard::{
-    BorrowError, MemoryAllocationIdentity, MemoryPermissions, MemoryShard, MemoryShardConfig,
-};
+use wcontainers_memory_shard::{BorrowError, MemoryPermissions, MemoryShard, MemoryShardConfig};
 use wcontainers_volatile_bytes::VolatileBytes;
 
 verus! {
@@ -367,8 +365,8 @@ impl MemoryShard for Shard {
     }
 
     // One identity for every allocation, since nothing in Verus tells two apart without an assumption.
-    closed spec fn spec_viewed_allocation(&self) -> MemoryAllocationIdentity {
-        MemoryAllocationIdentity(0)
+    closed spec fn spec_viewed_allocation(&self) -> wcontainers_memory_shard::MemoryAllocationIdentity {
+        wcontainers_memory_shard::MemoryAllocationIdentity(0)
     }
 
     // Every shard views its bytes from the first one, since this table neither splits nor offsets them.
