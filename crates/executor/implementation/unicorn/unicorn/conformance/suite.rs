@@ -6,8 +6,8 @@
 use std::ops::Range;
 
 use wcontainers_unicorn::{
-    Arch, Arm64CpuModel, HookType, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP, Requests,
-    TlbEntry, TlbType, Unicorn, uc_error,
+    Arch, Arm64CpuModel, Arm64Insn, HookType, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP,
+    Requests, TlbEntry, TlbType, Unicorn, uc_error,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -49,6 +49,12 @@ const EXCEPTION_BREAKPOINT: u32 = 7;
 /// as op0, op1, CRn, CRm and op2.
 const THREAD_ID: RegisterARM64CP = RegisterARM64CP::new().op0(3).op1(3).crn(13).crm(0).op2(2);
 
+/// [MRS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-System-register-to-general-purpose-register-)
+/// of TPIDR_EL0 into X1.
+const READ_THREAD_ID_INTO_X1: u32 = 0xD53B_D041;
+/// The same MRS into X2.
+const READ_THREAD_ID_INTO_X2: u32 = 0xD53B_D042;
+
 /// [MOVZ](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero-) of the
 /// 16-bit value into X1.
 const fn move_into_x1(value: u16) -> u32 {
@@ -65,6 +71,8 @@ pub struct Seen {
     pub redirect: Option<(u64, u64)>,
     /// Whether the interrupt hook asks its engine to drop the translations of the code page.
     pub forget_on_exception: bool,
+    /// The register and the system register's encoding (op0, op1, CRn, CRm, op2) of each system instruction hooked.
+    pub system: Vec<(RegisterARM64, [u32; 5])>,
 }
 
 fn engine<U: Unicorn<Seen>>() -> U {
@@ -540,6 +548,70 @@ pub fn the_tlb_hook_translates_addresses<U: Unicorn<Seen>>() {
     assert_eq!(get(&engine, RegisterARM64::X1), !WORD);
 }
 
+/// A system instruction hook sees each MRS with the register it writes and the system register it reads, and the MRS
+/// it asks to skip leaves its register as it was while the other reads the system register.
+pub fn a_system_instruction_hook_sees_each_read_and_may_skip_it<U: Unicorn<Seen>>() {
+    let memory = new_memory::<U>(1);
+    write_code::<U>(
+        &memory,
+        &[READ_THREAD_ID_INTO_X1, READ_THREAD_ID_INTO_X2, BREAKPOINT],
+    );
+    let mut engine = engine::<U>();
+    map_code(&mut engine, &memory);
+    stop_at_exceptions(&mut engine);
+    engine
+        .add_insn_sys_hook_arm64(
+            Arm64Insn::UC_ARM64_INS_MRS,
+            1,
+            0,
+            |seen: &mut Seen, _: &mut Requests, register, system| {
+                let encoding = [system.op0, system.op1, system.crn, system.crm, system.op2];
+                seen.system.push((register, encoding));
+                register == RegisterARM64::X1
+            },
+        )
+        .expect("the system instruction hook");
+    set(&mut engine, RegisterARM64::TPIDR_EL0, WORD);
+    engine
+        .emu_start(CODE, u64::MAX, NO_TIMEOUT, NO_LIMIT)
+        .expect("the run to the breakpoint");
+    let thread_id = [3, 3, 13, 0, 2];
+    assert_eq!(
+        engine.get_data().system,
+        vec![
+            (RegisterARM64::X1, thread_id),
+            (RegisterARM64::X2, thread_id)
+        ]
+    );
+    assert_eq!(get(&engine, RegisterARM64::X1), 0);
+    assert_eq!(get(&engine, RegisterARM64::X2), WORD);
+    assert_eq!(engine.get_data().exceptions, vec![EXCEPTION_BREAKPOINT]);
+}
+
+/// A run stops at its `until` address, unless exits are enabled, with none set, when it runs on past it.
+pub fn a_run_with_exits_enabled_runs_past_its_until_address<U: Unicorn<Seen>>() {
+    let memory = new_memory::<U>(1);
+    write_code::<U>(&memory, &[NOP, move_into_x1(1), BREAKPOINT]);
+    let run = |exits: bool| {
+        let mut engine = engine::<U>();
+        if exits {
+            engine.ctl_exits_enable().expect("exits enabled");
+        }
+        map_code(&mut engine, &memory);
+        stop_at_exceptions(&mut engine);
+        engine
+            .emu_start(CODE, CODE + 4, NO_TIMEOUT, NO_LIMIT)
+            .expect("the run");
+        (
+            get(&engine, RegisterARM64::PC),
+            get(&engine, RegisterARM64::X1),
+            engine.get_data().exceptions.clone(),
+        )
+    };
+    assert_eq!(run(false), (CODE + 4, 0, Vec::new()));
+    assert_eq!(run(true), (CODE + 8, 1, vec![EXCEPTION_BREAKPOINT]));
+}
+
 /// A count of one runs one instruction.
 pub fn a_count_of_one_runs_one_instruction<U: Unicorn<Seen>>() {
     let memory = new_memory::<U>(1);
@@ -709,6 +781,16 @@ macro_rules! tests {
         #[test]
         fn the_tlb_hook_translates_addresses() {
             $crate::the_tlb_hook_translates_addresses::<$unicorn>();
+        }
+
+        #[test]
+        fn a_system_instruction_hook_sees_each_read_and_may_skip_it() {
+            $crate::a_system_instruction_hook_sees_each_read_and_may_skip_it::<$unicorn>();
+        }
+
+        #[test]
+        fn a_run_with_exits_enabled_runs_past_its_until_address() {
+            $crate::a_run_with_exits_enabled_runs_past_its_until_address::<$unicorn>();
         }
 
         #[test]

@@ -9,8 +9,8 @@ use std::rc::Rc;
 use memmap2::MmapMut;
 use unicorn_engine::{Context, UcHookId};
 use wcontainers_unicorn::{
-    Arch, HookType, MemRegion, MemType, Mode, Prot, RegisterARM64CP, Requests, TlbEntry, TlbType,
-    Unicorn, uc_error,
+    Arch, Arm64Insn, HookType, MemRegion, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP,
+    Requests, TlbEntry, TlbType, Unicorn, uc_error,
 };
 use wcontainers_volatile_bytes::{StandaloneVolatileBytes, VolatileBytes};
 use wcontainers_volatile_bytes_pointer::{PointerAndLength, PointerBytes};
@@ -48,10 +48,21 @@ impl DirectHostMemory {
     }
 }
 
-/// Bytes of a host memory, which keep it alive.
+/// Bytes of a host memory, which keep it alive: the `length` bytes from `start` of its whole view.
 pub struct DirectBytes {
-    bytes: PointerBytes,
-    _keeps: Rc<Allocation>,
+    memory: Rc<Allocation>,
+    start: u64,
+    length: u64,
+}
+
+impl DirectBytes {
+    /// Returns where in the whole host memory the byte at the offset lies and how many bytes from it a buffer of
+    /// `buffer` bytes takes, none from past the end.
+    fn at(&self, offset: u64, buffer: usize) -> Option<(u64, usize)> {
+        let left = self.length.checked_sub(offset)?;
+        let count = usize::try_from(left).map_or(buffer, |left| buffer.min(left));
+        Some((self.start + offset, count))
+    }
 }
 
 impl<Data: 'static> DirectUnicorn<Data> {
@@ -125,9 +136,13 @@ impl<Data: 'static> Unicorn<Data> for DirectUnicorn<Data> {
     }
 
     fn host_memory_bytes(memory: &DirectHostMemory, offsets: Range<u64>) -> Option<DirectBytes> {
+        if offsets.start > offsets.end || offsets.end > memory.0.whole.len() {
+            return None;
+        }
         Some(DirectBytes {
-            bytes: memory.0.whole.part(offsets)?,
-            _keeps: Rc::clone(&memory.0),
+            memory: Rc::clone(&memory.0),
+            start: offsets.start,
+            length: offsets.end - offsets.start,
         })
     }
 
@@ -263,6 +278,34 @@ impl<Data: 'static> Unicorn<Data> for DirectUnicorn<Data> {
             })
     }
 
+    fn add_insn_sys_hook_arm64<Hook>(
+        &mut self,
+        insn_type: Arm64Insn,
+        begin: u64,
+        end: u64,
+        mut hook: Hook,
+    ) -> Result<UcHookId, uc_error>
+    where
+        Hook: FnMut(&mut Data, &mut Requests, RegisterARM64, &RegisterARM64CP) -> bool + 'static,
+    {
+        self.engine.add_insn_sys_hook_arm64(
+            insn_type,
+            begin,
+            end,
+            move |engine, register, system_register| {
+                let mut requests = Requests::default();
+                let skip = hook(
+                    engine.get_data_mut(),
+                    &mut requests,
+                    register,
+                    system_register,
+                );
+                answer(engine, requests);
+                skip
+            },
+        )
+    }
+
     fn remove_hook(&mut self, hook: UcHookId) -> Result<(), uc_error> {
         self.engine.remove_hook(hook)
     }
@@ -313,6 +356,10 @@ impl<Data: 'static> Unicorn<Data> for DirectUnicorn<Data> {
         self.engine.ctl_set_cpu_model(cpu_model)
     }
 
+    fn ctl_exits_enable(&mut self) -> Result<(), uc_error> {
+        self.engine.ctl_exits_enable()
+    }
+
     fn ctl_remove_cache(&mut self, address: u64, end: u64) -> Result<(), uc_error> {
         self.engine.ctl_remove_cache(address, end)
     }
@@ -330,31 +377,49 @@ impl<Data: 'static> Unicorn<Data> for DirectUnicorn<Data> {
     }
 }
 
-/// Reads and writes from the view's start, as many bytes as the shorter of the view and the buffer holds.
+/// Reads and writes from an offset in the view, as many bytes as the shorter of the buffer and the rest of the view.
 impl VolatileBytes for DirectBytes {
     fn len(&self) -> u64 {
-        self.bytes.len()
+        self.length
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        self.bytes.read(into)
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let Some((at, count)) = self.at(offset, into.len()) else {
+            return usize::MIN;
+        };
+        self.memory.whole.read_at(at, &mut into[..count])
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        self.bytes.write(bytes)
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let Some((at, count)) = self.at(offset, bytes.len()) else {
+            return usize::MIN;
+        };
+        self.memory.whole.write_at(at, &bytes[..count])
     }
+
+    // The sink and the source each take all the bytes as one slice, and no slice over the bytes may be formed, so both
+    // copy through a buffer as long as the view.
 
     fn read_to<Sink: wcontainers_byte_sink::ByteSink>(
         &self,
         sink: &mut Sink,
     ) -> Result<usize, Sink::Error> {
-        self.bytes.read_to(sink)
+        let mut bytes = vec![u8::MIN; to_count(self.length)];
+        let count = self.read(&mut bytes);
+        sink.write(&bytes[..count])
     }
 
     fn write_from<Source: wcontainers_byte_source::ByteSource>(
         &self,
         source: &mut Source,
     ) -> Result<usize, Source::Error> {
-        self.bytes.write_from(source)
+        let mut bytes = vec![u8::MIN; to_count(self.length)];
+        let count = source.read(&mut bytes)?;
+        Ok(self.write(&bytes[..count]))
     }
+}
+
+/// Returns a length inside a host memory as a count of host bytes, which it always fits.
+fn to_count(length: u64) -> usize {
+    usize::try_from(length).expect("a host memory's length fits the host")
 }

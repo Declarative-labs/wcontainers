@@ -15,6 +15,10 @@ path = "implementation.rs"
 name = "conformance"
 path = "conformance_run.rs"
 
+[[test]]
+name = "volatile_bytes"
+path = "volatile_bytes.rs"
+
 [dependencies]
 wcontainers-unicorn = { path = "../.." }
 unicorn-engine = "2.1.5"
@@ -28,6 +32,7 @@ wcontainers-byte-source = { path = "../../../../../../byte-source" }
 
 [dev-dependencies]
 wcontainers-unicorn-conformance = { path = "../../conformance" }
+wcontainers-volatile-bytes-conformance = { path = "../../../../../../volatile-bytes/conformance" }
 
 # The bindings of an outside API: it denies unsafe code, so that each of its uses is marked.
 [lints.rust]

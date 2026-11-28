@@ -8,6 +8,8 @@
 //! an access gets a physical page nothing maps, so the access faults at the address the guest used. Every change of the
 //! page table or of the shared ranges flushes the TLB before the guest next runs, and our side reaches every byte only
 //! through views of the host memories, so the guest and our side see the same bytes and nothing is copied between turns.
+//! The helper code that passes the predicate registers in and out of a turn is one more host memory, mapped below the
+//! first block, which the TLB hook translates only while that code runs, with the TLB flushed before and after it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -23,8 +25,8 @@ use wcontainers_abi::{
 use wcontainers_processor_architecture_arm64::encoding::IMM16;
 use wcontainers_processor_architecture_arm64::{INSTRUCTION_SIZE, PREDICATE_REGISTERS};
 use wcontainers_unicorn::{
-    Arch, Arm64CpuModel, HookType, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP, Requests,
-    TlbEntry, TlbType, Unicorn, uc_error,
+    Arch, Arm64CpuModel, Arm64Insn, HookType, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP,
+    Requests, TlbEntry, TlbType, Unicorn, uc_error,
 };
 use wcontainers_unicorn_direct::DirectUnicorn;
 use wcontainers_volatile_bytes::VolatileBytes;
@@ -80,6 +82,12 @@ const COUNTER_CONTROL: RegisterARM64CP = RegisterARM64CP::new().op0(3).op1(0).cr
 /// counter or its frequency at EL0 traps to EL1, so the kernel answers it from its own clock and a replay repeats it.
 const USER_COUNTERS_TRAPPED: u64 = 0;
 
+/// RNDR and RNDRRS as op0, op1, CRn, CRm and op2.
+const RANDOM_NUMBER_REGISTERS: [RegisterARM64CP; 2] = [
+    RegisterARM64CP::new().op0(3).op1(3).crn(2).crm(4).op2(0),
+    RegisterARM64CP::new().op0(3).op1(3).crn(2).crm(4).op2(1),
+];
+
 /// [SCR_EL3](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SCR-EL3--Secure-Configuration-Register)
 /// as op0, op1, CRn, CRm and op2.
 const MONITOR_CONTROL: RegisterARM64CP = RegisterARM64CP::new().op0(3).op1(6).crn(1).crm(1).op2(0);
@@ -92,9 +100,11 @@ const UPPER_HALF: u64 = 1 << 55;
 /// The bits of a lower-half address below its tag, the top byte TBI0 leaves out of translation.
 pub(crate) const UNTAGGED: u64 = (1 << 56) - 1;
 
-/// The count of instructions or of microseconds that unicorn takes as no limit.
-const UNICORN_NO_LIMIT: usize = 0;
+/// The count of microseconds that unicorn takes as no limit.
 const UNICORN_NO_TIMEOUT: u64 = 0;
+/// The count of instructions a turn without a slice runs to, which no turn reaches: unicorn counts every run, so that
+/// its check before each instruction ends a run a hook stopped before the next instruction runs.
+const UNCOUNTED: usize = usize::MAX;
 /// The slice that runs one instruction, at one instruction a nanosecond.
 const ONE_INSTRUCTION_NANOSECONDS: u64 = ONE_INSTRUCTION_COUNT as u64;
 /// The count of instructions unicorn runs that is one instruction.
@@ -111,6 +121,14 @@ const PAGES_PER_COPY: u64 = 16;
 const SHARED_BASE: u64 = 1 << 52;
 /// Where the pages that stand for refusing guest pages start, past every block of shared pages.
 const FAULT_PAGES: u64 = 1 << 60;
+/// The pages of the helper code that loads and stores the predicates, then the page they pass through.
+const HELPER_PAGES: u64 = 2;
+/// Where unicorn maps the helper's pages, past the space's own pages and before its first block.
+const HELPER_PHYSICAL: u64 = SHARED_BASE - HELPER_PAGES * PAGE_SIZE;
+/// Where the helper's pages are while its code runs, an upper-half address the TLB hook translates at no other time.
+const HELPER_ADDRESS: u64 = UPPER_HALF;
+/// Where the predicates pass through, the helper's second page.
+const HELPER_DATA: u64 = HELPER_ADDRESS + PAGE_SIZE;
 
 /// What the engine's hooks read and record: the space's page table, and what stopped the turn.
 #[derive(Default)]
@@ -132,6 +150,10 @@ pub(crate) struct Guest {
     deadline: Option<coarsetime::Instant>,
     /// Raised from another thread to end the turn at the next block.
     interrupt: Option<Arc<AtomicBool>>,
+    /// Whether the run stopped at a read of a random-number register, which it skipped.
+    random_number_read: bool,
+    /// Whether the helper code runs, the only time the TLB hook translates the helper's pages.
+    helper: bool,
 }
 
 /// What stopped a run, as the hooks recorded it.
@@ -139,6 +161,7 @@ struct Stopped {
     exception: Option<u32>,
     fault: Option<(u64, Access)>,
     instructions: u64,
+    random_number_read: bool,
 }
 
 impl Guest {
@@ -150,6 +173,7 @@ impl Guest {
     ) {
         self.exception = None;
         self.fault = None;
+        self.random_number_read = false;
         self.instructions = u64::MIN;
         self.deadline = deadline;
         self.interrupt = interrupt;
@@ -163,12 +187,21 @@ impl Guest {
             exception: self.exception.take(),
             fault: self.fault.take(),
             instructions: std::mem::take(&mut self.instructions),
+            random_number_read: std::mem::take(&mut self.random_number_read),
         }
     }
 
     /// Returns the TLB entry of a page of addresses for the access: the physical page that holds it with what the page
     /// allows, or a physical page nothing maps when the page refuses the access.
     fn translate(&mut self, page: u64, needed: Prot) -> TlbEntry {
+        if self.helper
+            && (HELPER_ADDRESS..HELPER_ADDRESS + HELPER_PAGES * PAGE_SIZE).contains(&page)
+        {
+            return TlbEntry {
+                paddr: HELPER_PHYSICAL + (page - HELPER_ADDRESS),
+                perms: Prot::ALL,
+            };
+        }
         let address = untag(page);
         let allowed = usize::try_from(address / PAGE_SIZE)
             .ok()
@@ -441,6 +474,8 @@ pub(crate) struct Memory<U: Unicorn<Guest> = Emulator> {
     fresh: U::Context,
     /// The bytes of the space's own pages, all of its addresses, which unicorn maps at the same physical addresses.
     own: U::HostMemory,
+    /// The helper's code and the page the predicates pass through, which unicorn maps at [`HELPER_PHYSICAL`].
+    helper: U::HostMemory,
     /// Ranges that show shared pages, by their start.
     shared: BTreeMap<u64, Shown<U>>,
     /// The blocks of shared pages unicorn maps, past the space's own pages.
@@ -455,9 +490,6 @@ pub(crate) struct Memory<U: Unicorn<Guest> = Emulator> {
     executable: Vec<(Rc<SharedPages<U>>, Range<u64>)>,
     /// Own pages that may hold something other than zeros, so a copy copies only those.
     touched: TouchedPages,
-    /// Whether its translated blocks count instructions. Unicorn adds its counting hook without
-    /// translating again, so blocks made without it would never stop at a turn's end.
-    counting: bool,
     /// Whether unicorn may hold translations of the space's code, which a write of our side then makes stale.
     translated: bool,
     /// Where its address space ends.
@@ -475,12 +507,33 @@ impl<U: Unicorn<Guest>> Memory<U> {
         unicorn
             .ctl_set_cpu_model(Arm64CpuModel::MAX as i32)
             .expect("unicorn has the max ARM64 model");
+        // A run would stop at its `until` address as at a WFI, which a guest may branch to: with exits on and none set,
+        // no address stops it.
+        unicorn.ctl_exits_enable().expect("unicorn's exits enabled");
         unicorn
             .add_intr_hook(|guest: &mut Guest, requests: &mut Requests, exception| {
                 guest.exception = Some(exception);
                 requests.stop = true;
             })
             .expect("adding the interrupt hook");
+        // QEMU's max model reads RNDR and RNDRRS from a generator of the host thread, which every space and execution of
+        // the stand-in shares: each read is undefined instead, as on a chip without FEAT_RNG, which the kernel presents.
+        unicorn
+            .add_insn_sys_hook_arm64(
+                Arm64Insn::UC_ARM64_INS_MRS,
+                1,
+                0,
+                |guest: &mut Guest, requests: &mut Requests, _, system| {
+                    if !is_random_number_register(system) {
+                        return false;
+                    }
+                    guest.exception = Some(EXCEPTION_UNDEFINED);
+                    guest.random_number_read = true;
+                    requests.stop = true;
+                    true
+                },
+            )
+            .expect("adding the system register hook");
         unicorn
             .add_block_hook(
                 1,
@@ -543,10 +596,30 @@ impl<U: Unicorn<Guest>> Memory<U> {
         unicorn
             .mem_map_host_memory(u64::MIN, end, Prot::ALL, &own, u64::MIN)
             .expect("mapping a space's own pages in unicorn");
+        let helper =
+            U::new_host_memory(HELPER_PAGES * PAGE_SIZE).map_err(|_| CpuError::OutOfMemory)?;
+        for (at, code) in [
+            (u64::MIN, to_code(&PREDICATE_LOADER)),
+            (PREDICATE_SAVER, to_code(&PREDICATE_SAVER_CODE)),
+        ] {
+            U::host_memory_bytes(&helper, at..at + code.len() as u64)
+                .expect("the helper code lies on its page")
+                .write(&code);
+        }
+        unicorn
+            .mem_map_host_memory(
+                HELPER_PHYSICAL,
+                HELPER_PAGES * PAGE_SIZE,
+                Prot::ALL,
+                &helper,
+                u64::MIN,
+            )
+            .expect("mapping the helper's pages in unicorn");
         Ok(Self {
             unicorn,
             fresh,
             own,
+            helper,
             shared: BTreeMap::new(),
             bases: Vec::new(),
             next_base: SHARED_BASE,
@@ -554,7 +627,6 @@ impl<U: Unicorn<Guest>> Memory<U> {
             writable: Vec::new(),
             executable: Vec::new(),
             touched: TouchedPages::new(end / PAGE_SIZE),
-            counting: false,
             translated: false,
             end,
         })
@@ -1207,10 +1279,12 @@ impl<U: Unicorn<Guest>> Memory<U> {
     /// Runs the registers on this memory and returns why they came back with the number of instructions run.
     ///
     /// Instructions are counted in whole blocks. With a slice, it stops after that many instructions; with a
-    /// deadline, also once the machine's clock passes it; with an interrupt, also once it is raised.
+    /// deadline, also once the machine's clock passes it; with an interrupt, also once it is raised. With predicates,
+    /// the turn starts with them and gives back what it left in them; without, it starts with them all zero.
     pub(crate) fn run_turn(
         &mut self,
         registers: &mut RegisterBlock,
+        predicates: Option<&mut Predicates>,
         slice_nanoseconds: Option<u64>,
         deadline: Option<coarsetime::Instant>,
         interrupt: Option<Arc<AtomicBool>>,
@@ -1218,7 +1292,21 @@ impl<U: Unicorn<Guest>> Memory<U> {
         self.unicorn
             .context_restore(&self.fresh)
             .expect("restoring unicorn's fresh CPU state");
-        self.run_loaded(registers, slice_nanoseconds, deadline, interrupt)
+        let Some(predicates) = predicates else {
+            return self.run_loaded(registers, slice_nanoseconds, deadline, interrupt);
+        };
+        U::host_memory_bytes(&self.helper, PAGE_SIZE..PAGE_SIZE + PREDICATE_BYTES as u64)
+            .expect("the predicates lie on the helper's page")
+            .write(&predicates.to_bytes());
+        self.run_helper(HELPER_ADDRESS, PREDICATE_LOADER.len());
+        let ran = self.run_loaded(registers, slice_nanoseconds, deadline, interrupt);
+        self.run_helper(HELPER_ADDRESS + PREDICATE_SAVER, PREDICATE_SAVER_CODE.len());
+        let mut bytes = [u8::MIN; PREDICATE_BYTES];
+        U::host_memory_bytes(&self.helper, PAGE_SIZE..PAGE_SIZE + PREDICATE_BYTES as u64)
+            .expect("the predicates lie on the helper's page")
+            .read(&mut bytes);
+        *predicates = Predicates::from_bytes(&bytes);
+        ran
     }
 
     /// Runs as [`Memory::run_turn`] does, on what unicorn's CPU holds besides the registers.
@@ -1234,7 +1322,7 @@ impl<U: Unicorn<Guest>> Memory<U> {
         self.load_registers(registers)
             .expect("loading registers into unicorn");
         self.unicorn.get_data_mut().start_run(deadline, interrupt);
-        let count = slice_nanoseconds.map_or(UNICORN_NO_LIMIT, |nanoseconds| {
+        let count = slice_nanoseconds.map_or(UNCOUNTED, |nanoseconds| {
             usize::try_from(nanoseconds.max(ONE_INSTRUCTION_NANOSECONDS)).unwrap_or(usize::MAX)
         });
         let result = self.start(registers.pc, count);
@@ -1252,6 +1340,10 @@ impl<U: Unicorn<Guest>> Memory<U> {
         }
         self.save_registers(registers)
             .expect("reading registers from unicorn");
+        // The run stopped before the instruction after the skipped read, which is where the exception is taken.
+        if stopped.random_number_read {
+            registers.pc -= INSTRUCTION_SIZE;
+        }
         // A fetch that faults leaves the program counter at the address fetched, where unicorn leaves it at the
         // instruction before when that one branched there in the same run.
         if let Some((address, Access::Execute)) = stopped.fault {
@@ -1268,61 +1360,28 @@ impl<U: Unicorn<Guest>> Memory<U> {
     /// page table.
     fn start(&mut self, address: u64, count: usize) -> Result<(), uc_error> {
         self.sync();
-        if count > UNICORN_NO_LIMIT && !self.counting {
-            self.unicorn
-                .ctl_flush_tb()
-                .expect("flushing unicorn's translated blocks");
-        }
-        // Unicorn drops its blocks itself when counting stops.
-        self.counting = count > UNICORN_NO_LIMIT;
         self.translated = true;
         self.unicorn
             .emu_start(address, u64::MAX, UNICORN_NO_TIMEOUT, count)
     }
 
-    /// Runs one instruction of the registers with the predicates loaded before it and read back after it.
-    ///
-    /// Unicorn's interface reaches no predicate register, so code on the scratch page loads them from it and stores
-    /// them to it: the page allows everything while that code runs and nothing while the instruction does.
-    pub(crate) fn run_instruction(
-        &mut self,
-        registers: &mut RegisterBlock,
-        predicates: &mut Predicates,
-        scratch: u64,
-    ) -> (Result<Exit, Unsupported>, u64) {
-        let page = scratch..scratch + PAGE_SIZE;
-        let data = scratch + PREDICATE_DATA;
-        self.set_permissions(page.clone(), Permissions::all());
-        self.write(scratch, &to_code(&PREDICATE_LOADER))
-            .expect("the scratch page lies inside the space");
-        self.write(scratch + PREDICATE_SAVER, &to_code(&PREDICATE_SAVER_CODE))
-            .expect("the scratch page lies inside the space");
-        self.write(data, &predicates.to_bytes())
-            .expect("the scratch page lies inside the space");
+    /// Runs the count of instructions of helper code at the address with X0 holding the predicates' address, with
+    /// unicorn's TLB flushed before and after, so that neither the guest's entries nor the helper's outlive their run.
+    fn run_helper(&mut self, code: u64, count: usize) {
         self.unicorn
-            .context_restore(&self.fresh)
-            .expect("restoring unicorn's fresh CPU state");
-        self.run_helper(scratch, data, PREDICATE_LOADER.len());
-        self.set_permissions(page.clone(), Permissions::empty());
-        let ran = self.run_loaded(registers, Some(ONE_INSTRUCTION_NANOSECONDS), None, None);
-        self.set_permissions(page.clone(), Permissions::all());
-        self.run_helper(scratch + PREDICATE_SAVER, data, PREDICATE_SAVER_CODE.len());
-        let mut bytes = [u8::MIN; PREDICATE_BYTES];
-        self.read(data, &mut bytes)
-            .expect("the scratch page lies inside the space");
-        *predicates = Predicates::from_bytes(&bytes);
-        self.set_permissions(page, Permissions::empty());
-        ran
-    }
-
-    /// Runs the count of instructions of helper code at the address with X0 holding its data's address.
-    fn run_helper(&mut self, code: u64, data: u64, count: usize) {
-        self.unicorn
-            .reg_write(x_register(PREDICATE_BASE), data)
+            .reg_write(x_register(PREDICATE_BASE), HELPER_DATA)
             .expect("writing X0");
+        self.unicorn.get_data_mut().helper = true;
+        self.unicorn
+            .ctl_flush_tlb()
+            .expect("flushing unicorn's TLB");
         self.unicorn.get_data_mut().start_run(None, None);
         let result = self.start(code, count);
         let stopped = self.unicorn.get_data_mut().take_stopped();
+        self.unicorn.get_data_mut().helper = false;
+        self.unicorn
+            .ctl_flush_tlb()
+            .expect("flushing unicorn's TLB");
         assert!(
             result.is_ok() && stopped.exception.is_none() && stopped.fault.is_none(),
             "the predicate helper code ran: {result:?}, exception {:?}, fault {:?}",
@@ -1384,6 +1443,20 @@ impl<U: Unicorn<Guest>> Memory<U> {
             }
         })
     }
+}
+
+/// Returns whether the system register is [RNDR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDR--Random-Number)
+/// (op0 3, op1 3, CRn 2, CRm 4, op2 0) or [RNDRRS](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDRRS--Reseeded-Random-Number) (op2 1).
+fn is_random_number_register(system: &RegisterARM64CP) -> bool {
+    RANDOM_NUMBER_REGISTERS.iter().any(|register| {
+        (
+            register.op0,
+            register.op1,
+            register.crn,
+            register.crm,
+            register.op2,
+        ) == (system.op0, system.op1, system.crn, system.crm, system.op2)
+    })
 }
 
 fn prot(permissions: Permissions) -> Prot {
@@ -1466,15 +1539,13 @@ fn enter_user_level<U: Unicorn<Guest>>(unicorn: &mut U) {
 
 /// The bytes of one predicate register at a 128-bit vector length, one bit for each byte of a vector.
 const PREDICATE_REGISTER_BYTES: usize = size_of::<u16>();
-/// The bytes the predicate registers and FFR take on the scratch page, FFR after P15.
+/// The bytes the predicate registers and FFR take on the helper's page, FFR after P15.
 const PREDICATE_BYTES: usize = (PREDICATE_REGISTERS + 1) * PREDICATE_REGISTER_BYTES;
-/// Where on the scratch page the helper code that stores the predicates starts, after the code that loads them.
+/// Where on the helper's code page the code that stores the predicates starts, after the code that loads them.
 const PREDICATE_SAVER: u64 = 0x100;
-/// Where on the scratch page the predicates are, after both helper codes.
-const PREDICATE_DATA: u64 = 0x200;
 /// The general register that holds the predicates' address while the helper code runs, X0.
 const PREDICATE_BASE: usize = 0;
-/// The slot of FFR on the scratch page, in predicate registers from the start.
+/// The slot of FFR on the helper's page, in predicate registers from the start.
 const FIRST_FAULT_SLOT: u32 = PREDICATE_REGISTERS as u32;
 
 /// [LDR (predicate)](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/LDR--predicate---Load-predicate-register-)
@@ -1571,8 +1642,8 @@ mod tests {
     use wcontainers_unicorn_recording::{Call, RecordingUnicorn};
 
     use super::{
-        FAULT_PAGES, Guest, Memory, SHARED_BASE, SharedPages, TouchedPages, q_register, to_runs,
-        x_register,
+        FAULT_PAGES, Guest, HELPER_ADDRESS, HELPER_PAGES, HELPER_PHYSICAL, Memory, SHARED_BASE,
+        SharedPages, TouchedPages, q_register, to_runs, x_register,
     };
 
     /// Where the tests' spaces end: 16 pages.
@@ -1640,7 +1711,7 @@ mod tests {
         registers.x[0] = x0;
         registers.x[1] = x1;
         let exit = memory
-            .run_turn(&mut registers, Some(count), None, None)
+            .run_turn(&mut registers, None, Some(count), None, None)
             .0
             .expect("a turn the stand-in supports");
         (exit, registers)
@@ -1663,8 +1734,9 @@ mod tests {
     }
 
     /// THE STAND-IN'S HOSTILE-GUEST TEST OF ITS RULE: a guest that stores to every address it can name, tagged, in the
-    /// upper half, past the space's end and at the physical addresses unicorn maps its blocks and fault pages at, changes
-    /// only bytes of pages the page table lets it write, through every view of them, and faults at the address it used.
+    /// upper half, past the space's end, at the physical addresses unicorn maps its blocks, fault pages and helper at, and
+    /// at the helper's own addresses, changes only bytes of pages the page table lets it write, through every view of
+    /// them, and faults at the address it used.
     #[test]
     fn a_hostile_guest_writes_only_what_the_page_table_lets_it() {
         let mut memory = with_code::<Direct>(&[STORE_X1_AT_X0]);
@@ -1698,6 +1770,8 @@ mod tests {
             END - 4,
             SHARED_BASE,
             FAULT_PAGES,
+            HELPER_PHYSICAL,
+            HELPER_ADDRESS + PAGE_SIZE,
             u64::MAX - 7,
         ];
         for address in refused {
@@ -1793,12 +1867,20 @@ mod tests {
         let all = Prot::ALL.0;
         assert_eq!(
             memory.unicorn.take_calls(),
-            vec![Call::MemMapHostMemory {
-                address: 0,
-                size: END,
-                perms: all,
-                offset: 0,
-            }]
+            vec![
+                Call::MemMapHostMemory {
+                    address: 0,
+                    size: END,
+                    perms: all,
+                    offset: 0,
+                },
+                Call::MemMapHostMemory {
+                    address: HELPER_PHYSICAL,
+                    size: HELPER_PAGES * PAGE_SIZE,
+                    perms: all,
+                    offset: 0,
+                }
+            ]
         );
         memory.set_permissions(CODE..CODE + PAGE_SIZE, read_execute());
         memory.set_permissions(page(2)..page(4), read_write());
@@ -1815,10 +1897,7 @@ mod tests {
             begin: CODE,
             count: SLICE as usize,
         };
-        assert_eq!(
-            memory.unicorn.take_calls(),
-            vec![Call::CtlFlushTb, start.clone()]
-        );
+        assert_eq!(memory.unicorn.take_calls(), vec![start.clone()]);
         memory
             .write(CODE, &SYSTEM_CALL.to_le_bytes())
             .expect("the code written again");
@@ -1921,6 +2000,163 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A read of [RNDR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDR--Random-Number) or
+    /// RNDRRS is undefined, as on a chip without FEAT_RNG, in every run of every space with a slice or without, stopping
+    /// at the read before the next instruction with the register it would write and the flags as given, so no run sees a
+    /// value of the host's generator the stand-in's spaces share, while another system register still reads.
+    #[test]
+    fn a_random_number_read_is_undefined_in_every_run() {
+        /// MRS X1, RNDR.
+        const READ_RNDR_INTO_X1: u32 = 0xD53B_2401;
+        /// MRS X1, RNDRRS.
+        const READ_RNDRRS_INTO_X1: u32 = 0xD53B_2421;
+        /// MRS X1, TPIDR_EL0.
+        const READ_THREAD_ID_INTO_X1: u32 = 0xD53B_D041;
+        /// MOVZ X2, #7, which must not run after a read that stops.
+        const MOVE_7_INTO_X2: u32 = 0xD280_00E2;
+        /// NZCV all set, which a read of RNDR would clear.
+        const FLAGS: u64 = 0xF << 28;
+        let start = |memory: &mut Memory<Direct>, slice: Option<u64>| {
+            let mut registers = RegisterBlock::ZERO;
+            registers.pc = CODE;
+            registers.x[1] = WORD;
+            registers.pstate = FLAGS;
+            registers.tpidr_el0 = !WORD;
+            let exit = memory
+                .run_turn(&mut registers, None, slice, None, None)
+                .0
+                .expect("a turn the stand-in supports");
+            (exit, registers)
+        };
+        for read in [READ_RNDR_INTO_X1, READ_RNDRRS_INTO_X1] {
+            let mut first = with_code::<Direct>(&[read, MOVE_7_INTO_X2, SYSTEM_CALL]);
+            let mut second = with_code::<Direct>(&[read, MOVE_7_INTO_X2, SYSTEM_CALL]);
+            for slice in [Some(1), Some(SLICE), None] {
+                for memory in [&mut first, &mut second] {
+                    let (exit, registers) = start(memory, slice);
+                    assert_eq!(exit, Exit::IllegalInstruction, "{read:#x}, {slice:?}");
+                    assert_eq!(
+                        (
+                            registers.pc,
+                            registers.x[1],
+                            registers.x[2],
+                            registers.pstate
+                        ),
+                        (CODE, WORD, 0, FLAGS),
+                        "{read:#x}, {slice:?}"
+                    );
+                }
+            }
+        }
+        let mut memory =
+            with_code::<Direct>(&[READ_THREAD_ID_INTO_X1, MOVE_7_INTO_X2, SYSTEM_CALL]);
+        let (exit, registers) = start(&mut memory, Some(SLICE));
+        assert!(matches!(exit, Exit::Syscall(_)), "{exit:?}");
+        assert_eq!((registers.x[1], registers.x[2]), (!WORD, 7));
+    }
+
+    /// Zeroing addresses ends every sharing over them, the second shared range as the first, and zeroes only the bytes
+    /// of a page they cover, from its start or not, while the blocks keep their bytes for every other view.
+    #[test]
+    fn zeroing_ends_every_sharing_and_zeroes_only_the_addresses() {
+        let page = |index: u64| index * PAGE_SIZE;
+        let mut memory = Memory::<Direct>::new(END).expect("a space");
+        let first: Rc<SharedPages<Direct>> = Rc::new(SharedPages::new(PAGE_SIZE).expect("a block"));
+        let second: Rc<SharedPages<Direct>> =
+            Rc::new(SharedPages::new(PAGE_SIZE).expect("a block"));
+        first.write(0, &[1; PAGE_SIZE as usize]);
+        second.write(0, &[2; PAGE_SIZE as usize]);
+        memory.show(page(2)..page(3), Rc::clone(&first), 0, true);
+        memory.show(page(4)..page(5), Rc::clone(&second), 0, true);
+        memory
+            .write(page(7), &[u8::MAX; 2 * PAGE_SIZE as usize])
+            .expect("two own pages written");
+        memory
+            .zero(page(2)..page(5))
+            .expect("the shared pages zeroed");
+        memory
+            .zero(page(7)..page(7) + 16)
+            .expect("the start of a page zeroed");
+        memory
+            .zero(page(8) + 16..page(8) + 32)
+            .expect("the middle of a page zeroed");
+        assert_eq!(memory.list_parts(page(2)..page(5)).len(), 1);
+        for index in 2..5 {
+            assert_eq!(read_page(&memory, page(index)), vec![0; PAGE_SIZE as usize]);
+        }
+        let mut kept = [0; PAGE_SIZE as usize];
+        second.read(0, &mut kept);
+        assert_eq!(kept, [2; PAGE_SIZE as usize]);
+        let mut seventh = vec![u8::MAX; PAGE_SIZE as usize];
+        seventh[..16].fill(0);
+        assert_eq!(read_page(&memory, page(7)), seventh);
+        let mut eighth = vec![u8::MAX; PAGE_SIZE as usize];
+        eighth[16..32].fill(0);
+        assert_eq!(read_page(&memory, page(8)), eighth);
+    }
+
+    /// A write of our side over several pages of a block marks each of them as holding bytes, so a copy of the block
+    /// carries all of them.
+    #[test]
+    fn a_write_over_pages_of_a_block_reaches_its_copy() {
+        let page = |index: u64| index * PAGE_SIZE;
+        let mut memory = Memory::<Direct>::new(END).expect("a space");
+        let block: Rc<SharedPages<Direct>> =
+            Rc::new(SharedPages::new(3 * PAGE_SIZE).expect("a block"));
+        memory.show(page(2)..page(5), Rc::clone(&block), 0, true);
+        let written: Vec<u8> = (0..2 * PAGE_SIZE)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        memory
+            .write(page(3), &written)
+            .expect("two pages of the block written");
+        let copy = block.copy().expect("a copy of the block");
+        let mut read = vec![0; 3 * PAGE_SIZE as usize];
+        copy.read(0, &mut read);
+        assert_eq!(read[..PAGE_SIZE as usize], [0; PAGE_SIZE as usize]);
+        assert_eq!(read[PAGE_SIZE as usize..], written[..]);
+    }
+
+    /// An access at the end of a shared range reaches the space's own page after it, not the block.
+    #[test]
+    fn an_access_at_a_shared_range_end_reaches_the_page_after_it() {
+        let page = |index: u64| index * PAGE_SIZE;
+        let mut memory = with_code::<Direct>(&[STORE_X1_AT_X0]);
+        let block: Rc<SharedPages<Direct>> =
+            Rc::new(SharedPages::new(2 * PAGE_SIZE).expect("a block"));
+        memory.show(page(5)..page(6), Rc::clone(&block), 0, true);
+        memory.set_permissions(page(5)..page(7), read_write());
+        assert_eq!(run(&mut memory, CODE, page(6), WORD, 1).0, Exit::Stop);
+        assert_eq!(read_word(&memory, page(6)), WORD);
+        let mut held = vec![0; 2 * PAGE_SIZE as usize];
+        block.read(0, &mut held);
+        assert_eq!(held, vec![0; 2 * PAGE_SIZE as usize]);
+    }
+
+    /// A guest's store to its own writable page is kept by a copy of the space, which copies only pages that may hold
+    /// bytes.
+    #[test]
+    fn a_guest_store_to_its_own_page_reaches_a_copy_of_the_space() {
+        let page = |index: u64| index * PAGE_SIZE;
+        let mut memory = with_code::<Direct>(&[STORE_X1_AT_X0]);
+        memory.set_permissions(page(2)..page(3), read_write());
+        assert_eq!(run(&mut memory, CODE, page(2) + 8, WORD, 1).0, Exit::Stop);
+        let copy = memory.duplicate().expect("a copy of the space");
+        assert_eq!(read_word(&copy, page(2) + 8), WORD);
+    }
+
+    /// A turn gives back how many instructions it ran in whole blocks: here one block of three instructions that
+    /// ends at its system call.
+    #[test]
+    fn a_turn_counts_the_instructions_of_its_blocks() {
+        let mut memory = with_code::<Direct>(&[move_into_x1(1), move_into_x1(2), SYSTEM_CALL]);
+        let mut registers = RegisterBlock::ZERO;
+        registers.pc = CODE;
+        let (exit, instructions) = memory.run_turn(&mut registers, None, Some(SLICE), None, None);
+        assert!(matches!(exit, Ok(Exit::Syscall(_))), "{exit:?}");
+        assert_eq!(instructions, 3);
     }
 
     #[test]

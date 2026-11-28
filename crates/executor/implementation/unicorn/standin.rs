@@ -69,6 +69,8 @@ impl Default for StandInConfig {
 
 /// The register a system call's result goes in, x0 (<https://man7.org/linux/man-pages/man2/syscall.2.html>).
 const RESULT_REGISTER: usize = 0;
+/// The slice that runs one instruction, at one instruction a nanosecond.
+const ONE_INSTRUCTION: u64 = 1;
 /// A page's length as an index into host memory.
 const PAGE_BYTES: usize = PAGE_SIZE as usize;
 
@@ -327,6 +329,7 @@ impl StandIn {
         }
         let (exit, instructions) = memory.run_turn(
             registers,
+            None,
             slice_nanoseconds,
             self.deadline(slice_nanoseconds),
             None,
@@ -465,7 +468,13 @@ impl Machine {
             .memories
             .get_mut(&state.memory)
             .expect("thread's memory");
-        memory.run_turn(&mut state.registers, slice_nanoseconds, deadline, None)
+        memory.run_turn(
+            &mut state.registers,
+            None,
+            slice_nanoseconds,
+            deadline,
+            None,
+        )
     }
 
     fn memory_mut(&mut self, memory: MemoryId) -> &mut Memory {
@@ -492,9 +501,7 @@ fn execute_in_place(
             }
         })
         .fold(processor.program_counter + INSTRUCTION_SIZE, u64::max);
-    // The scratch page the predicates pass through lies after the named pages.
-    let scratch = named_end.div_ceil(PAGE_SIZE).saturating_mul(PAGE_SIZE);
-    if scratch >= memory.end() {
+    if named_end > memory.end() {
         return (Err(Unsupported::BeyondSpace { end: named_end }), 0);
     }
     let mut pages: BTreeMap<u64, PagePermission> = BTreeMap::new();
@@ -559,7 +566,13 @@ fn execute_in_place(
         registers: processor.predicate_registers,
         first_fault: processor.first_fault_register,
     };
-    let (exit, instructions) = memory.run_instruction(&mut registers, &mut predicates, scratch);
+    let (exit, instructions) = memory.run_turn(
+        &mut registers,
+        Some(&mut predicates),
+        Some(ONE_INSTRUCTION),
+        None,
+        None,
+    );
     let permission_at = |address: u64| {
         pages
             .get(&(address - address % PAGE_SIZE))
@@ -698,8 +711,8 @@ impl PerThreadWatch for StandIn {
 pub struct StandInExecution<'execution> {
     stand_in: &'execution mut StandIn,
     registers: RegisterBlock,
-    /// The predicate registers and FFR as the execution started: unicorn's interface reaches neither, and a guest's
-    /// whole run has no page to pass them through, so the execution ends with them as they were.
+    /// The predicate registers and FFR, which each turn starts with and gives back, as unicorn's interface reaches
+    /// neither.
     predicates: Predicates,
     /// SSBS, DIT and TCO as the execution started, which it ends with, as unicorn's interface does not reach them.
     process_state_controls: u64,
@@ -787,6 +800,7 @@ impl StandInExecution<'_> {
             }
             let (exit, instructions) = self.memory.run_turn(
                 &mut self.registers,
+                Some(&mut self.predicates),
                 Some(self.left_in_slice),
                 None,
                 Some(Arc::clone(&self.raised)),
@@ -1533,6 +1547,107 @@ mod tests {
                 ..start
             }
         );
+    }
+
+    /// An execution's guest starts with the predicate registers it was given and keeps what it puts in them across a
+    /// system call, which ends a turn of unicorn's, and the execution ends with what the guest left in them.
+    #[test]
+    fn an_execution_starts_with_its_predicates_and_keeps_them_across_turns() {
+        use wcontainers_abi::{Access, SystemCallRequest};
+        use wcontainers_executor::memory_space::{MemorySpace, PageTable};
+        use wcontainers_executor::{
+            Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse,
+            SystemCallResponse, TrapHandler,
+        };
+        use wcontainers_processor_architecture_arm64::{Exception, ZERO_PROCESSOR};
+        use wcontainers_volatile_bytes::VolatileBytes;
+
+        /// Answers every system call with zero and ends the execution at any other trap.
+        struct Answering;
+        impl TrapHandler for Answering {
+            fn handle_system_call(&mut self, _: SystemCallRequest) -> SystemCallResponse {
+                SystemCallResponse::Return(0)
+            }
+            fn handle_memory_fault(&mut self, _: u64, _: Access) -> MemoryFaultResponse {
+                MemoryFaultResponse::Terminate
+            }
+            fn handle_interrupt(&mut self) -> InterruptResponse {
+                InterruptResponse::Terminate
+            }
+        }
+
+        /// [STR (predicate)](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/STR--predicate---Store-predicate-register-)
+        /// of P3 to the address in X0.
+        const STORE_P3_AT_X0: u32 = 0xE580_0003;
+        /// [LDR (predicate)](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/LDR--predicate---Load-predicate-register-)
+        /// of P4 from the address in X1.
+        const LOAD_P4_FROM_X1: u32 = 0x8580_0024;
+        /// STR (predicate) of P4 to the address in X2.
+        const STORE_P4_AT_X2: u32 = 0xE580_0044;
+        /// [SVC](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SVC--Supervisor-call-) #0.
+        const SYSTEM_CALL: u32 = 0xD400_0001;
+        /// [BRK](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BRK--Breakpoint-instruction-) #0.
+        const BREAKPOINT: u32 = 0xD420_0000;
+        /// The predicate register P3 holds as the execution starts, 16 bits at a 128-bit vector length.
+        const GIVEN: u16 = 0x1234;
+        /// The value the guest loads into P4 from memory.
+        const LOADED: u16 = 0xA55A;
+        let mut stand_in = StandIn::with_space(SPACE_32_BIT);
+        let (memory, mut table) = stand_in.create_guest_memory().expect("a memory");
+        let code = PAGE_SIZE..PAGE_SIZE * 2;
+        let data = PAGE_SIZE * 2;
+        table
+            .set_permissions(code.clone(), Permissions::READ | Permissions::EXECUTE)
+            .expect("the code's page allowed");
+        table
+            .set_permissions(
+                data..data + PAGE_SIZE,
+                Permissions::READ | Permissions::WRITE,
+            )
+            .expect("the data page allowed");
+        let words = [
+            STORE_P3_AT_X0,
+            LOAD_P4_FROM_X1,
+            SYSTEM_CALL,
+            STORE_P4_AT_X2,
+            BREAKPOINT,
+        ];
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        memory
+            .borrow(code.start..code.start + bytes.len() as u64)
+            .expect("the code's words")
+            .write(&bytes);
+        memory
+            .borrow(data + 16..data + 18)
+            .expect("the loaded bytes")
+            .write(&LOADED.to_le_bytes());
+        let mut start = Processor {
+            program_counter: code.start,
+            ..ZERO_PROCESSOR
+        };
+        start.general_purpose_registers[..3].copy_from_slice(&[data, data + 16, data + 32]);
+        start.predicate_registers[3] = GIVEN;
+        let (execution, _interrupter) = stand_in.prepare_execution(start, &memory);
+        let ExecutionStop::Terminated(stopped) = execution.run(&mut Answering) else {
+            panic!("the stand-in never waits");
+        };
+        assert_eq!(
+            stopped.exception,
+            Some(Exception::Breakpoint { comment: 0 })
+        );
+        let mut expected = ZERO_PROCESSOR.predicate_registers;
+        expected[3] = GIVEN;
+        expected[4] = LOADED;
+        assert_eq!(stopped.predicate_registers, expected);
+        let read = |at: u64| {
+            let mut bytes = [0; 2];
+            memory
+                .borrow(at..at + 2)
+                .expect("stored bytes")
+                .read(&mut bytes);
+            u16::from_le_bytes(bytes)
+        };
+        assert_eq!((read(data), read(data + 32)), (GIVEN, LOADED));
     }
 
     /// Two memories that show one block see each other's writes, the guest's among them.

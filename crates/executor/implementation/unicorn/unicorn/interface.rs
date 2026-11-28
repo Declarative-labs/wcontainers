@@ -22,8 +22,8 @@
 use std::ops::Range;
 
 pub use unicorn_engine::{
-    Arch, Arm64CpuModel, HookType, MemRegion, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP,
-    TlbEntry, TlbType, uc_error,
+    Arch, Arm64CpuModel, Arm64Insn, HookType, MemRegion, MemType, Mode, Prot, RegisterARM64,
+    RegisterARM64CP, TlbEntry, TlbType, uc_error,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -114,6 +114,18 @@ pub trait Unicorn<Data: 'static>: Sized {
     where
         Hook: FnMut(&mut Data, &mut Requests, u64, MemType) -> Option<TlbEntry> + 'static;
 
+    /// Adds a hook called before each system instruction of the kind runs at the addresses, with the register it moves
+    /// and the system register it names; the instruction is skipped when the hook returns true.
+    fn add_insn_sys_hook_arm64<Hook>(
+        &mut self,
+        insn_type: Arm64Insn,
+        begin: u64,
+        end: u64,
+        hook: Hook,
+    ) -> Result<Self::HookId, uc_error>
+    where
+        Hook: FnMut(&mut Data, &mut Requests, RegisterARM64, &RegisterARM64CP) -> bool + 'static;
+
     fn remove_hook(&mut self, hook: Self::HookId) -> Result<(), uc_error>;
 
     fn context_init(&self) -> Result<Self::Context, uc_error>;
@@ -141,6 +153,9 @@ pub trait Unicorn<Data: 'static>: Sized {
     fn reg_write_arm64_coproc(&mut self, register: &RegisterARM64CP) -> Result<(), uc_error>;
 
     fn ctl_set_cpu_model(&mut self, cpu_model: i32) -> Result<(), uc_error>;
+
+    /// Makes a run stop only at the exits set, of which there are none until set, instead of at its `until` address.
+    fn ctl_exits_enable(&mut self) -> Result<(), uc_error>;
 
     fn ctl_remove_cache(&mut self, address: u64, end: u64) -> Result<(), uc_error>;
 

@@ -28,6 +28,8 @@ wcontainers-processor-architecture = { path = "../../../processor-architecture" 
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 
 [dev-dependencies]
+# The tests every volatile bytes implementation runs, on the bytes a space lends.
+wcontainers-volatile-bytes-conformance = { path = "../../../volatile-bytes/conformance" }
 wcontainers-executor-conformance = { path = "../../conformance" }
 # The behaviors the tests' simulation runs: the first known behavior of each instruction.
 wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }

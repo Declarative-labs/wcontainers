@@ -79,6 +79,8 @@ procfs = { version = "0.18.0", default-features = false }
 # The heap allocations a test process makes, counted without a global allocator of our own.
 stats_alloc = "0.1.10"
 wcontainers-executor-conformance = { path = "../../conformance" }
+# The tests every volatile bytes implementation runs, on the bytes a space lends.
+wcontainers-volatile-bytes-conformance = { path = "../../../volatile-bytes/conformance" }
 # An engine that records the calls a space makes, for the space's own tests.
 wcontainers-unicorn-recording = { path = "unicorn/implementation/recording" }
 # The engine whose guest writes everything it may write, kept in the workspace so that its tests run with the rest.
@@ -92,6 +94,10 @@ wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-s
 [[test]]
 name = "conformance"
 path = "conformance_run.rs"
+
+[[test]]
+name = "volatile_bytes"
+path = "volatile_bytes.rs"
 
 [features]
 default = ["harness"]

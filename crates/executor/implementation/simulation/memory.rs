@@ -345,18 +345,24 @@ impl VolatileBytes for SimulatedBytes<'_> {
         self.addresses.end - self.addresses.start
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        let count = into.len().min(to_count(self.len()));
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let count = within(self.len(), offset, into.len());
+        if count == usize::MIN {
+            return count;
+        }
         self.space
             .shared
-            .read_at(self.addresses.start, &mut into[..count])
+            .read_at(self.addresses.start + offset, &mut into[..count])
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        let count = bytes.len().min(to_count(self.len()));
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let count = within(self.len(), offset, bytes.len());
+        if count == usize::MIN {
+            return count;
+        }
         self.space
             .shared
-            .write_at(self.addresses.start, &bytes[..count])
+            .write_at(self.addresses.start + offset, &bytes[..count])
     }
 
     /// Copies all the bytes out and hands them to the sink, since a slice of the guest's bytes may not be lent.
@@ -457,6 +463,12 @@ fn split_at_pages(start: u64, length: usize) -> Vec<(u64, Range<usize>, Range<us
 /// Returns the length as a count of host bytes, at most the most the host can count.
 fn to_count(length: u64) -> usize {
     usize::try_from(length).unwrap_or(usize::MAX)
+}
+
+/// Returns how many bytes a copy of a buffer of `buffer` bytes at the offset moves in bytes of the length: the shorter
+/// of the buffer and what lies from the offset to the end, none from past the end.
+fn within(length: u64, offset: u64, buffer: usize) -> usize {
+    buffer.min(to_count(length.saturating_sub(offset)))
 }
 
 /// Returns what the page allows as ARM64 sees it; a page that allows nothing is held unmapped.

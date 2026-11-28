@@ -66,3 +66,26 @@ fn a_view_reads_to_a_sink_and_writes_from_a_source() {
     assert_eq!(&whole[..8], &[0; 8]);
     assert_eq!(&whole[24..], &[0; 8]);
 }
+
+/// A view's offsets count from its own first byte: a read or a write at an offset reaches the host memory's byte at the
+/// view's start plus the offset, and stops at the view's end.
+#[test]
+fn a_view_reads_and_writes_at_offsets_from_its_own_start() {
+    let memory = Direct::new_host_memory(PAGE).expect("host memory");
+    let whole = Direct::host_memory_bytes(&memory, 0..32).expect("a view");
+    let numbered: Vec<u8> = (0..32).collect();
+    assert_eq!(whole.write(&numbered), 32);
+    let view = Direct::host_memory_bytes(&memory, 8..24).expect("a view");
+    let mut read = [u8::MAX; 8];
+    assert_eq!(view.read_at(12, &mut read), 4);
+    assert_eq!(read, [20, 21, 22, 23, u8::MAX, u8::MAX, u8::MAX, u8::MAX]);
+    assert_eq!(view.write_at(14, &[100, 101, 102, 103]), 2);
+    let mut after = vec![u8::MIN; 32];
+    assert_eq!(whole.read(&mut after), 32);
+    let mut expected = numbered.clone();
+    expected[22] = 100;
+    expected[23] = 101;
+    assert_eq!(after, expected);
+    assert_eq!(view.read_at(16, &mut read), 0);
+    assert_eq!(view.write_at(16, &[1]), 0);
+}

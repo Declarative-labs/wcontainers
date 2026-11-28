@@ -379,3 +379,22 @@ fn run_to_the_end(
         ExecutionStop::Waiting { .. } => panic!("the simulation's execution waited"),
     }
 }
+
+/// The volatile bytes suite on the bytes a space lends across the boundary between two pages.
+mod volatile_bytes {
+    use wcontainers_abi::{LOWEST_ADDRESS, PAGE_SIZE};
+    use wcontainers_executor::memory_space::MemorySpace;
+
+    use crate::memory::create_space;
+
+    /// The addresses lent: the second half of one page and the first half of the next.
+    const ADDRESSES: std::ops::Range<u64> =
+        LOWEST_ADDRESS + PAGE_SIZE / 2..LOWEST_ADDRESS + PAGE_SIZE + PAGE_SIZE / 2;
+
+    wcontainers_volatile_bytes_conformance::tests!(
+        create_space()
+            .0
+            .borrow(ADDRESSES)
+            .expect("addresses inside the space")
+    );
+}

@@ -6,8 +6,8 @@ use std::marker::PhantomData;
 use std::ops::Range;
 
 use wcontainers_unicorn::{
-    Arch, HookType, MemRegion, MemType, Mode, Prot, RegisterARM64CP, Requests, TlbEntry, TlbType,
-    Unicorn, uc_error,
+    Arch, Arm64Insn, HookType, MemRegion, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP,
+    Requests, TlbEntry, TlbType, Unicorn, uc_error,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -227,6 +227,20 @@ impl<Data: 'static, Inner: Unicorn<Data>> Unicorn<Data> for HostileUnicorn<Data,
         self.inner.add_tlb_hook(begin, end, hook)
     }
 
+    fn add_insn_sys_hook_arm64<Hook>(
+        &mut self,
+        insn_type: Arm64Insn,
+        begin: u64,
+        end: u64,
+        hook: Hook,
+    ) -> Result<Inner::HookId, uc_error>
+    where
+        Hook: FnMut(&mut Data, &mut Requests, RegisterARM64, &RegisterARM64CP) -> bool + 'static,
+    {
+        self.inner
+            .add_insn_sys_hook_arm64(insn_type, begin, end, hook)
+    }
+
     fn remove_hook(&mut self, hook: Inner::HookId) -> Result<(), uc_error> {
         self.inner.remove_hook(hook)
     }
@@ -277,6 +291,10 @@ impl<Data: 'static, Inner: Unicorn<Data>> Unicorn<Data> for HostileUnicorn<Data,
 
     fn ctl_set_cpu_model(&mut self, cpu_model: i32) -> Result<(), uc_error> {
         self.inner.ctl_set_cpu_model(cpu_model)
+    }
+
+    fn ctl_exits_enable(&mut self) -> Result<(), uc_error> {
+        self.inner.ctl_exits_enable()
     }
 
     fn ctl_remove_cache(&mut self, address: u64, end: u64) -> Result<(), uc_error> {

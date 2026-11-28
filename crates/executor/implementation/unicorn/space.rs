@@ -19,7 +19,7 @@ use wcontainers_executor::memory_space::{
 use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::engine::{Engine, EngineHandle};
-use crate::memory::{Memory, Part};
+use crate::memory::{Memory, Part, Predicates};
 use crate::standin::Unsupported;
 
 /// An address space of the stand-in, held with full authority.
@@ -85,20 +85,30 @@ impl UnicornSpace {
         })
     }
 
-    /// Runs the registers on this space as [`Memory::run_turn`] does.
+    /// Runs the registers, and the predicates if given, on this space as [`Memory::run_turn`] does.
     pub(crate) fn run_turn(
         &self,
         registers: &mut RegisterBlock,
+        predicates: Option<&mut Predicates>,
         slice_nanoseconds: Option<u64>,
         deadline: Option<coarsetime::Instant>,
         interrupt: Option<Arc<AtomicBool>>,
     ) -> (Result<Exit, Unsupported>, u64) {
-        let mut moved = *registers;
-        let (outcome, moved) = self.with_memory(move |memory| {
-            let outcome = memory.run_turn(&mut moved, slice_nanoseconds, deadline, interrupt);
-            (outcome, moved)
+        let (mut moved, mut moved_predicates) = (*registers, predicates.as_deref().copied());
+        let (outcome, moved, moved_predicates) = self.with_memory(move |memory| {
+            let outcome = memory.run_turn(
+                &mut moved,
+                moved_predicates.as_mut(),
+                slice_nanoseconds,
+                deadline,
+                interrupt,
+            );
+            (outcome, moved, moved_predicates)
         });
         *registers = moved;
+        if let (Some(predicates), Some(moved)) = (predicates, moved_predicates) {
+            *predicates = moved;
+        }
         outcome
     }
 
@@ -340,9 +350,12 @@ impl VolatileBytes for UnicornBytes<'_> {
         self.addresses.end - self.addresses.start
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        let count = to_count(self.len()).min(into.len());
-        let start = self.addresses.start;
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let count = within(self.len(), offset, into.len());
+        if count == usize::MIN {
+            return count;
+        }
+        let start = self.addresses.start + offset;
         let read = self.space.with_memory(move |memory| {
             let mut read = vec![u8::MIN; count];
             memory
@@ -354,9 +367,12 @@ impl VolatileBytes for UnicornBytes<'_> {
         count
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        let count = to_count(self.len()).min(bytes.len());
-        let start = self.addresses.start;
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let count = within(self.len(), offset, bytes.len());
+        if count == usize::MIN {
+            return count;
+        }
+        let start = self.addresses.start + offset;
         let written = bytes[..count].to_vec();
         self.space.with_memory(move |memory| {
             memory
@@ -384,4 +400,10 @@ impl VolatileBytes for UnicornBytes<'_> {
 /// Returns the length as a count of host bytes, at most the most the host can count.
 fn to_count(length: u64) -> usize {
     usize::try_from(length).unwrap_or(usize::MAX)
+}
+
+/// Returns how many bytes a copy of a buffer of `buffer` bytes at the offset moves in bytes of the length: the shorter
+/// of the buffer and what lies from the offset to the end, none from past the end.
+fn within(length: u64, offset: u64, buffer: usize) -> usize {
+    buffer.min(to_count(length.saturating_sub(offset)))
 }
