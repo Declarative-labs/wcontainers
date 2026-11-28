@@ -14,6 +14,10 @@ path = "conformance_run.rs"
 name = "suite_check"
 path = "suite_check.rs"
 
+[[test]]
+name = "doubles_check"
+path = "doubles_check.rs"
+
 [dependencies]
 wcontainers-kernel-core = { path = "../.." }
 wcontainers-capability-table = { path = "../../../capability-table" }
