@@ -1516,33 +1516,40 @@ fn system_library(top_name: &str, dll: &str, entries: &[(String, String, (Vec<(S
     text
 }
 
-/// `data` without the codecs (`encode_*`, `decode_*`, each with its doc comment) that neither `users` nor another codec
-/// kept names, removed until none is left unused.
+/// `data` without the codecs (`encode_*`, `decode_*`, each with its doc comment) that nothing reaches: a codec is reached
+/// when `users`, the rest of `data`, or the body of a reached codec names it.
 fn without_unused_codecs(data: &str, users: &str) -> String {
-    let mut lines: Vec<&str> = data.lines().collect();
-    loop {
-        // Each codec: its doc comment's line, its own line and its last line (the closing brace at the line's start).
-        let mut codecs = Vec::new();
-        for (at, line) in lines.iter().enumerate() {
-            let Some(name) = line.strip_prefix("pub fn ").and_then(|rest| rest.split('(').next()) else { continue };
-            if !(name.starts_with("encode_") || name.starts_with("decode_")) || at == 0 || !lines[at - 1].starts_with("/// ") {
-                continue;
-            }
-            let Some(end) = lines[at..].iter().position(|line| *line == "}").map(|offset| at + offset) else { continue };
-            codecs.push((name.to_string(), at - 1, end));
-        }
-        // A name is named where it is a whole identifier of the text.
-        let named = |name: &str, text: &str| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|word| word == name);
-        let unused = codecs.iter().find(|(name, start, end)| {
-            let others: String = lines.iter().enumerate().filter(|(at, _)| at < start || at > end).map(|(_, line)| *line).collect::<Vec<_>>().join("\n");
-            !named(name, users) && !named(name, &others)
-        });
-        let Some((_, start, end)) = unused else { break };
-        let (start, end) = (*start, *end);
-        let blank = usize::from(lines.get(end + 1).is_some_and(|line| line.is_empty()));
-        lines.drain(start..=end + blank);
+    fn words(text: &str) -> BTreeSet<String> {
+        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map(str::to_string).collect()
     }
-    let mut out = lines.join("\n");
+    let lines: Vec<&str> = data.lines().collect();
+    // Each codec: its name and its lines, from its doc comment to its closing brace at the line's start.
+    let mut codecs: Vec<(String, usize, usize)> = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        let Some(name) = line.strip_prefix("pub fn ").and_then(|rest| rest.split('(').next()) else { continue };
+        if !(name.starts_with("encode_") || name.starts_with("decode_")) {
+            continue;
+        }
+        let Some(end) = lines[at..].iter().position(|line| *line == "}").map(|offset| at + offset) else { continue };
+        codecs.push((name.to_string(), at.saturating_sub(1), end));
+    }
+    let in_codec = |at: usize| codecs.iter().any(|(_, start, end)| (*start..=*end).contains(&at));
+    let mut named = words(users);
+    named.extend(words(&lines.iter().enumerate().filter(|(at, _)| !in_codec(*at)).map(|(_, line)| *line).collect::<Vec<_>>().join("\n")));
+    let mut reached: BTreeSet<&str> = BTreeSet::new();
+    loop {
+        let before = reached.len();
+        for (name, start, end) in &codecs {
+            if named.contains(name) && reached.insert(name.as_str()) {
+                named.extend(words(&lines[*start..=*end].join("\n")));
+            }
+        }
+        if reached.len() == before {
+            break;
+        }
+    }
+    let unreached: Vec<(usize, usize)> = codecs.iter().filter(|(name, _, _)| !reached.contains(name.as_str())).map(|(_, start, end)| (*start, *end)).collect();
+    let mut out: String = lines.iter().enumerate().filter(|(at, _)| !unreached.iter().any(|(start, end)| (*start..=*end).contains(at))).map(|(_, line)| *line).collect::<Vec<_>>().join("\n");
     out.push('\n');
     out
 }

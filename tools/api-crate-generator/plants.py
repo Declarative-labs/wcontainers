@@ -74,11 +74,12 @@ def matching(text, open_at):
 
 def split_arguments(text):
     """Top-level comma-separated parts of an argument list, as (start, end) offsets into `text`."""
+    # Brackets only: `<` and `>` are also comparisons and the `=>` of a match arm.
     parts, depth, start = [], 0, 0
     for at, ch in enumerate(text):
-        if ch in "([{<":
+        if ch in "([{":
             depth += 1
-        elif ch in ")]}>":
+        elif ch in ")]}":
             depth -= 1
         elif ch == "," and depth == 0:
             parts.append((start, at))

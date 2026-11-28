@@ -1365,7 +1365,7 @@ impl Shapes {
         let integer = |size: usize, read: &mut [bool]| -> Option<u64> {
             let mut value = 0_u64;
             for index in (0..size).rev() {
-                value = (value << 8) | u64::from(*bytes.get(at + index)?);
+                value = (value << 8) + u64::from(*bytes.get(at + index)?);
                 *read.get_mut(at + index)? = true;
             }
             Some(value)
