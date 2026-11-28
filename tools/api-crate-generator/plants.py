@@ -162,7 +162,7 @@ def decoder_sizes(folder):
 def serve_plants(path, text):
     """One plant per argument of every call into the implementation: a value passed as its type's default; an optional
     object or value as none; an array as empty; a structure the glue decoded as the structure of zero bytes; an object
-    as the call's other object of the same kind where the call has one (as its name tells), else the call not made."""
+    as not found, the call not made."""
     plants = []
     sizes = decoder_sizes(os.path.dirname(path))
     for name, start, end in functions(text):
@@ -181,14 +181,9 @@ def serve_plants(path, text):
                 variable = argument.lstrip("&").split(".")[0].strip()
                 decoded = re.search(rf"let {re.escape(variable)}\b[^;]*?(decode_[a-z0-9_]+)\(", body, re.S)
                 if index in objects:
-                    # Another object of the same kind, as its name tells (`dst_buffer_found`, `src_buffer_found`).
-                    kind = variable.removesuffix("_found").split("_")[-1]
-                    others = [other for other in objects if other != index and arguments[parts[other][0]:parts[other][1]].strip().split(".")[0].removesuffix("_found").split("_")[-1] == kind]
-                    if others:
-                        s2, e2 = parts[others[0]]
-                        new = " " + arguments[s2:e2].strip()
-                    else:
-                        new = " { return " + refusal + "; }"
+                    # The object not found: the call is not made. (The suite holds one object of each kind, so another
+                    # object of the same kind passed in its place would be the same object: no such plant is caught.)
+                    new = " { return " + refusal + "; }"
                 elif argument.startswith("&") and decoded and decoded.group(1) in sizes:
                     new = f" &{decoded.group(1)}(&[u8::MIN; {sizes[decoded.group(1)]}])"
                 elif argument.startswith("&") and not decoded:

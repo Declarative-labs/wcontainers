@@ -7046,12 +7046,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -7597,12 +7592,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -7711,12 +7701,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                 this,
                 9_u32,
                 directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIFactory6::EnumAdapterByGpuPreference -> {}",
@@ -7786,12 +7771,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIFactory4::EnumWarpAdapter -> {}",
@@ -8215,12 +8195,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -8980,12 +8955,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -9077,12 +9047,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -9689,12 +9654,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -9948,12 +9908,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -10090,12 +10045,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -10187,12 +10137,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -10294,12 +10239,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -10391,12 +10331,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -10693,12 +10628,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 11_u32,
-                    data2: 18_u16,
-                    data3: 25_u16,
-                    data4: core::array::from_fn(|_| 32_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGISwapChain1::GetCoreWindow -> {}",
@@ -11055,12 +10985,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -11152,12 +11077,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -11274,12 +11194,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             let answer =
                 directx_graphics_infrastructure::DirectXGraphicsInfrastructure::create_dxgi_factory(
                     &o.api,
-                    &component_object_model::structures::Guid {
-                        data1: 3_u32,
-                        data2: 10_u16,
-                        data3: 17_u16,
-                        data4: core::array::from_fn(|_| 24_u8),
-                    },
+                    &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
                 );
             answers.push(format!(
                 "CreateDXGIFactory -> {}",
@@ -11296,14 +11211,14 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        failure_is_negative({ let answer = directx_graphics_infrastructure::DirectXGraphicsInfrastructure::create_dxgi_factory1(&o.api, &component_object_model::structures::Guid { data1: 3_u32, data2: 10_u16, data3: 17_u16, data4: core::array::from_fn(|_| 24_u8) }); answers.push(format!("CreateDXGIFactory1 -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::DirectXGraphicsInfrastructure::create_dxgi_factory1(&o.api, &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4); answers.push(format!("CreateDXGIFactory1 -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "CreateDXGIFactory1");
     // CreateDXGIFactory2
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        failure_is_negative({ let answer = directx_graphics_infrastructure::DirectXGraphicsInfrastructure::create_dxgi_factory2(&o.api, directx_graphics_infrastructure::enumerations::CreateFactoryFlags(0), &component_object_model::structures::Guid { data1: 3_u32, data2: 10_u16, data3: 17_u16, data4: core::array::from_fn(|_| 24_u8) }); answers.push(format!("CreateDXGIFactory2 -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::DirectXGraphicsInfrastructure::create_dxgi_factory2(&o.api, directx_graphics_infrastructure::enumerations::CreateFactoryFlags(0), &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4); answers.push(format!("CreateDXGIFactory2 -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "CreateDXGIFactory2");
     // DXGIDeclareAdapterRemovalSupport
@@ -11324,7 +11239,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        failure_is_negative({ let answer = directx_graphics_infrastructure::DirectXGraphicsInfrastructure::dxgi_get_debug_interface1(&o.api, 31_u32, &component_object_model::structures::Guid { data1: 3_u32, data2: 10_u16, data3: 17_u16, data4: core::array::from_fn(|_| 24_u8) }); answers.push(format!("DXGIGetDebugInterface1 -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::DirectXGraphicsInfrastructure::dxgi_get_debug_interface1(&o.api, 31_u32, &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4); answers.push(format!("DXGIGetDebugInterface1 -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "DXGIGetDebugInterface1");
     driven

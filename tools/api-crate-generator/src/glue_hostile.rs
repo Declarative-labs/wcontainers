@@ -969,6 +969,20 @@ impl Writer<'_, '_> {
         Some((prelude, call))
     }
 
+    /// For a method that hands out an interface by id (`riid`): the id's parameter and the id of the first kind the
+    /// result can hold, so that the suite's compared call asks for an interface the implementation has.
+    fn asked_interface(&self, glued: &super::Glued, result: &str, scope: &[usize]) -> Option<(String, String)> {
+        let riid = glued.parts.iter().find_map(|(_, part)| match part {
+            Part::InterfaceOut { riid } => Some(glued.parts[*riid].0.clone()),
+            _ => None,
+        })?;
+        let inner = if result.starts_with("Result<") { result["Result<".len()..].rsplit_once(',').map_or(result, |(value, _)| value).trim() } else { result.trim() };
+        let Shape::Unknown { kinds, .. } = self.shape(inner, scope) else { return None };
+        let kind = *kinds.first()?;
+        let iid = self.g.kinds[kind].newest.first().map(|newest| self.iid(newest))?;
+        Some((riid, iid))
+    }
+
     /// The makers of one method: what it hands out (an object, objects of a tuple, or an interface by id, one maker per
     /// kind it can name).
     #[allow(clippy::too_many_arguments, reason = "the method's own parts")]
@@ -1787,7 +1801,8 @@ impl Writer<'_, '_> {
                 let (inputs, result) = self.trait_signature(method, sig_api, "Self::Api", &place);
                 self.current.set(saved);
                 let rust_name = Self::method_name(method);
-                if let Some((prelude, call)) = self.driven_call(&place, Some(k), &generic(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", None) {
+                let asked = glued.as_ref().and_then(|glued| self.asked_interface(glued, &result, &scope));
+                if let Some((prelude, call)) = self.driven_call(&place, Some(k), &generic(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", asked.as_ref().map(|(riid, iid)| (riid.as_str(), iid.as_str()))) {
                     let logged = compared(&place, glued.is_some(), &result, &prelude, &call);
                     calls.push((format!("{place} on {}", g.kinds[k].name), prelude, check(&result, &logged, &scope)));
                 }
@@ -1801,7 +1816,8 @@ impl Writer<'_, '_> {
             let mut renamed = function.clone();
             renamed.name = crate::names::strip_first(&function.name, spec.function_prefixes).to_string();
             let (inputs, result) = self.trait_signature(&renamed, api, "Self", &function.name);
-            if let Some((prelude, call)) = self.driven_call(&function.name, None, "A", &top, &rust_name, &inputs, &scope, codecs, "false", None) {
+            let asked = self.glue_of(function, &function.name).ok().and_then(|glued| self.asked_interface(&glued, &result, &scope));
+            if let Some((prelude, call)) = self.driven_call(&function.name, None, "A", &top, &rust_name, &inputs, &scope, codecs, "false", asked.as_ref().map(|(riid, iid)| (riid.as_str(), iid.as_str()))) {
                 let logged = compared(&function.name, self.glue_of(function, &function.name).is_ok(), &result, &prelude, &call);
                 calls.push((function.name.clone(), prelude, check(&result, &logged, &scope)));
             }

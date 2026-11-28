@@ -15695,12 +15695,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -15723,12 +15718,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -17392,12 +17382,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             let answer = direct3d_11::Device5::open_shared_fence(
                 this,
                 component_object_model::structures::Handle(83),
-                &component_object_model::structures::Guid {
-                    data1: 103_u32,
-                    data2: 110_u16,
-                    data3: 117_u16,
-                    data4: core::array::from_fn(|_| 124_u8),
-                },
+                &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
             );
             answers.push(format!(
                 "ID3D11Device5::OpenSharedFence -> {}",
@@ -17422,12 +17407,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 this,
                 54_u64,
                 direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
-                &component_object_model::structures::Guid {
-                    data1: 103_u32,
-                    data2: 110_u16,
-                    data3: 117_u16,
-                    data4: core::array::from_fn(|_| 124_u8),
-                },
+                &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
             );
             answers.push(format!(
                 "ID3D11Device5::CreateFence -> {}",
@@ -17906,12 +17886,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             let answer = direct3d_11::Device1::open_shared_resource1(
                 this,
                 component_object_model::structures::Handle(68),
-                &component_object_model::structures::Guid {
-                    data1: 103_u32,
-                    data2: 110_u16,
-                    data3: 117_u16,
-                    data4: core::array::from_fn(|_| 124_u8),
-                },
+                &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
             );
             answers.push(format!(
                 "ID3D11Device1::OpenSharedResource1 -> {}",
@@ -17936,12 +17911,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 this,
                 &[95_u16],
                 18_u32,
-                &component_object_model::structures::Guid {
-                    data1: 103_u32,
-                    data2: 110_u16,
-                    data3: 117_u16,
-                    data4: core::array::from_fn(|_| 124_u8),
-                },
+                &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
             );
             answers.push(format!(
                 "ID3D11Device1::OpenSharedResourceByName -> {}",
@@ -18575,12 +18545,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             let answer = direct3d_11::Device::open_shared_resource(
                 this,
                 component_object_model::structures::Handle(68),
-                &component_object_model::structures::Guid {
-                    data1: 103_u32,
-                    data2: 110_u16,
-                    data3: 117_u16,
-                    data4: core::array::from_fn(|_| 124_u8),
-                },
+                &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
             );
             answers.push(format!(
                 "ID3D11Device::OpenSharedResource -> {}",
@@ -18946,12 +18911,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -26176,12 +26136,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -26204,12 +26159,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -26602,12 +26552,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -26630,12 +26575,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -27107,12 +27047,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -27135,12 +27070,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -32138,12 +32068,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -32689,12 +32614,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -32803,12 +32723,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 this,
                 9_u32,
                 directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIFactory6::EnumAdapterByGpuPreference -> {}",
@@ -32878,12 +32793,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIFactory4::EnumWarpAdapter -> {}",
@@ -33307,12 +33217,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -34072,12 +33977,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -34169,12 +34069,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -34781,12 +34676,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -35040,12 +34930,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -35182,12 +35067,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -35279,12 +35159,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -35386,12 +35261,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -35483,12 +35353,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",
@@ -35785,12 +35650,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 11_u32,
-                    data2: 18_u16,
-                    data3: 25_u16,
-                    data4: core::array::from_fn(|_| 32_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGISwapChain1::GetCoreWindow -> {}",
@@ -36147,12 +36007,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIDeviceSubObject::GetDevice -> {}",
@@ -36244,12 +36099,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Object::get_parent(
                 this,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
             );
             answers.push(format!(
                 "IDXGIObject::GetParent -> {}",

@@ -2226,12 +2226,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
                     flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT,
                     node_mask: 79_u32,
                 },
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
             );
             answers.push(format!(
                 "ID3D12Device::CreateCommandQueue -> {}",
@@ -2255,12 +2250,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
             let answer = direct3d_12::Device::create_command_allocator(
                 this,
                 direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
             );
             answers.push(format!(
                 "ID3D12Device::CreateCommandAllocator -> {}",
@@ -2290,12 +2280,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
                 direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                 v1,
                 o.k57.as_ref(),
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
             );
             answers.push(format!(
                 "ID3D12Device::CreateCommandList -> {}",
@@ -2324,12 +2309,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
                     flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                     node_mask: 55_u32,
                 },
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
             );
             answers.push(format!(
                 "ID3D12Device::CreateDescriptorHeap -> {}",
@@ -2377,12 +2357,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
                 this,
                 27_u32,
                 &[119_u8],
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
             );
             answers.push(format!(
                 "ID3D12Device::CreateRootSignature -> {}",
@@ -2410,7 +2385,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k54.as_ref() else { return false; };
-        failure_is_negative({ let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &component_object_model::structures::Guid { data1: 99_u32, data2: 106_u16, data3: 113_u16, data4: core::array::from_fn(|_| 120_u8) }); answers.push(format!("ID3D12Device::CreateCommittedResource -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR); answers.push(format!("ID3D12Device::CreateCommittedResource -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "ID3D12Device::CreateCommittedResource on Device");
     // ID3D12Device::CreateFence on Device
@@ -2425,12 +2400,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
                 this,
                 54_u64,
                 direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
             );
             answers.push(format!(
                 "ID3D12Device::CreateFence -> {}",
@@ -2466,12 +2436,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
                     count: 65_u32,
                     node_mask: 72_u32,
                 },
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
             );
             answers.push(format!(
                 "ID3D12Device::CreateQueryHeap -> {}",
@@ -3014,12 +2979,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
                 &o.api,
                 None,
                 direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                &component_object_model::structures::Guid {
-                    data1: 3_u32,
-                    data2: 10_u16,
-                    data3: 17_u16,
-                    data4: core::array::from_fn(|_| 24_u8),
-                },
+                &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
             );
             answers.push(format!(
                 "D3D12CreateDevice -> {}",
