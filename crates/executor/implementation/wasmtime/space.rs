@@ -1310,24 +1310,30 @@ impl VolatileBytes for WasmtimeBytes<'_> {
         self.parts.iter().map(DirectBytes::len).sum()
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    /// Reads each part from where the offset falls in it, until the buffer is full or the parts end.
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let mut done = usize::MIN;
+        let mut skip = offset;
         for part in &self.parts {
-            let read = part.read(&mut into[done..]);
+            let read = part.read_at(skip, &mut into[done..]);
             done += read;
-            if u64::try_from(read).ok() != Some(part.len()) {
+            skip = skip.saturating_sub(part.len());
+            if done == into.len() {
                 break;
             }
         }
         done
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    /// Writes each part from where the offset falls in it, until the bytes are all written or the parts end.
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         let mut done = usize::MIN;
+        let mut skip = offset;
         for part in &self.parts {
-            let written = part.write(&bytes[done..]);
+            let written = part.write_at(skip, &bytes[done..]);
             done += written;
-            if u64::try_from(written).ok() != Some(part.len()) {
+            skip = skip.saturating_sub(part.len());
+            if done == bytes.len() {
                 break;
             }
         }

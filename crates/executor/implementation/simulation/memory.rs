@@ -345,18 +345,24 @@ impl VolatileBytes for SimulatedBytes<'_> {
         self.addresses.end - self.addresses.start
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        let count = into.len().min(to_count(self.len()));
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let count = copied_count(self.len(), offset, into.len());
+        if count == usize::MIN {
+            return count;
+        }
         self.space
             .shared
-            .read_at(self.addresses.start, &mut into[..count])
+            .read_at(self.addresses.start + offset, &mut into[..count])
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        let count = bytes.len().min(to_count(self.len()));
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let count = copied_count(self.len(), offset, bytes.len());
+        if count == usize::MIN {
+            return count;
+        }
         self.space
             .shared
-            .write_at(self.addresses.start, &bytes[..count])
+            .write_at(self.addresses.start + offset, &bytes[..count])
     }
 
     /// Copies all the bytes out and hands them to the sink, since a slice of the guest's bytes may not be lent.
@@ -372,6 +378,12 @@ impl VolatileBytes for SimulatedBytes<'_> {
         let count = source.read(&mut buffer)?;
         Ok(self.write(&buffer[..count]))
     }
+}
+
+/// Returns how many bytes a copy at the offset moves: the shorter of the buffer and what lies from the offset to the end
+/// (`wcontainers_volatile_bytes::copied`).
+fn copied_count(length: u64, offset: u64, buffer: usize) -> usize {
+    to_count(length.saturating_sub(offset)).min(buffer)
 }
 
 /// Counts a change now in place, and returns the count of changes before it.

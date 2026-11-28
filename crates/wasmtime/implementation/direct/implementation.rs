@@ -70,7 +70,8 @@ struct Reservation {
 /// Bytes of a host memory, which keep its reservation mapped.
 pub struct DirectBytes {
     bytes: PointerBytes,
-    keeps: Arc<Reservation>,
+    /// Held, never read: while it lives the reservation stays mapped.
+    _keeps: Arc<Reservation>,
 }
 
 /// A store's memory over a host memory.
@@ -161,11 +162,10 @@ impl Wasmtime for DirectWasmtime {
         memory: &DirectHostMemory,
         offsets: Range<u64>,
     ) -> Option<DirectBytes> {
-        let whole = memory.0.bytes();
-        let bytes = whole.part(offsets)?;
+        let bytes = memory.0.bytes(offsets)?;
         Some(DirectBytes {
             bytes,
-            keeps: memory.0.clone(),
+            _keeps: memory.0.clone(),
         })
     }
 
@@ -353,19 +353,25 @@ impl Reservation {
         }
     }
 
-    /// Returns a host memory's whole length as bytes another party may change.
-    fn bytes(&self) -> PointerBytes {
+    /// Returns the bytes of a host memory at the offsets, which another party may change; none past its length.
+    fn bytes(&self, offsets: Range<u64>) -> Option<PointerBytes> {
+        let start = usize::try_from(offsets.start).ok()?;
+        let end = usize::try_from(offsets.end).ok()?;
+        if start > end || end > self.length {
+            return None;
+        }
         #[expect(
             unsafe_code,
             reason = "the one promise about a host memory's bytes, on which every copy of them relies"
         )]
-        // SAFETY: only host memories lend bytes. A file that cannot shrink is mapped over every page of a host memory's
+        // SAFETY: only host memories lend bytes, and only the offsets checked above, inside the length. A file that cannot shrink is mapped over every page of a host memory's
         // length before it is handed out, and every later mapping over it is another such file, put in place in one step,
         // so the bytes are readable and writable from any thread and never trap while the reservation lives; every
         // `DirectBytes` keeps it alive; this crate forms no reference or slice over them, and wasmtime reaches them only
         // from compiled code.
-        let pointer = unsafe { PointerAndLength::new(self.base(), self.length) };
-        PointerBytes::new(pointer)
+        let pointer =
+            unsafe { PointerAndLength::new(self.base().wrapping_add(start), end - start) };
+        Some(PointerBytes::new(pointer))
     }
 }
 
@@ -488,27 +494,17 @@ unsafe impl MemoryCreator for HostMemories {
     }
 }
 
-impl DirectBytes {
-    /// Returns the bytes at the offsets inside these; none past their end.
-    pub fn part(&self, offsets: Range<u64>) -> Option<DirectBytes> {
-        Some(DirectBytes {
-            bytes: self.bytes.part(offsets)?,
-            keeps: self.keeps.clone(),
-        })
-    }
-}
-
 impl VolatileBytes for DirectBytes {
     fn len(&self) -> u64 {
         self.bytes.len()
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        self.bytes.read(into)
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        self.bytes.read_at(offset, into)
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        self.bytes.write(bytes)
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        self.bytes.write_at(offset, bytes)
     }
 
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
