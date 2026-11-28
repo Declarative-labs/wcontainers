@@ -115,10 +115,11 @@ pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String>
         Kind::Sint => "i",
         _ => "",
     };
-    // GLSL ES 3.00 fetches no texel of a cube: a cube is sampled, nearest, towards the texel's centre.
+    // GLSL ES 3.00 fetches no texel of a cube: a cube is sampled, nearest, towards the texel's centre,
+    // at the one level the draw leaves it (its base and most level both the region's).
     let (fetch, towards) = match sampler {
         "2D" => ("texelFetch(src, q, 0)", ""),
-        "Cube" => ("textureLod(src, towards(q), 0.0)", crate::depth::TOWARDS),
+        "Cube" => ("texture(src, towards(q))", crate::depth::TOWARDS),
         _ => ("texelFetch(src, ivec3(q, at.z), 0)", ""),
     };
     let srgb = if [from, to].contains(&Kind::Srgb) {
@@ -131,10 +132,11 @@ pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String>
     let decode = match from {
         Kind::Unorm => format!("uvec4(v * vec4({max}) + 0.5)"),
         Kind::Srgb => SRGB_BITS.into(),
-        // As the depth read back by draw is: rounded once.
+        // As the depth read back by draw is: rounded once (a sampled depth is at most 1, so the
+        // product at most the largest word).
         Kind::Depth(b) => {
             let one = (1u64 << b) - 1;
-            format!("uvec4(min(uint(round(v.x * {one}.0)), {one}u))")
+            format!("uvec4(uint(round(v.x * {one}.0)))")
         }
         Kind::DepthFloat => "floatBitsToUint(v)".into(),
         Kind::Half => format!(
@@ -145,8 +147,9 @@ pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String>
             half("w")
         ),
         Kind::Single => "floatBitsToUint(v)".into(),
+        // One word, into a one-channel target.
         Kind::SmallFloat => "uvec4(small_bits(v.x, 6u) | small_bits(v.y, 6u) << 11u \
-                             | small_bits(v.z, 5u) << 22u, 0u, 0u, 0u)"
+                             | small_bits(v.z, 5u) << 22u)"
             .into(),
         Kind::Uint => "v".into(),
         Kind::Sint => format!("uvec4(v) & {max}"),

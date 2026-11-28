@@ -164,7 +164,8 @@ pub(crate) enum Shape {
 
 /// Fetches the texel under the fragment, moved by the region's origin, and writes its stored value.
 /// Drawn with GL's own lower-left window origin, so the fragment's row is the texel's row. GLSL ES
-/// 3.00 fetches no texel of a cube, so a cube is sampled, nearest, towards the texel's centre.
+/// 3.00 fetches no texel of a cube, so a cube is sampled, nearest, towards the texel's centre, at
+/// the one level the draw leaves it (its base and most level both the region's).
 fn fragment(shape: Shape, stencil: bool) -> String {
     let u = if stencil { "u" } else { "" };
     let (sampler, coord) = match shape {
@@ -173,7 +174,7 @@ fn fragment(shape: Shape, stencil: bool) -> String {
         Shape::Cube => (format!("{u}samplerCube"), "p"),
     };
     let fetch = match shape {
-        Shape::Cube => "textureLod(src, towards(p), 0.0)",
+        Shape::Cube => "texture(src, towards(p))",
         _ => "texelFetch(src, COORD, 0)",
     }
     .replace("COORD", coord);
@@ -282,17 +283,16 @@ pub(crate) fn build_stencil_write(gl: &impl OpenGlEs, array: bool) -> Result<Ste
     }
 }
 
-/// A triangle covering the target at clip depth `z`, for the 24-bit depth probe.
-const PROBE: &str = "#version 300 es
-uniform float z;
-void main() {
-    gl_Position = vec4(float((gl_VertexID & 1) << 2) - 1.0, float((gl_VertexID & 2) << 1) - 1.0, z, 1.0);
+/// The full-screen triangle ([`VERTEX`]) at clip depth `z`, for the depth probes.
+fn probe() -> String {
+    VERTEX
+        .replace("void main() {", "uniform float z;\nvoid main() {")
+        .replace(", 0.0, 1.0);", ", z, 1.0);")
 }
-";
 
-/// Builds the 24-bit depth probe's program and its uniform `z`. Err holds GL's log.
+/// Builds the depth probes' program and its uniform `z`. Err holds GL's log.
 pub(crate) fn build_probe(gl: &impl OpenGlEs) -> Result<(u32, i32), String> {
-    let program = link_with(gl, PROBE, ONE)?;
+    let program = link_with(gl, &probe(), ONE)?;
     let z = platform::location(gl, program, "z");
     Ok((program, z.ok_or("the probe program has no uniform z")?))
 }
