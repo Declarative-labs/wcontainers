@@ -5,6 +5,10 @@ use vstd::prelude::*;
 
 verus! {
 
+#[allow(
+    reviewable::explicit_shared_error::DuplicateError,
+    reason = "duplicating within a table and from another table fail in the same ways"
+)]
 pub trait CapabilityTable<Identifier, Capability> {
     type Config;
 
