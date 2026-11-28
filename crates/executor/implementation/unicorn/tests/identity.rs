@@ -23,10 +23,10 @@ type Place = (u8, u8);
 /// MIDR_EL1 and REVIDR_EL1, which Linux answers with the processor's own.
 const NAMING_THE_PROCESSOR: [Place; 2] = [(0, 0), (0, 6)];
 
-/// The `AT_HWCAP` bit no identification register gives: EVTSTRM, the generic timer's event
-/// stream (<https://docs.kernel.org/arch/arm64/elf_hwcaps.html#:~:text=HWCAP%5FEVTSTRM>).
+/// The `AT_HWCAP` bit no identification register gives: EVTSTRM, the timer's event stream.
 ///
-/// The reference's kernel may set it; this kernel presents no event stream, so it is 0 here.
+/// <https://docs.kernel.org/arch/arm64/elf_hwcaps.html#:~:text=HWCAP%5FEVTSTRM>. The reference's
+/// kernel may set it; this kernel presents no event stream, so it is 0 here.
 const EVENT_STREAM: u64 = 1 << 2;
 
 /// Each register's fields Linux lets a program see, by lowest bit, each 4 bits wide.
@@ -65,9 +65,10 @@ const VISIBLE_FIELDS: &[(Place, &[u32])] = &[
     ((7, 3), &[16]),
 ];
 
-/// What a program printed: each register's value (`None` where the read is undefined), each
-/// capability word (`AT_HWCAP`, `derived AT_HWCAP`, ...) and each line about /proc/cpuinfo's
-/// Features (`cpuinfo Features`, `cpuinfo same`, `derived Features`).
+/// What a program printed: each register's value, each capability word and each Features line.
+///
+/// A register is `None` where its read is undefined; the words are `AT_HWCAP`, `derived
+/// AT_HWCAP`, ...; the lines `cpuinfo Features`, `cpuinfo same`, `derived Features`.
 struct Seen {
     registers: BTreeMap<Place, Option<u64>>,
     capabilities: BTreeMap<String, u64>,
@@ -121,8 +122,9 @@ fn parse(text: &str) -> Seen {
     seen
 }
 
-/// Why one side's capability words and Features line are not exactly what its registers say, if
-/// they are not: `event_stream` is the EVTSTRM bit that side's kernel may give besides.
+/// Returns why one side's capability words and Features line differ from what its registers say.
+///
+/// `event_stream` is the EVTSTRM bit that side's kernel may give besides.
 fn capability_differences(side: &str, seen: &Seen, event_stream: u64) -> Vec<String> {
     let word = |name: &str| seen.capabilities.get(name).copied();
     let line = |name: &str| seen.features.get(name).map(String::as_str);

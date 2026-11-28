@@ -194,11 +194,9 @@ pub(crate) fn read(features: &Arm64Features, encoding: (u8, u8, u8, u8), op2: u8
     })
 }
 
-/// A register built from `(value, lowest bit)` fields, which never overlap, so each is added.
+/// Builds a register from `(value, lowest bit)` fields, which never overlap, so each is added.
 fn fields(parts: &[(u64, u32)]) -> u64 {
-    parts
-        .iter()
-        .fold(0, |register, (value, at)| register + (value << at))
+    parts.iter().map(|(value, at)| value << at).sum()
 }
 
 /// A one-bit feature as its four-bit field: 1 where present.
@@ -408,7 +406,8 @@ pub(crate) fn hardware_capabilities(features: &Arm64Features) -> (u64, u64) {
         capabilities
             .iter()
             .filter(|(has, _)| *has)
-            .fold(0, |word, (_, bit)| word + bit)
+            .map(|(_, bit)| bit)
+            .sum::<u64>()
     };
     (word(&first), word(&second))
 }

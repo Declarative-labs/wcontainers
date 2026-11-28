@@ -118,7 +118,7 @@ enum Target {
     Process(Pid),
 }
 
-/// The thread a signal is sent to: the one named, or a process's first (Linux's target task).
+/// Returns the thread a signal is sent to: the one named, or a process's first (its target task).
 fn target_thread(target: Target) -> Tid {
     match target {
         Target::Thread(tid) => tid,

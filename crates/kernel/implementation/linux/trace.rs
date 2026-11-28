@@ -1,12 +1,19 @@
-//! Tracing with `ptrace`: the link between a traced thread and the thread tracing it, the stop a
-//! traced thread makes for each signal it is about to act on (Linux's signal-delivery-stop,
-//! `ptrace_signal`), how its tracer is told and resumes it, and what happens when the tracer goes.
+//! The link between a traced thread and its tracer, and the stop it makes for each signal.
+//!
+//! Linux's signal-delivery-stop (`ptrace_signal`): how the tracer is told and resumes it, and what
+//! happens when the tracer goes.
 
 use wcontainers_executor::Executor;
 
 use crate::linux::general::*;
 use crate::process::{Pid, Queued, Tid};
 use crate::{Context, Kernel};
+
+/// The signal a stopped thread goes on with when it is given none.
+const NO_SIGNAL: u32 = 0;
+
+/// The CPU time a stop's SIGCHLD carries, 0 here as for a job control stop's.
+const STOP_TICKS: u64 = 0;
 
 /// A traced thread's link to its tracer (Linux's `ptrace` flags and `parent`).
 #[derive(Clone)]
@@ -17,34 +24,34 @@ pub(crate) struct Trace {
     pub stop: Option<Stop>,
 }
 
-/// A traced thread's stop for a signal it took (Linux's `TASK_TRACED` with `exit_code` and
-/// `last_siginfo`).
+/// A traced thread's stop for a signal it took (Linux's `TASK_TRACED` and `last_siginfo`).
 #[derive(Clone)]
 pub(crate) struct Stop {
     /// The signal it stopped for, which a wait reports.
     pub signal: u32,
     /// The signal's information, which `PTRACE_GETSIGINFO` reads and `PTRACE_SETSIGINFO` replaces.
-    pub info: [u8; 128],
+    pub info: crate::siginfo::Bytes,
     /// A wait has reported the stop (Linux clears `exit_code`), so another does not.
     pub reported: bool,
 }
 
-/// How a stopped thread goes on: the signal it acts on (0 for none) and the tracer that chose it,
-/// whose information a signal other than the one it stopped for carries.
+/// How a stopped thread goes on: the signal it acts on (0 for none) and the tracer choosing it.
+///
+/// A signal other than the one it stopped for carries the tracer's information.
 pub(crate) struct Going {
     pub signal: u32,
     pub tracer: Tid,
 }
 
 impl Kernel {
-    /// Whether `tid` is traced.
+    /// Tells whether `tid` is traced.
     pub(crate) fn traced(&self, tid: Tid) -> bool {
         self.threads
             .get(&tid)
             .is_some_and(|thread| thread.trace.is_some())
     }
 
-    /// Whether `tid` is stopped for its tracer.
+    /// Tells whether `tid` is stopped for its tracer.
     pub(crate) fn trace_stopped(&self, tid: Tid) -> bool {
         self.threads
             .get(&tid)
@@ -52,8 +59,9 @@ impl Kernel {
             .is_some_and(|trace| trace.stop.is_some())
     }
 
-    /// A traced thread took `queued` on its way back to its program (`ptrace_signal`): it stops
-    /// where it is, keeping how it goes on, and its tracer is told.
+    /// Stops traced thread `tid`, which took `queued` on its way back, and tells its tracer.
+    ///
+    /// It keeps how it goes on (`ptrace_signal`).
     pub(crate) fn stop_for_tracer<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
@@ -80,8 +88,9 @@ impl Kernel {
         self.tell_tracer(cx, tracer, tid, uid, queued.signal);
     }
 
-    /// Sends the tracer's process SIGCHLD for a stop (CLD_TRAPPED), unless it asked not to be told
-    /// of stops, and wakes its waits (`do_notify_parent_cldstop` for ptrace).
+    /// Sends the tracer's process SIGCHLD for a stop and wakes its waits.
+    ///
+    /// CLD_TRAPPED, unless it asked not to be told of stops (`do_notify_parent_cldstop`).
     fn tell_tracer<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
@@ -95,16 +104,18 @@ impl Kernel {
         };
         let action = self.processes[&process].actions.borrow()[SIGCHLD as usize - 1];
         if action.sa_flags & u64::from(SA_NOCLDSTOP) == 0 {
-            let info = crate::signal::child_info(tid, uid, CLD_TRAPPED as i32, signal as i32, 0);
+            let info =
+                crate::signal::child_info(tid, uid, CLD_TRAPPED as i32, signal as i32, STOP_TICKS);
             self.send_to_process(cx, process, SIGCHLD, info);
         }
         self.wake_waiters_of(process);
     }
 
-    /// A thread stopped for its tracer goes on (`ptrace_resume`, `ptrace_detach`): it acts on
-    /// `going`'s signal, if any, and then on its other signals, from where it stopped. A signal it
-    /// now blocks is sent to it again instead; one other than the signal it stopped for carries
-    /// the tracer's own information (SI_USER).
+    /// Lets thread `tid`, stopped for its tracer, go on with `going`'s signal, if any.
+    ///
+    /// It then acts on its other signals, from where it stopped (`ptrace_resume`, `ptrace_detach`).
+    /// A signal it now blocks is sent to it again instead; one other than the signal it stopped for
+    /// carries the tracer's own information (SI_USER).
     pub(crate) fn resume_traced<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
@@ -113,7 +124,7 @@ impl Kernel {
         going: &Going,
     ) {
         let signal = going.signal;
-        if signal != 0 {
+        if signal != NO_SIGNAL {
             let info = if signal == stop.signal {
                 stop.info
             } else {
@@ -136,9 +147,10 @@ impl Kernel {
         }
     }
 
-    /// Thread `tracer` ends (`exit_ptrace`): every thread it traces is let go of, and one stopped
-    /// for it goes on without the signal it stopped for, as Linux's does (MEASURED: a tracee stopped
-    /// for SIGUSR1 with a handler goes on without running it once its tracer ends).
+    /// Lets go of every thread `tracer` traces, as it ends (`exit_ptrace`).
+    ///
+    /// One stopped for it goes on without the signal it stopped for, as on Linux (MEASURED: a
+    /// tracee stopped for SIGUSR1 goes on without running its handler once its tracer ends).
     pub(crate) fn tracer_ended<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
@@ -158,13 +170,16 @@ impl Kernel {
         for tid in traced {
             let trace = self.thread_mut(tid).trace.take();
             if let Some(stop) = trace.and_then(|trace| trace.stop) {
-                let going = Going { signal: 0, tracer };
+                let going = Going {
+                    signal: NO_SIGNAL,
+                    tracer,
+                };
                 self.resume_traced(cx, tid, stop, &going);
             }
         }
     }
 
-    /// The threads of `pid` a fatal signal ends leave their stops, so they run to their end.
+    /// Takes the threads of `pid`, which a fatal signal ends, out of their stops to run to it.
     pub(crate) fn leave_trace_stops(&mut self, pid: Pid) {
         for tid in self.processes[&pid].threads.clone() {
             if let Some(trace) = self.thread_mut(tid).trace.as_mut() {
@@ -173,9 +188,10 @@ impl Kernel {
         }
     }
 
-    /// What a wait by thread `tid` finds of the threads its process traces: each traced thread
-    /// `which` admits and whose tracer the wait looks at (only `tid` itself with `__WNOTHREAD`),
-    /// with its unreported stop's signal, if any (`ptrace_do_wait`).
+    /// Returns the traced threads a wait by `tid` finds, each with its unreported stop's signal.
+    ///
+    /// Those `admits` takes and whose tracer the wait looks at: one of its process, or only `tid`
+    /// itself with `__WNOTHREAD` (`ptrace_do_wait`).
     pub(crate) fn traced_for_wait(
         &self,
         tid: Tid,
@@ -205,7 +221,7 @@ impl Kernel {
             .collect()
     }
 
-    /// A wait reported `tid`'s stop; another wait does not see it again.
+    /// Marks `tid`'s stop as reported by a wait, so another wait does not see it again.
     pub(crate) fn trace_stop_reported(&mut self, tid: Tid) {
         if let Some(stop) = self
             .thread_mut(tid)
@@ -217,8 +233,7 @@ impl Kernel {
         }
     }
 
-    /// Whether a thread of process `pid` is traced (by another process's thread, as no thread may
-    /// trace its own process).
+    /// Tells whether a thread of process `pid` is traced (by another process's, as no other can).
     pub(crate) fn process_traced(&self, pid: Pid) -> bool {
         self.processes[&pid]
             .threads

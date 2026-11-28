@@ -1133,6 +1133,12 @@ pub(crate) fn fdinfo_allowed(view: &View<'_>, entry: &Entry, caller: Tid) -> Res
     }
 }
 
+/// The state a thread stopped for its tracer shows (`TASK_TRACED` in `task_state_array`).
+const TRACING_STOP: (char, &str) = ('t', "tracing stop");
+
+/// The `TracerPid` of a thread no thread traces.
+const NO_TRACER: Tid = 0;
+
 /// A thread's state (`get_task_state`): ended and not reaped (a process's first thread stays so
 /// while others go on), stopped for its tracer, stopped (or taken off the kernel), parked
 /// (unkillably only for a `vfork` parent's wait), or running.
@@ -1146,7 +1152,7 @@ fn state(view: &View<'_>, process: &Process, tid: Tid) -> (char, &'static str) {
     if process.ended.is_some() || (thread.is_none() && !away) {
         ('Z', "zombie")
     } else if trace_stopped {
-        ('t', "tracing stop")
+        TRACING_STOP
     } else if process.stopped || away {
         ('T', "stopped")
     } else if matches!(wait, Some(Channel::Vfork(_))) {
@@ -2421,7 +2427,7 @@ fn process_file(
                     .threads
                     .get(&tid)
                     .and_then(|thread| thread.trace.as_ref())
-                    .map_or(0, |trace| trace.tracer),
+                    .map_or(NO_TRACER, |trace| trace.tracer),
                 credentials.uid,
                 credentials.euid,
                 credentials.suid,

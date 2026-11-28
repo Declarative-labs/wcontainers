@@ -1,5 +1,7 @@
-//! `ptrace` as the LTP tests use it (TRACEME, ATTACH, CONT, KILL, DETACH, PEEK, POKE, GETSIGINFO,
-//! SETSIGINFO), with the stops, waits and SIGCHLD it brings, compared with real ARM64 Linux.
+//! The tracing call as the LTP tests use it, compared with real ARM64 Linux.
+//!
+//! TRACEME, ATTACH, CONT, KILL, DETACH, PEEK, POKE, GETSIGINFO and SETSIGINFO, with the stops,
+//! waits and SIGCHLD they bring.
 
 use std::path::Path;
 

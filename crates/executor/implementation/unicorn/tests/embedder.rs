@@ -1264,8 +1264,9 @@ fn a_programs_own_memory_reached_by_the_process_vm_calls_meets_its_watches() {
     lazy_as_the_reference(&["vm"]);
 }
 
-/// Checks that ptrace's requests meet the watches of what they copy, in the tracer and in the
-/// tracee: lazy pages are filled before a request reads or writes them.
+/// Checks that ptrace's requests meet the watches of what they copy, in tracer and tracee.
+///
+/// Lazy pages are filled before a request reads or writes them.
 #[test]
 fn memory_ptrace_copies_meets_the_watches_of_tracer_and_tracee() {
     lazy_as_the_reference(&["ptrace"]);
@@ -3154,8 +3155,7 @@ thread_local! {
     static TRACED_AWAY: std::cell::RefCell<Vec<SuspendedTask>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Takes the child the parent's getppid names off the kernel at the next step, and puts it back
-/// at the step after.
+/// Takes the child the parent's getppid names off the kernel, then puts it back a step later.
 #[derive(Default)]
 struct TracedAway {
     child: Option<TaskId>,
@@ -3199,8 +3199,7 @@ impl Hooks for TracedAway {
     }
 }
 
-/// Checks that a thread stopped for its tracer, taken off the kernel and put back, stays stopped
-/// until its tracer resumes it.
+/// Checks that a stopped tracee taken off the kernel and put back stays stopped until resumed.
 #[test]
 fn a_thread_stopped_for_its_tracer_stays_stopped_across_being_taken() {
     let run = try_guest(

@@ -1,8 +1,7 @@
-//! `ptrace`: a thread traces another, which stops for it at each signal it is about to act on
-//! (Linux's kernel/ptrace.c with arm64's `arch_ptrace`, which adds no request of its own that is
-//! built here). Built: PTRACE_TRACEME, PTRACE_ATTACH, PTRACE_CONT, PTRACE_KILL, PTRACE_DETACH,
-//! PTRACE_PEEKTEXT/DATA, PTRACE_POKETEXT/DATA, PTRACE_GETSIGINFO and PTRACE_SETSIGINFO; every
-//! other request answers EIO, as Linux's `ptrace_request` answers one it does not know.
+//! The tracing call, by which a thread traces another that stops for it at each signal.
+//!
+//! As Linux's kernel/ptrace.c with arm64's `arch_ptrace`: TRACEME, ATTACH, CONT, KILL, DETACH,
+//! PEEK and POKE of TEXT and DATA, GETSIGINFO and SETSIGINFO; any other request answers EIO.
 
 use wcontainers_executor::Executor;
 
@@ -17,10 +16,13 @@ use crate::trace::{Going, Stop, Trace};
 use crate::{Context, Errno, Kernel};
 
 /// The size of the word `PTRACE_PEEK*` and `PTRACE_POKE*` move (`unsigned long`).
-const WORD: u64 = 8;
+const WORD: u64 = size_of::<u64>() as u64;
 
 /// The size of a `siginfo` (`struct siginfo`).
-const SIGINFO: u64 = 128;
+const SIGINFO: u64 = size_of::<siginfo>() as u64;
+
+/// What a request that succeeded and reads nothing back answers.
+const SUCCEEDED: u64 = 0;
 
 pub(super) fn ptrace<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
@@ -61,7 +63,9 @@ pub(super) fn ptrace<S: crate::System, C: Executor + 'static>(
         Ok(PTRACE_POKETEXT | PTRACE_POKEDATA) => poke(kernel, cx, tid, target, address, data),
         Ok(PTRACE_GETSIGINFO) => {
             let info = stop_of(kernel, target).info;
-            guest(kernel, cx, tid).write(data, &info).map(|()| 0)
+            guest(kernel, cx, tid)
+                .write(data, &info)
+                .map(|()| SUCCEEDED)
         }
         Ok(PTRACE_SETSIGINFO) => {
             let bytes = guest(kernel, cx, tid).read(data, SIGINFO)?;
@@ -74,7 +78,7 @@ pub(super) fn ptrace<S: crate::System, C: Executor + 'static>(
             {
                 stop.info = info;
             }
-            Ok(0)
+            Ok(SUCCEEDED)
         }
         Ok(PTRACE_CONT) => resume(kernel, cx, tid, target, data, false),
         Ok(PTRACE_DETACH) => resume(kernel, cx, tid, target, data, true),
@@ -84,13 +88,13 @@ pub(super) fn ptrace<S: crate::System, C: Executor + 'static>(
             let uid = kernel.credentials(tid).uid;
             let info = crate::signal::sender_info(SIGKILL, SI_USER as i32, caller, uid);
             kernel.send_to_thread(cx, target, SIGKILL, info);
-            Ok(0)
+            Ok(SUCCEEDED)
         }
         _ => Err(Errno::EIO),
     }
 }
 
-/// `ptrace_traceme`: the caller's process's parent thread traces it; EPERM if it is traced.
+/// Makes the caller's process's parent thread its tracer (`ptrace_traceme`); EPERM if traced.
 fn trace_me(kernel: &mut Kernel, tid: Tid) -> Result<u64, Errno> {
     if kernel.traced(tid) {
         return Err(Errno::EPERM);
@@ -98,12 +102,13 @@ fn trace_me(kernel: &mut Kernel, tid: Tid) -> Result<u64, Errno> {
     let tracer = kernel.process_of(tid).parent_thread;
     kernel.thread_mut(tid).trace = Some(Trace { tracer, stop: None });
     kernel.inspections.get_or_insert_default();
-    Ok(0)
+    Ok(SUCCEEDED)
 }
 
-/// `ptrace_attach`: EPERM for a thread of the caller's own process, one the caller may not trace
-/// by its real ids (`__ptrace_may_access` with PTRACE_MODE_ATTACH_REALCREDS) or one already
-/// traced; then the caller traces it and it is sent SIGSTOP from the kernel.
+/// Makes the caller trace `target` and sends it SIGSTOP from the kernel (`ptrace_attach`).
+///
+/// EPERM for a thread of the caller's own process, one the caller may not trace by its real ids
+/// (`__ptrace_may_access` with PTRACE_MODE_ATTACH_REALCREDS) or one already traced.
 fn attach<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
@@ -123,10 +128,10 @@ fn attach<S: crate::System, C: Executor + 'static>(
     });
     kernel.inspections.get_or_insert_default();
     kernel.send_to_thread(cx, target, SIGSTOP, crate::signal::kernel_info(SIGSTOP));
-    Ok(0)
+    Ok(SUCCEEDED)
 }
 
-/// The stop of a thread [`ptrace`] found stopped.
+/// Returns the stop of a thread [`ptrace`] found stopped.
 fn stop_of(kernel: &Kernel, target: Tid) -> &Stop {
     kernel.threads[&target]
         .trace
@@ -135,8 +140,9 @@ fn stop_of(kernel: &Kernel, target: Tid) -> &Stop {
         .expect("a stopped thread")
 }
 
-/// `generic_ptrace_peekdata`: the word at `address` of the traced thread's memory, read as a
-/// forced access reaches it (EIO if it does not reach all of it), stored at `data` (EFAULT).
+/// Copies the word at `address` of the tracee's memory to `data` (`generic_ptrace_peekdata`).
+///
+/// Read as a forced access reaches it, EIO if it does not reach all of it; EFAULT at `data`.
 fn peek<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
@@ -151,11 +157,12 @@ fn peek<S: crate::System, C: Executor + 'static>(
     if word.len() as u64 != WORD {
         return Err(Errno::EIO);
     }
-    guest(kernel, cx, tid).put(data, &word).map(|()| 0)
+    guest(kernel, cx, tid).put(data, &word).map(|()| SUCCEEDED)
 }
 
-/// `generic_ptrace_pokedata`: `data` written as the word at `address` of the traced thread's
-/// memory as a forced access reaches it; EIO if it does not reach all of it.
+/// Writes `data` as the word at `address` of the tracee's memory (`generic_ptrace_pokedata`).
+///
+/// Written as a forced access reaches it; EIO if it does not reach all of it.
 fn poke<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
@@ -170,11 +177,12 @@ fn poke<S: crate::System, C: Executor + 'static>(
     if written != WORD {
         return Err(Errno::EIO);
     }
-    Ok(0)
+    Ok(SUCCEEDED)
 }
 
-/// `ptrace_resume` (`detach` false) and `ptrace_detach`: EIO for a signal number past `_NSIG`;
-/// otherwise the stopped thread goes on with signal `data` (0 for none), let go of with `detach`.
+/// Lets the stopped tracee go on with signal `data` (`ptrace_resume`, `ptrace_detach`).
+///
+/// With `detach` it is let go of too; EIO for a signal number past `_NSIG`; 0 gives no signal.
 fn resume<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
@@ -199,5 +207,5 @@ fn resume<S: crate::System, C: Executor + 'static>(
         tracer: tid,
     };
     kernel.resume_traced(cx, target, stop, &going);
-    Ok(0)
+    Ok(SUCCEEDED)
 }
