@@ -12,6 +12,31 @@ fn count_bytes<T: VolatileBytes>(subject: &T) -> usize {
     length
 }
 
+/// Returns the bytes the offset tests fill the subject with: each differs from the bytes beside it and from `WRITTEN`, so
+/// a copy one byte off reads or writes a value that shows it.
+fn numbered(count: usize) -> Vec<u8> {
+    (0..count).map(|index| (index % usize::from(u8::MAX)) as u8).collect()
+}
+
+/// Fills the subject with `numbered` bytes and returns them.
+fn fill_numbered<T: VolatileBytes>(subject: &T, length: usize) -> Vec<u8> {
+    let bytes = numbered(length);
+    assert_eq!(subject.write(&bytes), length);
+    bytes
+}
+
+/// Returns all the subject's bytes.
+fn read_all<T: VolatileBytes>(subject: &T, length: usize) -> Vec<u8> {
+    let mut read = vec![WRITTEN; length];
+    assert_eq!(subject.read(&mut read), length);
+    read
+}
+
+/// Returns an index into the subject as an offset.
+fn offset_of(index: usize) -> u64 {
+    u64::try_from(index).expect("an index fits an offset")
+}
+
 /// Checks that the bytes written to the start are the bytes read back, and that a buffer longer than the bytes is cut to them.
 pub fn reads_back_what_was_written<T: VolatileBytes>(subject: T) {
     let length = count_bytes(&subject);
@@ -67,6 +92,135 @@ pub fn writes_only_what_a_source_holds<T: VolatileBytes>(subject: T) {
     assert!(read[1..].iter().all(|&byte| byte == u8::MIN));
 }
 
+/// Checks that a read from an offset inside copies the bytes from there, a buffer shorter than what is left taking only
+/// its own length, and that a write there changes exactly the buffer's bytes.
+pub fn reads_and_writes_at_an_offset_inside<T: VolatileBytes>(subject: T) {
+    let length = count_bytes(&subject);
+    let mut expected = fill_numbered(&subject, length);
+    let offset = length / 2;
+    let count = (length - offset).div_ceil(2);
+    let mut read = vec![WRITTEN; count + 1];
+    assert_eq!(subject.read_at(offset_of(offset), &mut read[..count]), count);
+    assert_eq!(read[..count], expected[offset..offset + count]);
+    assert_eq!(read[count], WRITTEN);
+    assert_eq!(subject.write_at(offset_of(offset), &vec![WRITTEN; count]), count);
+    expected[offset..offset + count].fill(WRITTEN);
+    assert_eq!(read_all(&subject, length), expected);
+}
+
+/// Checks that an offset at the last byte reads and writes that one byte, whatever the buffer's length.
+pub fn reads_and_writes_the_last_byte<T: VolatileBytes>(subject: T) {
+    let length = count_bytes(&subject);
+    let mut expected = fill_numbered(&subject, length);
+    let last = offset_of(length - 1);
+    let mut read = [WRITTEN; size_of::<u64>()];
+    assert_eq!(subject.read_at(last, &mut read), size_of::<u8>());
+    assert_eq!(read[0], expected[length - 1]);
+    assert!(read[1..].iter().all(|&byte| byte == WRITTEN));
+    assert_eq!(subject.write_at(last, &[WRITTEN; size_of::<u64>()]), size_of::<u8>());
+    expected[length - 1] = WRITTEN;
+    assert_eq!(read_all(&subject, length), expected);
+}
+
+/// Checks that an offset equal to the length reads and writes nothing, and is no error.
+pub fn reads_and_writes_nothing_at_the_length<T: VolatileBytes>(subject: T) {
+    let length = count_bytes(&subject);
+    let expected = fill_numbered(&subject, length);
+    let mut read = [WRITTEN; size_of::<u64>()];
+    assert_eq!(subject.read_at(offset_of(length), &mut read), usize::MIN);
+    assert_eq!(read, [WRITTEN; size_of::<u64>()]);
+    assert_eq!(subject.write_at(offset_of(length), &[WRITTEN; size_of::<u64>()]), usize::MIN);
+    assert_eq!(read_all(&subject, length), expected);
+}
+
+/// Checks that offsets past the end read and write nothing, including those whose sum with the buffer's length, or
+/// whose value in a 32-bit address, would wrap.
+pub fn reads_and_writes_nothing_past_the_end<T: VolatileBytes>(subject: T) {
+    let length = count_bytes(&subject);
+    let expected = fill_numbered(&subject, length);
+    let wide = offset_of(length) + (u64::from(u32::MAX) + 1);
+    for offset in [offset_of(length) + 1, wide, 1 << (u64::BITS - 1), u64::MAX - (size_of::<u64>() as u64 - 1)] {
+        let mut read = [WRITTEN; 2 * size_of::<u64>()];
+        assert_eq!(subject.read_at(offset, &mut read), usize::MIN, "{offset}");
+        assert_eq!(read, [WRITTEN; 2 * size_of::<u64>()], "{offset}");
+        assert_eq!(subject.write_at(offset, &[WRITTEN; 2 * size_of::<u64>()]), usize::MIN, "{offset}");
+        assert_eq!(read_all(&subject, length), expected, "{offset}");
+    }
+}
+
+/// Checks that the largest offset reads and writes nothing.
+pub fn reads_and_writes_nothing_at_the_largest_offset<T: VolatileBytes>(subject: T) {
+    let length = count_bytes(&subject);
+    let expected = fill_numbered(&subject, length);
+    let mut read = vec![WRITTEN; length];
+    assert_eq!(subject.read_at(u64::MAX, &mut read), usize::MIN);
+    assert_eq!(read, vec![WRITTEN; length]);
+    assert_eq!(subject.write_at(u64::MAX, &vec![WRITTEN; length]), usize::MIN);
+    assert_eq!(read_all(&subject, length), expected);
+}
+
+/// Checks that a buffer longer than what is left from the offset is cut to it, and that the rest of the buffer is left
+/// as it was.
+pub fn reads_and_writes_what_is_left_of_a_longer_buffer<T: VolatileBytes>(subject: T) {
+    let length = count_bytes(&subject);
+    let mut expected = fill_numbered(&subject, length);
+    let offset = length / 2;
+    let left = length - offset;
+    let mut read = vec![WRITTEN; left + size_of::<u64>()];
+    assert_eq!(subject.read_at(offset_of(offset), &mut read), left);
+    assert_eq!(read[..left], expected[offset..]);
+    assert!(read[left..].iter().all(|&byte| byte == WRITTEN));
+    assert_eq!(subject.write_at(offset_of(offset), &vec![WRITTEN; left + size_of::<u64>()]), left);
+    expected[offset..].fill(WRITTEN);
+    assert_eq!(read_all(&subject, length), expected);
+}
+
+/// Checks that an empty buffer reads and writes nothing at any offset inside or at the end.
+pub fn reads_and_writes_nothing_with_an_empty_buffer<T: VolatileBytes>(subject: T) {
+    let length = count_bytes(&subject);
+    let expected = fill_numbered(&subject, length);
+    for offset in [0, length / 2, length - 1, length].map(offset_of) {
+        assert_eq!(subject.read_at(offset, &mut []), usize::MIN, "{offset}");
+        assert_eq!(subject.write_at(offset, &[]), usize::MIN, "{offset}");
+    }
+    assert_eq!(read_all(&subject, length), expected);
+}
+
+/// Checks that a write at an offset leaves every byte before and after the bytes it writes as it was.
+pub fn writes_at_an_offset_leave_every_other_byte<T: VolatileBytes>(subject: T) {
+    let length = count_bytes(&subject);
+    let mut expected = fill_numbered(&subject, length);
+    for offset in [0, length / 2, length - 1] {
+        assert_eq!(subject.write_at(offset_of(offset), &[WRITTEN]), size_of::<u8>(), "{offset}");
+        expected[offset] = WRITTEN;
+        assert_eq!(read_all(&subject, length), expected, "{offset}");
+    }
+}
+
+/// Checks that `read` and `write` are `read_at` and `write_at` from the start, for a buffer shorter than, as long as and
+/// longer than the bytes.
+pub fn reads_and_writes_as_from_the_start<T: VolatileBytes>(subject: T) {
+    let length = count_bytes(&subject);
+    let expected = fill_numbered(&subject, length);
+    for buffer in [length - 1, length, length + size_of::<u64>()] {
+        let (mut read, mut read_at) = (vec![WRITTEN; buffer], vec![WRITTEN; buffer]);
+        let count = buffer.min(length);
+        assert_eq!(subject.read(&mut read), count, "{buffer}");
+        assert_eq!(subject.read_at(u64::MIN, &mut read_at), count, "{buffer}");
+        assert_eq!(read, read_at, "{buffer}");
+        assert_eq!(read[..count], expected[..count], "{buffer}");
+    }
+    let mut written = numbered(length - 1);
+    written.reverse();
+    let mut changed = expected.clone();
+    changed[..length - 1].copy_from_slice(&written);
+    assert_eq!(subject.write(&written), length - 1);
+    assert_eq!(read_all(&subject, length), changed);
+    assert_eq!(subject.write(&expected), length);
+    assert_eq!(subject.write_at(u64::MIN, &written), length - 1);
+    assert_eq!(read_all(&subject, length), changed);
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 ///
 /// List every suite function here, in the order above, and nothing else.
@@ -96,6 +250,51 @@ macro_rules! tests {
         #[test]
         fn writes_only_what_a_source_holds() {
             $crate::writes_only_what_a_source_holds($value);
+        }
+
+        #[test]
+        fn reads_and_writes_at_an_offset_inside() {
+            $crate::reads_and_writes_at_an_offset_inside($value);
+        }
+
+        #[test]
+        fn reads_and_writes_the_last_byte() {
+            $crate::reads_and_writes_the_last_byte($value);
+        }
+
+        #[test]
+        fn reads_and_writes_nothing_at_the_length() {
+            $crate::reads_and_writes_nothing_at_the_length($value);
+        }
+
+        #[test]
+        fn reads_and_writes_nothing_past_the_end() {
+            $crate::reads_and_writes_nothing_past_the_end($value);
+        }
+
+        #[test]
+        fn reads_and_writes_nothing_at_the_largest_offset() {
+            $crate::reads_and_writes_nothing_at_the_largest_offset($value);
+        }
+
+        #[test]
+        fn reads_and_writes_what_is_left_of_a_longer_buffer() {
+            $crate::reads_and_writes_what_is_left_of_a_longer_buffer($value);
+        }
+
+        #[test]
+        fn reads_and_writes_nothing_with_an_empty_buffer() {
+            $crate::reads_and_writes_nothing_with_an_empty_buffer($value);
+        }
+
+        #[test]
+        fn writes_at_an_offset_leave_every_other_byte() {
+            $crate::writes_at_an_offset_leave_every_other_byte($value);
+        }
+
+        #[test]
+        fn reads_and_writes_as_from_the_start() {
+            $crate::reads_and_writes_as_from_the_start($value);
         }
     };
 }
