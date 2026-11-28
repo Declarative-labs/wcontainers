@@ -7,9 +7,8 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
-wcontainers-capability-table = { path = "../capability-table" }
+wcontainers-memory-capability-table = { path = "../memory-capability-table" }
 wcontainers-memory-shard = { path = "../memory-shard" }
-thiserror = { version = "2.0.21", default-features = false }
 vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
 
 [package.metadata.verus]
