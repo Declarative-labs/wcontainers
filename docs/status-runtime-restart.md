@@ -527,6 +527,19 @@ runtime-restart-ltp/20261127-124227-1970472 at 852859ad5, release build, `LTP_JO
 - read_all_dev: "Worker timeout is too short; restarts take >3051045us" (process start on wasmtime; executor track).
 fcntl12, fcntl12_64 and fork09 time out as on the stand-in.
 
+LTP's whole suite on wasmtime at full again, after the kernel call was taken out (MEASURED, ARM64). The job was
+rt3-ltp/20261127-191416-2045046 at 455d9d2cf, whose product code is the tip's. It used the same commands and limits:
+release build, `LTP_JOBS=12 LTP_LIMIT=600`. It took 35,618 s at load 67-404, because the shared machine was loaded.
+- The deciding line: "4226 tests compared: 4148 verdicts match, 78 differ, 0 not run".
+- 21 verdicts differed from the run above. 17 of them were timeouts at 600 s of tests that took 15 to 533 s before
+  (llseek, lseek, llistxattr, lsm_get_self_attr and others, all in the hours when the load was above 300). The other 4
+  were poll02, prctl09, futex_wait05 and clock_nanosleep02, all timing tests.
+- Those 21 were run again together (job 20261128-050842-2904058, `LTP_JOBS=4`, load 44-103). Every one gave the earlier
+  run's verdict again, hackbench01 included (pass in 492 s).
+- With the rerun in, the set of verdicts equals the run above test by test: 0 differ. Against j5f's stand-in the same 17
+  differ, with the same causes and owners as listed above.
+- Results: SCRATCH/runtime-restart/rt3-results (full.tsv, rerun.tsv, merged.tsv, cmp.py, the two job logs).
+
 The targets bounded at 1800 s, rerun one at a time (MEASURED, ARM64, job runtime-restart-alone/20261127-125559-1820800 at
 b84c44861, `--test-threads 4`, load 35-168):
 
@@ -565,6 +578,9 @@ with the reference too (INFERRED: the same cause).
   LTP's 10 worse verdicts (math floating point about 10 times slower: translator and executor tracks; four clock tests:
   kernel track's time model, brief question 4; read_all_dev's process start: executor track). The orchestrator decides
   whether these named tests close RT2; then RT2's independent check.
+- 2026-11-28: the check's six plants are answered (A, B and F tested; C and D removed), and so are its three
+  non-blocking ones (O, P and M tested). There are 0 survivors of cargo-mutants over runners.rs. The whole LTP set is
+  unchanged by the removal. The independent check of this run can start now, at the tip.
 - RT3: waits on KP2 and X4.
 
 ## For the orchestrator (one line each)
@@ -635,6 +651,8 @@ For the owner (his files unchanged):
   2026-11-27 evening, db8b17712 -> 5ddc8da51 (MEASURED, `git grep -w unsafe <commit> -- <folder>`): single-kernel 0 -> 0,
   runtime suite 0 -> 0, seeded-test-policy 0 -> 0, tools/runtime-modes (new, one shell script) 0. No marked exception; every crate keeps
   `[lints] workspace = true`; no lint lowered, no linter exclusion.
+  2026-11-28, 6011f8560 -> tip: single-kernel 0 -> 0, runtime suite 0 -> 0, seeded-test-policy 0 -> 0 (MEASURED, same
+  command). cargo-mutants ran from a folder on the machine and is in no lock file.
 - New dependencies: none from outside the workspace. Single-kernel adds workspace crates behavior-source and
   processor-architecture (for `Interruptible`) and, as dev-dependencies, the runtime suite and the unicorn stand-in
   (GPL-2.0-only, test-only, `publish = false`, without its harness), and since 4d868b54c the WebAssembly executor
