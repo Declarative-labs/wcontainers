@@ -242,6 +242,8 @@ pub(super) struct Writer<'g, 'a> {
     pub(super) mirror_check: std::cell::Cell<bool>,
     /// The checks written so far for the crate being written.
     pub(super) mirror_checks: RefCell<String>,
+    /// Each union codec of the crate being written and its test that every member alone is written: (ident, test).
+    pub(super) union_tests: RefCell<Vec<(String, String)>>,
 }
 
 impl<'g, 'a> Writer<'g, 'a> {
@@ -261,6 +263,7 @@ impl<'g, 'a> Writer<'g, 'a> {
             shapes: RefCell::new(hostile::Shapes::default()),
             mirror_check: std::cell::Cell::new(std::env::var_os("MIRROR_CHECK").is_some()),
             mirror_checks: RefCell::new(String::new()),
+            union_tests: RefCell::new(Vec::new()),
         }
     }
 
@@ -379,6 +382,20 @@ impl<'g, 'a> Writer<'g, 'a> {
         }
         if union && !decode_only {
             encode = format!("    let mut chosen = (usize::MIN, [u8::MIN; size_of::<{mirror}>()]);\n{encode}    bytes[..size_of::<{mirror}>()].copy_from_slice(&chosen.1);\n");
+            // Each member alone (the others zero) is the one written: read from bytes of 1 to 126, written, read back.
+            let mut test = format!("/// `{}`: each member alone, the others zero, is the member written.\n#[cfg(test)]\n#[test]\nfn {ident}_writes_each_member_alone() {{\n    let pattern: [u8; size_of::<{mirror}>()] = core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));\n    let full = decode_{ident}(&pattern);\n", record.name);
+            // A union of one member has no other to zero.
+            let others = if mirror_names.len() > 1 {
+                let _ = writeln!(test, "    let zero = decode_{ident}(&[u8::MIN; size_of::<{mirror}>()]);");
+                ", ..zero"
+            } else {
+                ""
+            };
+            for member in &mirror_names {
+                let _ = writeln!(test, "    let alone = {path} {{ {member}: full.{member}{others} }};\n    let mut bytes = [u8::MIN; size_of::<{mirror}>()];\n    encode_{ident}(&alone, &mut bytes);\n    assert_eq!(decode_{ident}(&bytes).{member}, full.{member}, \"{} member {member} alone\");", record.name);
+            }
+            test.push_str("}\n");
+            self.union_tests.borrow_mut().push((ident.to_string(), test));
         }
         let mut text = String::new();
         // The mirror: the record's fields in C's types and order, laid out by Rust's `repr(C)` with the record's packing.

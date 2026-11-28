@@ -1090,3 +1090,37 @@ pub(crate) fn decode_windows_win32_graphics_direct_3d12_d_3d12_gpu_descriptor_ha
         ),
     }
 }
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d12_clear_value_anonymous_writes_each_member_alone() {
+    let pattern: [u8; size_of::<WindowsWin32GraphicsDirect3d12ClearValueAnonymousLayout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d12_clear_value_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d12_clear_value_anonymous(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12ClearValueAnonymousLayout>()],
+    );
+    let alone = direct3d_12::structures::ClearValueAnonymous {
+        color: full.color,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12ClearValueAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d12_clear_value_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d12_clear_value_anonymous(&bytes).color,
+        full.color,
+        "_Anonymous_e__Union member color alone"
+    );
+    let alone = direct3d_12::structures::ClearValueAnonymous {
+        depth_stencil: full.depth_stencil,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12ClearValueAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d12_clear_value_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d12_clear_value_anonymous(&bytes).depth_stencil,
+        full.depth_stencil,
+        "_Anonymous_e__Union member depth_stencil alone"
+    );
+}

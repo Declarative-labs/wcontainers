@@ -971,6 +971,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     writer.coded.borrow_mut().clear();
     writer.codecs.borrow_mut().clear();
     writer.mirror_checks.borrow_mut().clear();
+    writer.union_tests.borrow_mut().clear();
     let spec = g.apis[api];
     let mut abi = String::new();
     let mut serve = String::new();
@@ -1379,7 +1380,13 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     );
     // A codec no glue of the crate calls is reached by nothing: it is not written.
     let users = format!("{lib}{abi_text}{serving}{calling}");
-    let data = without_unused_codecs(&data, &users);
+    let mut data = without_unused_codecs(&data, &users);
+    for (ident, test) in writer.union_tests.replace(Vec::new()) {
+        if data.contains(&format!("fn encode_{ident}(")) {
+            data.push('\n');
+            data.push_str(&test);
+        }
+    }
     let mut files = vec![("implementation.rs", lib), ("abi.rs", abi_text), ("serve.rs", serving), ("call.rs", calling), ("data.rs", data)];
     if has_lengths {
         // Only the rules of the shapes this set has: a slice's interface crate holds only the descriptions it names.

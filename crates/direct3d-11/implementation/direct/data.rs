@@ -13570,3 +13570,1321 @@ pub(crate) fn encode_windows_win32_graphics_dxgi_dxgi_shared_resource(
         value.handle.0,
     );
 }
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous_writes_each_member_alone() {
+    let pattern: [u8;
+        size_of::<WindowsWin32GraphicsDirect3d11DepthStencilViewDescAnonymousLayout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full =
+        decode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11DepthStencilViewDescAnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::DepthStencilViewDescAnonymous {
+        texture_1d: full.texture_1d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11DepthStencilViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&bytes)
+            .texture_1d,
+        full.texture_1d,
+        "_Anonymous_e__Union member texture_1d alone"
+    );
+    let alone = direct3d_11::structures::DepthStencilViewDescAnonymous {
+        texture_1d_array: full.texture_1d_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11DepthStencilViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&bytes)
+            .texture_1d_array,
+        full.texture_1d_array,
+        "_Anonymous_e__Union member texture_1d_array alone"
+    );
+    let alone = direct3d_11::structures::DepthStencilViewDescAnonymous {
+        texture_2d: full.texture_2d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11DepthStencilViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&bytes)
+            .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+    let alone = direct3d_11::structures::DepthStencilViewDescAnonymous {
+        texture_2d_array: full.texture_2d_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11DepthStencilViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&bytes)
+            .texture_2d_array,
+        full.texture_2d_array,
+        "_Anonymous_e__Union member texture_2d_array alone"
+    );
+    let alone = direct3d_11::structures::DepthStencilViewDescAnonymous {
+        texture_2dms: full.texture_2dms,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11DepthStencilViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&bytes)
+            .texture_2dms,
+        full.texture_2dms,
+        "_Anonymous_e__Union member texture_2dms alone"
+    );
+    let alone = direct3d_11::structures::DepthStencilViewDescAnonymous {
+        texture_2dms_array: full.texture_2dms_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11DepthStencilViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_depth_stencil_view_desc_anonymous(&bytes)
+            .texture_2dms_array,
+        full.texture_2dms_array,
+        "_Anonymous_e__Union member texture_2dms_array alone"
+    );
+}
+
+/// `_Anonymous1_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_buffer_srv_anonymous1_writes_each_member_alone() {
+    let pattern: [u8; size_of::<WindowsWin32GraphicsDirect3d11BufferSrvAnonymous1Layout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous1(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous1(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferSrvAnonymous1Layout>()],
+    );
+    let alone = direct3d_11::structures::BufferSrvAnonymous1 {
+        first_element: full.first_element,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferSrvAnonymous1Layout>()];
+    encode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous1(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous1(&bytes).first_element,
+        full.first_element,
+        "_Anonymous1_e__Union member first_element alone"
+    );
+    let alone = direct3d_11::structures::BufferSrvAnonymous1 {
+        element_offset: full.element_offset,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferSrvAnonymous1Layout>()];
+    encode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous1(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous1(&bytes).element_offset,
+        full.element_offset,
+        "_Anonymous1_e__Union member element_offset alone"
+    );
+}
+
+/// `_Anonymous2_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_buffer_srv_anonymous2_writes_each_member_alone() {
+    let pattern: [u8; size_of::<WindowsWin32GraphicsDirect3d11BufferSrvAnonymous2Layout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous2(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous2(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferSrvAnonymous2Layout>()],
+    );
+    let alone = direct3d_11::structures::BufferSrvAnonymous2 {
+        num_elements: full.num_elements,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferSrvAnonymous2Layout>()];
+    encode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous2(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous2(&bytes).num_elements,
+        full.num_elements,
+        "_Anonymous2_e__Union member num_elements alone"
+    );
+    let alone = direct3d_11::structures::BufferSrvAnonymous2 {
+        element_width: full.element_width,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferSrvAnonymous2Layout>()];
+    encode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous2(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_buffer_srv_anonymous2(&bytes).element_width,
+        full.element_width,
+        "_Anonymous2_e__Union member element_width alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous_writes_each_member_alone()
+{
+    let pattern: [u8; size_of::<
+        WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout,
+    >()] = core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full =
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &[u8::MIN;
+            size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        buffer: full.buffer,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .buffer,
+        full.buffer,
+        "_Anonymous_e__Union member buffer alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        texture_1d: full.texture_1d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .texture_1d,
+        full.texture_1d,
+        "_Anonymous_e__Union member texture_1d alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        texture_1d_array: full.texture_1d_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .texture_1d_array,
+        full.texture_1d_array,
+        "_Anonymous_e__Union member texture_1d_array alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        texture_2d: full.texture_2d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        texture_2d_array: full.texture_2d_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .texture_2d_array,
+        full.texture_2d_array,
+        "_Anonymous_e__Union member texture_2d_array alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        texture_2dms: full.texture_2dms,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .texture_2dms,
+        full.texture_2dms,
+        "_Anonymous_e__Union member texture_2dms alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        texture_2dms_array: full.texture_2dms_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .texture_2dms_array,
+        full.texture_2dms_array,
+        "_Anonymous_e__Union member texture_2dms_array alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        texture_3d: full.texture_3d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .texture_3d,
+        full.texture_3d,
+        "_Anonymous_e__Union member texture_3d alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        texture_cube: full.texture_cube,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .texture_cube,
+        full.texture_cube,
+        "_Anonymous_e__Union member texture_cube alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        texture_cube_array: full.texture_cube_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .texture_cube_array,
+        full.texture_cube_array,
+        "_Anonymous_e__Union member texture_cube_array alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDescAnonymous {
+        buffer_ex: full.buffer_ex,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc_anonymous(&bytes)
+            .buffer_ex,
+        full.buffer_ex,
+        "_Anonymous_e__Union member buffer_ex alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous_writes_each_member_alone()
+ {
+    let pattern: [u8; size_of::<
+        WindowsWin32GraphicsDirect3d11UnorderedAccessViewDescAnonymousLayout,
+    >()] = core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full =
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(
+        &[u8::MIN;
+            size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDescAnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDescAnonymous {
+        buffer: full.buffer,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(&bytes)
+            .buffer,
+        full.buffer,
+        "_Anonymous_e__Union member buffer alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDescAnonymous {
+        texture_1d: full.texture_1d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(&bytes)
+            .texture_1d,
+        full.texture_1d,
+        "_Anonymous_e__Union member texture_1d alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDescAnonymous {
+        texture_1d_array: full.texture_1d_array,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(&bytes)
+            .texture_1d_array,
+        full.texture_1d_array,
+        "_Anonymous_e__Union member texture_1d_array alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDescAnonymous {
+        texture_2d: full.texture_2d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(&bytes)
+            .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDescAnonymous {
+        texture_2d_array: full.texture_2d_array,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(&bytes)
+            .texture_2d_array,
+        full.texture_2d_array,
+        "_Anonymous_e__Union member texture_2d_array alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDescAnonymous {
+        texture_3d: full.texture_3d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc_anonymous(&bytes)
+            .texture_3d,
+        full.texture_3d,
+        "_Anonymous_e__Union member texture_3d alone"
+    );
+}
+
+/// `_Anonymous1_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_buffer_rtv_anonymous1_writes_each_member_alone() {
+    let pattern: [u8; size_of::<WindowsWin32GraphicsDirect3d11BufferRtvAnonymous1Layout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous1(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous1(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferRtvAnonymous1Layout>()],
+    );
+    let alone = direct3d_11::structures::BufferRtvAnonymous1 {
+        first_element: full.first_element,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferRtvAnonymous1Layout>()];
+    encode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous1(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous1(&bytes).first_element,
+        full.first_element,
+        "_Anonymous1_e__Union member first_element alone"
+    );
+    let alone = direct3d_11::structures::BufferRtvAnonymous1 {
+        element_offset: full.element_offset,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferRtvAnonymous1Layout>()];
+    encode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous1(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous1(&bytes).element_offset,
+        full.element_offset,
+        "_Anonymous1_e__Union member element_offset alone"
+    );
+}
+
+/// `_Anonymous2_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_buffer_rtv_anonymous2_writes_each_member_alone() {
+    let pattern: [u8; size_of::<WindowsWin32GraphicsDirect3d11BufferRtvAnonymous2Layout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous2(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous2(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferRtvAnonymous2Layout>()],
+    );
+    let alone = direct3d_11::structures::BufferRtvAnonymous2 {
+        num_elements: full.num_elements,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferRtvAnonymous2Layout>()];
+    encode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous2(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous2(&bytes).num_elements,
+        full.num_elements,
+        "_Anonymous2_e__Union member num_elements alone"
+    );
+    let alone = direct3d_11::structures::BufferRtvAnonymous2 {
+        element_width: full.element_width,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11BufferRtvAnonymous2Layout>()];
+    encode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous2(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_buffer_rtv_anonymous2(&bytes).element_width,
+        full.element_width,
+        "_Anonymous2_e__Union member element_width alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous_writes_each_member_alone() {
+    let pattern: [u8;
+        size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full =
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDescAnonymous {
+        buffer: full.buffer,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&bytes).buffer,
+        full.buffer,
+        "_Anonymous_e__Union member buffer alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDescAnonymous {
+        texture_1d: full.texture_1d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&bytes)
+            .texture_1d,
+        full.texture_1d,
+        "_Anonymous_e__Union member texture_1d alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDescAnonymous {
+        texture_1d_array: full.texture_1d_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&bytes)
+            .texture_1d_array,
+        full.texture_1d_array,
+        "_Anonymous_e__Union member texture_1d_array alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDescAnonymous {
+        texture_2d: full.texture_2d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&bytes)
+            .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDescAnonymous {
+        texture_2d_array: full.texture_2d_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&bytes)
+            .texture_2d_array,
+        full.texture_2d_array,
+        "_Anonymous_e__Union member texture_2d_array alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDescAnonymous {
+        texture_2dms: full.texture_2dms,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&bytes)
+            .texture_2dms,
+        full.texture_2dms,
+        "_Anonymous_e__Union member texture_2dms alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDescAnonymous {
+        texture_2dms_array: full.texture_2dms_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&bytes)
+            .texture_2dms_array,
+        full.texture_2dms_array,
+        "_Anonymous_e__Union member texture_2dms_array alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDescAnonymous {
+        texture_3d: full.texture_3d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc_anonymous(&bytes)
+            .texture_3d,
+        full.texture_3d,
+        "_Anonymous_e__Union member texture_3d alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous_writes_each_member_alone()
+ {
+    let pattern: [u8; size_of::<
+        WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout,
+    >()] = core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full =
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &[u8::MIN;
+            size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        buffer: full.buffer,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .buffer,
+        full.buffer,
+        "_Anonymous_e__Union member buffer alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        texture_1d: full.texture_1d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .texture_1d,
+        full.texture_1d,
+        "_Anonymous_e__Union member texture_1d alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        texture_1d_array: full.texture_1d_array,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .texture_1d_array,
+        full.texture_1d_array,
+        "_Anonymous_e__Union member texture_1d_array alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        texture_2d: full.texture_2d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        texture_2d_array: full.texture_2d_array,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .texture_2d_array,
+        full.texture_2d_array,
+        "_Anonymous_e__Union member texture_2d_array alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        texture_2dms: full.texture_2dms,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .texture_2dms,
+        full.texture_2dms,
+        "_Anonymous_e__Union member texture_2dms alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        texture_2dms_array: full.texture_2dms_array,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .texture_2dms_array,
+        full.texture_2dms_array,
+        "_Anonymous_e__Union member texture_2dms_array alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        texture_3d: full.texture_3d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .texture_3d,
+        full.texture_3d,
+        "_Anonymous_e__Union member texture_3d alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        texture_cube: full.texture_cube,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .texture_cube,
+        full.texture_cube,
+        "_Anonymous_e__Union member texture_cube alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        texture_cube_array: full.texture_cube_array,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .texture_cube_array,
+        full.texture_cube_array,
+        "_Anonymous_e__Union member texture_cube_array alone"
+    );
+    let alone = direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
+        buffer_ex: full.buffer_ex,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11ShaderResourceViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_resource_view_desc1_anonymous(&bytes)
+            .buffer_ex,
+        full.buffer_ex,
+        "_Anonymous_e__Union member buffer_ex alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous_writes_each_member_alone()
+ {
+    let pattern: [u8; size_of::<
+        WindowsWin32GraphicsDirect3d11UnorderedAccessViewDesc1AnonymousLayout,
+    >()] = core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full =
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(
+        &[u8::MIN;
+            size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDesc1AnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDesc1Anonymous {
+        buffer: full.buffer,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(&bytes)
+            .buffer,
+        full.buffer,
+        "_Anonymous_e__Union member buffer alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDesc1Anonymous {
+        texture_1d: full.texture_1d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(&bytes)
+            .texture_1d,
+        full.texture_1d,
+        "_Anonymous_e__Union member texture_1d alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDesc1Anonymous {
+        texture_1d_array: full.texture_1d_array,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(&bytes)
+            .texture_1d_array,
+        full.texture_1d_array,
+        "_Anonymous_e__Union member texture_1d_array alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDesc1Anonymous {
+        texture_2d: full.texture_2d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(&bytes)
+            .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDesc1Anonymous {
+        texture_2d_array: full.texture_2d_array,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(&bytes)
+            .texture_2d_array,
+        full.texture_2d_array,
+        "_Anonymous_e__Union member texture_2d_array alone"
+    );
+    let alone = direct3d_11::structures::UnorderedAccessViewDesc1Anonymous {
+        texture_3d: full.texture_3d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11UnorderedAccessViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_unordered_access_view_desc1_anonymous(&bytes)
+            .texture_3d,
+        full.texture_3d,
+        "_Anonymous_e__Union member texture_3d alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous_writes_each_member_alone()
+{
+    let pattern: [u8;
+        size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full =
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDesc1Anonymous {
+        buffer: full.buffer,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(&bytes).buffer,
+        full.buffer,
+        "_Anonymous_e__Union member buffer alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDesc1Anonymous {
+        texture_1d: full.texture_1d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(&bytes)
+            .texture_1d,
+        full.texture_1d,
+        "_Anonymous_e__Union member texture_1d alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDesc1Anonymous {
+        texture_1d_array: full.texture_1d_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(&bytes)
+            .texture_1d_array,
+        full.texture_1d_array,
+        "_Anonymous_e__Union member texture_1d_array alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDesc1Anonymous {
+        texture_2d: full.texture_2d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(&bytes)
+            .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDesc1Anonymous {
+        texture_2d_array: full.texture_2d_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(&bytes)
+            .texture_2d_array,
+        full.texture_2d_array,
+        "_Anonymous_e__Union member texture_2d_array alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDesc1Anonymous {
+        texture_2dms: full.texture_2dms,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(&bytes)
+            .texture_2dms,
+        full.texture_2dms,
+        "_Anonymous_e__Union member texture_2dms alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDesc1Anonymous {
+        texture_2dms_array: full.texture_2dms_array,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(&bytes)
+            .texture_2dms_array,
+        full.texture_2dms_array,
+        "_Anonymous_e__Union member texture_2dms_array alone"
+    );
+    let alone = direct3d_11::structures::RenderTargetViewDesc1Anonymous {
+        texture_3d: full.texture_3d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11RenderTargetViewDesc1AnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_render_target_view_desc1_anonymous(&bytes)
+            .texture_3d,
+        full.texture_3d,
+        "_Anonymous_e__Union member texture_3d alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous_writes_each_member_alone() {
+    let pattern: [u8; size_of::<WindowsWin32GraphicsDirect3d11ShaderTraceDescAnonymousLayout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderTraceDescAnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::ShaderTraceDescAnonymous {
+        vertex_shader_trace_desc: full.vertex_shader_trace_desc,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderTraceDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&bytes)
+            .vertex_shader_trace_desc,
+        full.vertex_shader_trace_desc,
+        "_Anonymous_e__Union member vertex_shader_trace_desc alone"
+    );
+    let alone = direct3d_11::structures::ShaderTraceDescAnonymous {
+        hull_shader_trace_desc: full.hull_shader_trace_desc,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderTraceDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&bytes)
+            .hull_shader_trace_desc,
+        full.hull_shader_trace_desc,
+        "_Anonymous_e__Union member hull_shader_trace_desc alone"
+    );
+    let alone = direct3d_11::structures::ShaderTraceDescAnonymous {
+        domain_shader_trace_desc: full.domain_shader_trace_desc,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderTraceDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&bytes)
+            .domain_shader_trace_desc,
+        full.domain_shader_trace_desc,
+        "_Anonymous_e__Union member domain_shader_trace_desc alone"
+    );
+    let alone = direct3d_11::structures::ShaderTraceDescAnonymous {
+        geometry_shader_trace_desc: full.geometry_shader_trace_desc,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderTraceDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&bytes)
+            .geometry_shader_trace_desc,
+        full.geometry_shader_trace_desc,
+        "_Anonymous_e__Union member geometry_shader_trace_desc alone"
+    );
+    let alone = direct3d_11::structures::ShaderTraceDescAnonymous {
+        pixel_shader_trace_desc: full.pixel_shader_trace_desc,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderTraceDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&bytes)
+            .pixel_shader_trace_desc,
+        full.pixel_shader_trace_desc,
+        "_Anonymous_e__Union member pixel_shader_trace_desc alone"
+    );
+    let alone = direct3d_11::structures::ShaderTraceDescAnonymous {
+        compute_shader_trace_desc: full.compute_shader_trace_desc,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11ShaderTraceDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_shader_trace_desc_anonymous(&bytes)
+            .compute_shader_trace_desc,
+        full.compute_shader_trace_desc,
+        "_Anonymous_e__Union member compute_shader_trace_desc alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_trace_register_anonymous_writes_each_member_alone() {
+    let pattern: [u8; size_of::<WindowsWin32GraphicsDirect3d11TraceRegisterAnonymousLayout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_trace_register_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_trace_register_anonymous(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11TraceRegisterAnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::TraceRegisterAnonymous {
+        index_1d: full.index_1d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11TraceRegisterAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_trace_register_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_trace_register_anonymous(&bytes).index_1d,
+        full.index_1d,
+        "_Anonymous_e__Union member index_1d alone"
+    );
+    let alone = direct3d_11::structures::TraceRegisterAnonymous {
+        index_2d: full.index_2d,
+        ..zero
+    };
+    let mut bytes =
+        [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11TraceRegisterAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_trace_register_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_trace_register_anonymous(&bytes).index_2d,
+        full.index_2d,
+        "_Anonymous_e__Union member index_2d alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_video_color_anonymous_writes_each_member_alone() {
+    let pattern: [u8; size_of::<WindowsWin32GraphicsDirect3d11VideoColorAnonymousLayout>()] =
+        core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_video_color_anonymous(&pattern);
+    let zero = decode_windows_win32_graphics_direct_3d11_video_color_anonymous(
+        &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11VideoColorAnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::VideoColorAnonymous {
+        y_cb_cr: full.y_cb_cr,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11VideoColorAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_video_color_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_video_color_anonymous(&bytes).y_cb_cr,
+        full.y_cb_cr,
+        "_Anonymous_e__Union member y_cb_cr alone"
+    );
+    let alone = direct3d_11::structures::VideoColorAnonymous {
+        rgba: full.rgba,
+        ..zero
+    };
+    let mut bytes = [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11VideoColorAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_video_color_anonymous(&alone, &mut bytes);
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_video_color_anonymous(&bytes).rgba,
+        full.rgba,
+        "_Anonymous_e__Union member rgba alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_video_decoder_output_view_desc_anonymous_writes_each_member_alone()
+ {
+    let pattern: [u8; size_of::<
+        WindowsWin32GraphicsDirect3d11VideoDecoderOutputViewDescAnonymousLayout,
+    >()] = core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_video_decoder_output_view_desc_anonymous(
+        &pattern,
+    );
+    let alone = direct3d_11::structures::VideoDecoderOutputViewDescAnonymous {
+        texture_2d: full.texture_2d,
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11VideoDecoderOutputViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_video_decoder_output_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_video_decoder_output_view_desc_anonymous(&bytes)
+            .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_video_processor_input_view_desc_anonymous_writes_each_member_alone()
+ {
+    let pattern: [u8; size_of::<
+        WindowsWin32GraphicsDirect3d11VideoProcessorInputViewDescAnonymousLayout,
+    >()] = core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_video_processor_input_view_desc_anonymous(
+        &pattern,
+    );
+    let alone = direct3d_11::structures::VideoProcessorInputViewDescAnonymous {
+        texture_2d: full.texture_2d,
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11VideoProcessorInputViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_video_processor_input_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_video_processor_input_view_desc_anonymous(&bytes)
+            .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+}
+
+/// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
+#[cfg(test)]
+#[test]
+fn windows_win32_graphics_direct_3d11_video_processor_output_view_desc_anonymous_writes_each_member_alone()
+ {
+    let pattern: [u8; size_of::<
+        WindowsWin32GraphicsDirect3d11VideoProcessorOutputViewDescAnonymousLayout,
+    >()] = core::array::from_fn(|at| u8::try_from(at % 126 + 1).unwrap_or(1));
+    let full = decode_windows_win32_graphics_direct_3d11_video_processor_output_view_desc_anonymous(
+        &pattern,
+    );
+    let zero = decode_windows_win32_graphics_direct_3d11_video_processor_output_view_desc_anonymous(
+        &[u8::MIN;
+            size_of::<WindowsWin32GraphicsDirect3d11VideoProcessorOutputViewDescAnonymousLayout>()],
+    );
+    let alone = direct3d_11::structures::VideoProcessorOutputViewDescAnonymous {
+        texture_2d: full.texture_2d,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11VideoProcessorOutputViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_video_processor_output_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_video_processor_output_view_desc_anonymous(
+            &bytes
+        )
+        .texture_2d,
+        full.texture_2d,
+        "_Anonymous_e__Union member texture_2d alone"
+    );
+    let alone = direct3d_11::structures::VideoProcessorOutputViewDescAnonymous {
+        texture_2d_array: full.texture_2d_array,
+        ..zero
+    };
+    let mut bytes = [u8::MIN;
+        size_of::<WindowsWin32GraphicsDirect3d11VideoProcessorOutputViewDescAnonymousLayout>()];
+    encode_windows_win32_graphics_direct_3d11_video_processor_output_view_desc_anonymous(
+        &alone, &mut bytes,
+    );
+    assert_eq!(
+        decode_windows_win32_graphics_direct_3d11_video_processor_output_view_desc_anonymous(
+            &bytes
+        )
+        .texture_2d_array,
+        full.texture_2d_array,
+        "_Anonymous_e__Union member texture_2d_array alone"
+    );
+}
