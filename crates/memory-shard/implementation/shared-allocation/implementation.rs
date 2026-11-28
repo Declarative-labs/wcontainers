@@ -28,9 +28,10 @@ pub struct SharedAllocationMemoryShard {
     permissions: MemoryPermissions,
 }
 
-// The bytes of one allocation, each in a cell that a shared borrow may write.
+// The bytes of one allocation, each in a cell that a shared borrow may write, and the number that names it in proofs.
 struct Allocation {
     bytes: Vec<InvCell<u8, AnyByte>>,
+    identity: Ghost<int>,
 }
 
 // The rule every byte meets, which any byte does.
@@ -41,9 +42,6 @@ impl Predicate<u8> for AnyByte {
         true
     }
 }
-
-// The number that names an allocation in proofs.
-uninterp spec fn allocation_number(allocation: Allocation) -> int;
 
 // Whether a view of `length` bytes from `start` lies inside an allocation no longer than the most bytes.
 spec fn lies_inside(allocation: Allocation, start: u64, length: u64) -> bool {
@@ -81,7 +79,7 @@ impl SharedAllocationMemoryShard {
             made += 1;
         }
         Some(SharedAllocationMemoryShard {
-            allocation: Rc::new(Allocation { bytes }),
+            allocation: Rc::new(Allocation { bytes, identity: Ghost(arbitrary()) }),
             start: 0,
             length,
             permissions,
@@ -172,7 +170,7 @@ impl MemoryShard for SharedAllocationMemoryShard {
     }
 
     closed spec fn spec_viewed_allocation(&self) -> MemoryAllocationIdentity {
-        MemoryAllocationIdentity(allocation_number(*self.allocation))
+        MemoryAllocationIdentity(self.allocation.identity@)
     }
 
     closed spec fn spec_view_start(&self) -> nat {
@@ -205,7 +203,7 @@ pub struct SharedBytes<'shard> {
     length: u64,
 }
 
-impl SharedBytes<'_> {
+impl<'shard> SharedBytes<'shard> {
     // The bytes lie inside their allocation.
     #[verifier::type_invariant]
     spec fn fits(self) -> bool {
@@ -247,6 +245,7 @@ impl VolatileBytes for SharedBytes<'_> {
         if count == 0 {
             return 0;
         }
+        let _ = self.allocation.bytes.len();
         let first = (self.start + offset) as usize;
         let mut index: usize = 0;
         while index < count
@@ -273,6 +272,7 @@ impl VolatileBytes for SharedBytes<'_> {
         if count == 0 {
             return 0;
         }
+        let _ = self.allocation.bytes.len();
         let first = (self.start + offset) as usize;
         let mut index: usize = 0;
         while index < count
@@ -293,6 +293,7 @@ impl VolatileBytes for SharedBytes<'_> {
             use_type_invariant(self);
         }
         let mut copy: Vec<u8> = Vec::new();
+        let _ = self.allocation.bytes.len();
         let first = self.start as usize;
         let length = self.length as usize;
         let mut index: usize = 0;
@@ -314,6 +315,7 @@ impl VolatileBytes for SharedBytes<'_> {
         proof {
             use_type_invariant(self);
         }
+        let _ = self.allocation.bytes.len();
         let length = self.length as usize;
         let mut copy: Vec<u8> = Vec::new();
         while copy.len() < length

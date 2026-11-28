@@ -1,5 +1,6 @@
 //! The one place that calls the executor, whose interface states no contract to prove against.
 
+use vstd::prelude::*;
 use wcontainers_abi::{Access as ExecutorAccess, SystemCallRequest};
 use wcontainers_executor::{
     Execution as _, ExecutionInterrupter, ExecutionStop, Executor, InterruptResponse,
@@ -7,37 +8,82 @@ use wcontainers_executor::{
 };
 use wcontainers_kernel_core::execution::{Access, Stop};
 
-/// Returns a new guest memory of the executor and its page table.
-pub fn create_guest_memory_on<E: Executor>(
-    executor: &E,
-) -> Result<(E::GuestMemory, PageTableOf<E>), E::CreateGuestMemoryError> {
-    executor.create_guest_memory()
+verus! {
+
+/// What the kernel core uses of an executor, assumed to return and to promise nothing past its types.
+pub trait ExecutorBoundary: Sized {
+    type ProcessorState;
+    type GuestMemory;
+    type PageTable;
+    type Prepared<'execution> where Self: 'execution;
+    type Stopper: Send + Sync;
+    type CreateGuestMemoryError;
+
+    /// Returns a new guest memory of the executor and its page table.
+    fn make_guest_memory(&self) -> Result<(Self::GuestMemory, Self::PageTable), Self::CreateGuestMemoryError>;
+
+    /// Returns the executor's execution from the processor state on the memory, and what stops it.
+    fn prepare_run<'execution>(
+        &'execution mut self,
+        processor: Self::ProcessorState,
+        memory: &'execution Self::GuestMemory,
+    ) -> (Self::Prepared<'execution>, Self::Stopper);
+
+    /// Runs the execution to its first trap, and returns why it stopped and the processor state it stopped at.
+    fn run_prepared<'execution>(prepared: Self::Prepared<'execution>) -> (Stop, Self::ProcessorState);
+
+    /// Stops the execution the stopper was prepared with.
+    fn stop_run(stopper: &Self::Stopper);
+
+    fn copy_processor_state(processor: &Self::ProcessorState) -> Self::ProcessorState;
 }
 
-/// Returns the executor's execution from the processor state on the memory, and its interrupter.
-pub fn prepare_on_executor<'execution, E: Executor>(
-    executor: &'execution mut E,
-    processor: ProcessorStateOf<E>,
-    memory: &'execution E::GuestMemory,
-) -> (E::Execution<'execution>, E::Interrupter) {
-    executor.prepare_execution(processor, memory)
-}
+} // verus!
 
-/// Runs the executor's execution to its first trap, and returns why it stopped and the processor state it stopped at.
-pub fn run_on_executor<'execution, E: Executor>(
-    execution: E::Execution<'execution>,
-) -> (Stop, ProcessorStateOf<E>) {
-    let mut handler = FirstTrap { stop: None };
-    let processor = match execution.run(&mut handler) {
-        ExecutionStop::Terminated(processor) => processor,
-        ExecutionStop::Waiting { processor, .. } => processor,
-    };
-    (handler.stop.unwrap_or(Stop::Interrupt), processor)
-}
+#[verifier::external]
+impl<E: Executor> ExecutorBoundary for E {
+    type ProcessorState = ProcessorStateOf<E>;
+    type GuestMemory = E::GuestMemory;
+    type PageTable = PageTableOf<E>;
+    type Prepared<'execution>
+        = E::Execution<'execution>
+    where
+        E: 'execution;
+    type Stopper = E::Interrupter;
+    type CreateGuestMemoryError = E::CreateGuestMemoryError;
 
-/// Stops the executor's execution that the interrupter was prepared with.
-pub fn interrupt_on_executor<E: Executor>(interrupter: &E::Interrupter) {
-    interrupter.interrupt();
+    fn make_guest_memory(
+        &self,
+    ) -> Result<(E::GuestMemory, PageTableOf<E>), E::CreateGuestMemoryError> {
+        Executor::create_guest_memory(self)
+    }
+
+    fn prepare_run<'execution>(
+        &'execution mut self,
+        processor: ProcessorStateOf<E>,
+        memory: &'execution E::GuestMemory,
+    ) -> (E::Execution<'execution>, E::Interrupter) {
+        Executor::prepare_execution(self, processor, memory)
+    }
+
+    fn run_prepared<'execution>(
+        prepared: E::Execution<'execution>,
+    ) -> (Stop, ProcessorStateOf<E>) {
+        let mut handler = FirstTrap { stop: None };
+        let processor = match prepared.run(&mut handler) {
+            ExecutionStop::Terminated(processor) => processor,
+            ExecutionStop::Waiting { processor, .. } => processor,
+        };
+        (handler.stop.unwrap_or(Stop::Interrupt), processor)
+    }
+
+    fn stop_run(stopper: &E::Interrupter) {
+        stopper.interrupt();
+    }
+
+    fn copy_processor_state(processor: &ProcessorStateOf<E>) -> ProcessorStateOf<E> {
+        processor.clone()
+    }
 }
 
 /// A trap handler that ends the execution at its first trap and keeps why.

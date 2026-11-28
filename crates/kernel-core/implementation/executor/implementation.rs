@@ -4,13 +4,12 @@
 
 extern crate alloc;
 
-mod executor_boundary;
+pub mod executor_boundary;
 
 use alloc::sync::Arc;
 
 use vstd::prelude::*;
 use vstd::rwlock::{RwLock, RwLockPredicate};
-use wcontainers_executor::{Executor, PageTableOf, ProcessorStateOf};
 use wcontainers_kernel_core::KernelCore;
 use wcontainers_kernel_core::execution::{Execution, Interrupter, Stop};
 use wcontainers_kernel_core::memory::TaskMemory;
@@ -18,49 +17,30 @@ use wcontainers_kernel_core::processor_state::TaskProcessorState;
 use wcontainers_memory_capability_table_list::ListMemoryCapabilityTable;
 use wcontainers_memory_shard_shared_allocation::SharedAllocationMemoryShard;
 
-use crate::executor_boundary::{prepare_on_executor, run_on_executor};
+use crate::executor_boundary::ExecutorBoundary;
 
 verus! {
 
-// The executor boundary: the executor's interface states no contract, so these calls into it are assumed to return,
-// promising nothing more than their types say.
-assume_specification<E: Executor>[ executor_boundary::create_guest_memory_on ](executor: &E) -> Result<
-    (E::GuestMemory, PageTableOf<E>),
-    E::CreateGuestMemoryError,
->;
-
-assume_specification<'execution, E: Executor>[ executor_boundary::prepare_on_executor ](
-    executor: &'execution mut E,
-    processor: ProcessorStateOf<E>,
-    memory: &'execution E::GuestMemory,
-) -> (E::Execution<'execution>, E::Interrupter);
-
-assume_specification<'execution, E: Executor>[ executor_boundary::run_on_executor ](
-    execution: E::Execution<'execution>,
-) -> (Stop, ProcessorStateOf<E>);
-
-assume_specification<E: Executor>[ executor_boundary::interrupt_on_executor ](interrupter: &E::Interrupter);
-
 /// A kernel core that gives each new task a copy of its executor, starting from its processor state.
-pub struct ExecutorKernelCore<E: Executor> {
+pub struct ExecutorKernelCore<E: ExecutorBoundary> {
     executor: E,
-    processor: ProcessorStateOf<E>,
+    processor: E::ProcessorState,
 }
 
-impl<E: Executor + Clone> ExecutorKernelCore<E> {
+impl<E: ExecutorBoundary + Clone> ExecutorKernelCore<E> {
     /// Returns a core whose tasks run on copies of the executor and start from the processor state.
-    pub fn new(executor: E, processor: ProcessorStateOf<E>) -> (core: Self) {
+    pub fn new(executor: E, processor: E::ProcessorState) -> (core: Self) {
         ExecutorKernelCore { executor, processor }
     }
 }
 
 /// A thread of execution: its memory, its saved processor state and the executor it runs on.
-pub struct ExecutorTask<E: Executor> {
+pub struct ExecutorTask<E: ExecutorBoundary> {
     memory: ListMemoryCapabilityTable,
-    processor: ProcessorStateOf<E>,
+    processor: E::ProcessorState,
     executor: E,
     guest_memory: E::GuestMemory,
-    page_table: PageTableOf<E>,
+    page_table: E::PageTable,
 }
 
 // Where one execution is, which its interrupter reads to know what to stop.
@@ -81,23 +61,23 @@ impl<Stopper> RwLockPredicate<Progress<Stopper>> for AnyProgress {
 }
 
 /// One run of a task, not yet started.
-pub struct ExecutorExecution<'task, E: Executor> {
+pub struct ExecutorExecution<'task, E: ExecutorBoundary> {
     task: &'task mut ExecutorTask<E>,
-    progress: Arc<RwLock<Progress<E::Interrupter>, AnyProgress>>,
+    progress: Arc<RwLock<Progress<E::Stopper>, AnyProgress>>,
 }
 
 /// What stops the one execution it was prepared with.
-pub struct ExecutorInterrupter<E: Executor> {
-    progress: Arc<RwLock<Progress<E::Interrupter>, AnyProgress>>,
+pub struct ExecutorInterrupter<E: ExecutorBoundary> {
+    progress: Arc<RwLock<Progress<E::Stopper>, AnyProgress>>,
 }
 
-impl<E: Executor> Interrupter for ExecutorInterrupter<E> {
+impl<E: ExecutorBoundary> Interrupter for ExecutorInterrupter<E> {
     fn interrupt(&self) {
         let (progress, handle) = self.progress.acquire_write();
         match progress {
             Progress::Prepared => handle.release_write(Progress::Interrupted),
             Progress::Running(stopper) => {
-                executor_boundary::interrupt_on_executor::<E>(&stopper);
+                E::stop_run(&stopper);
                 handle.release_write(Progress::Running(stopper));
             },
             other => handle.release_write(other),
@@ -105,7 +85,7 @@ impl<E: Executor> Interrupter for ExecutorInterrupter<E> {
     }
 }
 
-impl<'task, E: Executor + Clone> Execution<'task, ExecutorTask<E>, ExecutorKernelCore<E>> for ExecutorExecution<'task, E> {
+impl<'task, E: ExecutorBoundary + Clone> Execution<'task, ExecutorTask<E>, ExecutorKernelCore<E>> for ExecutorExecution<'task, E> {
     closed spec fn task(self) -> &'task mut ExecutorTask<E> {
         self.task
     }
@@ -117,9 +97,10 @@ impl<'task, E: Executor + Clone> Execution<'task, ExecutorTask<E>, ExecutorKerne
             handle.release_write(Progress::Ran);
             return Stop::Interrupt;
         }
-        let (execution, stopper) = prepare_on_executor(&mut task.executor, task.processor.clone(), &task.guest_memory);
+        let processor = E::copy_processor_state(&task.processor);
+        let (prepared, stopper) = task.executor.prepare_run(processor, &task.guest_memory);
         handle.release_write(Progress::Running(stopper));
-        let (stop, processor) = run_on_executor::<E>(execution);
+        let (stop, processor) = E::run_prepared(prepared);
         let (_, handle) = progress.acquire_write();
         handle.release_write(Progress::Ran);
         task.processor = processor;
@@ -127,7 +108,7 @@ impl<'task, E: Executor + Clone> Execution<'task, ExecutorTask<E>, ExecutorKerne
     }
 }
 
-impl<E: Executor + Clone> TaskMemory<ExecutorTask<E>> for ExecutorKernelCore<E> {
+impl<E: ExecutorBoundary + Clone> TaskMemory<ExecutorTask<E>> for ExecutorKernelCore<E> {
     type Memory = SharedAllocationMemoryShard;
 
     type MemoryCapabilities = ListMemoryCapabilityTable;
@@ -149,35 +130,35 @@ impl<E: Executor + Clone> TaskMemory<ExecutorTask<E>> for ExecutorKernelCore<E> 
     }
 }
 
-impl<E: Executor + Clone> TaskProcessorState<ExecutorTask<E>> for ExecutorKernelCore<E> {
-    type SavedProcessorState = ProcessorStateOf<E>;
+impl<E: ExecutorBoundary + Clone> TaskProcessorState<ExecutorTask<E>> for ExecutorKernelCore<E> {
+    type SavedProcessorState = E::ProcessorState;
 
-    closed spec fn saved_processor_state_of(task: ExecutorTask<E>) -> ProcessorStateOf<E> {
+    closed spec fn saved_processor_state_of(task: ExecutorTask<E>) -> E::ProcessorState {
         task.processor
     }
 
-    fn saved_processor_state(task: &ExecutorTask<E>) -> (saved_processor_state: &ProcessorStateOf<E>) {
+    fn saved_processor_state(task: &ExecutorTask<E>) -> (saved_processor_state: &E::ProcessorState) {
         &task.processor
     }
 
-    fn saved_processor_state_mut(task: &mut ExecutorTask<E>) -> (saved_processor_state: &mut ProcessorStateOf<E>) {
+    fn saved_processor_state_mut(task: &mut ExecutorTask<E>) -> (saved_processor_state: &mut E::ProcessorState) {
         &mut task.processor
     }
 }
 
-impl<E: Executor + Clone + 'static> KernelCore for ExecutorKernelCore<E> {
+impl<E: ExecutorBoundary + Clone + 'static> KernelCore for ExecutorKernelCore<E> {
     type Task = ExecutorTask<E>;
 
     type CreateTaskError = E::CreateGuestMemoryError;
 
     fn create_task(&mut self) -> (created: Result<ExecutorTask<E>, E::CreateGuestMemoryError>) {
-        let (guest_memory, page_table) = match executor_boundary::create_guest_memory_on(&self.executor) {
+        let (guest_memory, page_table) = match self.executor.make_guest_memory() {
             Ok(made) => made,
             Err(error) => return Err(error),
         };
         Ok(ExecutorTask {
             memory: ListMemoryCapabilityTable::new(),
-            processor: self.processor.clone(),
+            processor: E::copy_processor_state(&self.processor),
             executor: self.executor.clone(),
             guest_memory,
             page_table,
