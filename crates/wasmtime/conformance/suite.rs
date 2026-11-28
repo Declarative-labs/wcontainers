@@ -121,6 +121,21 @@ pub fn host_memory_shows_its_file<W: Wasmtime>(wasmtime: W) {
             .is_none(),
         "bytes past the length were lent"
     );
+    let whole = wasmtime
+        .host_memory_bytes(&memory, 0..length as u64)
+        .expect("the whole length");
+    assert_eq!(whole.len(), length as u64, "the whole length's bytes");
+    let mut last = [u8::MIN; size_of::<u64>()];
+    assert_eq!(
+        whole.read_at(at, &mut last),
+        last.len(),
+        "a read at an offset"
+    );
+    assert_eq!(u64::from_le_bytes(last), !WORD, "the bytes at the offset");
+    let none = wasmtime
+        .host_memory_bytes(&memory, at..at)
+        .expect("no bytes inside the length");
+    assert_eq!(none.len(), u64::MIN, "no bytes");
 }
 
 /// Checks that a file mapped into two memories shows each one's writes in the other.
