@@ -28,7 +28,7 @@ fn number_bytes(count: usize) -> Vec<u8> {
 
 /// Returns whether two sets of permissions allow the same accesses.
 fn permits_the_same(first: MemoryPermissions, second: MemoryPermissions) -> bool {
-    first.read == second.read && first.write == second.write && first.execute == second.execute
+    (first.read, first.write, first.execute) == (second.read, second.write, second.execute)
 }
 
 /// Returns every byte of the shard, read through one borrow of all of it.

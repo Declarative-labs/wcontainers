@@ -35,7 +35,7 @@ fn config(length: u64, permissions: MemoryPermissions) -> MemoryShardConfig {
 
 /// Returns whether two sets of permissions allow the same accesses.
 fn permits_the_same(first: MemoryPermissions, second: MemoryPermissions) -> bool {
-    first.read == second.read && first.write == second.write && first.execute == second.execute
+    (first.read, first.write, first.execute) == (second.read, second.write, second.execute)
 }
 
 /// Holds a new shard of the length at the address, which must succeed.
