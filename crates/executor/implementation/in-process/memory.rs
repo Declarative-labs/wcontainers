@@ -416,6 +416,9 @@ impl VolatileBytes for InProcessBytes<'_> {
 
     fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let count = copied(self.len(), offset, into.len());
+        if count == usize::MIN {
+            return count;
+        }
         self.window
             .borrow()
             .read(self.addresses.start + offset, &mut into[..count])
@@ -423,6 +426,9 @@ impl VolatileBytes for InProcessBytes<'_> {
 
     fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         let count = copied(self.len(), offset, bytes.len());
+        if count == usize::MIN {
+            return count;
+        }
         self.window
             .borrow()
             .write(self.addresses.start + offset, &bytes[..count])

@@ -388,6 +388,9 @@ impl VolatileBytes for HostProcessBytes<'_> {
     /// A host refusal to read the stub's memfd reads none, counted and warned as "guest bytes refused".
     fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let count = copied(self.len(), offset, into.len());
+        if count == usize::MIN {
+            return count;
+        }
         let mut executor = self.held.lock();
         match executor.read_guest(
             self.held.id,
@@ -405,6 +408,9 @@ impl VolatileBytes for HostProcessBytes<'_> {
     /// A host refusal to write the stub's memfd writes none, counted and warned as "guest bytes refused".
     fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         let count = copied(self.len(), offset, bytes.len());
+        if count == usize::MIN {
+            return count;
+        }
         let mut executor = self.held.lock();
         match executor.write(self.held.id, self.addresses.start + offset, &bytes[..count]) {
             Ok(()) => count,

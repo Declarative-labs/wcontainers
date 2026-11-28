@@ -93,6 +93,8 @@ wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 wcontainers-executor = { path = "../.." }
 wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+# The volatile bytes suite, on the bytes a memory lends.
+wcontainers-volatile-bytes-conformance = { path = "../../../volatile-bytes/conformance" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 # The in-process way's test runs translated code in the emulator (GPL-2.0, test only, as the virtual-machine form's
 # tests use it).

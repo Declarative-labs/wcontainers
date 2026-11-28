@@ -50,6 +50,8 @@ wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 rustix = { version = "1.1.6", default-features = false, features = ["std", "process"] }
 # The executor interface's suite, against a Neoverse V2's recorded behaviors on the states the ARM64 generator makes.
 wcontainers-executor-conformance = { path = "../../conformance" }
+# The volatile bytes suite, on the bytes a memory lends.
+wcontainers-volatile-bytes-conformance = { path = "../../../volatile-bytes/conformance" }
 wcontainers-behavior-source-recording = { path = "../../../behavior-source/implementation/recording" }
 wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
 wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }
