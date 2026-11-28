@@ -691,11 +691,11 @@ pub(crate) fn touch<S: crate::System, C: Executor + 'static>(
                 )
                 && sized(memory, a3, mount_id, write)
         }
-        // What a request copies: a word of a stopped tracee's memory read out into the caller's or
+        // What a request copies: a word of a tracee's memory read out into the caller's or
         // written, a signal's information out or in.
         __NR_ptrace => {
             let word = size_of::<u64>() as u64;
-            let tracee = memory.stopped_tracee(a1);
+            let tracee = memory.tracee(a1);
             let mut reach = |access| {
                 tracee.is_none_or(|pid| {
                     memory.touch_process(pid, crate::user::untagged(a2), word, access)

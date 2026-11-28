@@ -7,6 +7,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -298,6 +299,23 @@ static void information_set(void) {
     print_pipe(pipe_fds[0]);
 }
 
+// A process sharing this one's handlers and memory (CLONE_SIGHAND | CLONE_VM), which says so
+// into a pipe when its SIGUSR1 handler runs.
+static int shared_fd = -1;
+static char shared_stack[65536] __attribute__((aligned(16)));
+
+static void shared_handler(int signal) {
+    (void)signal;
+    write(shared_fd, "sharer handled SIGUSR1\n", 23);
+}
+
+static int sharer(void *unused) {
+    (void)unused;
+    for (;;)
+        pause();
+    return 0;
+}
+
 // An untraced child drops a signal it ignores, but keeps one it blocks (Linux's `sig_ignored`);
 // the traced child of `ending` stops even for one it ignores.
 static void untraced_ignored(void) {
@@ -351,6 +369,30 @@ static void untraced_ignored(void) {
     }
     wait_for("its child sent it SIGTERM", child, 0);
     printf("lived\n");
+    // A signal ignored when it is sent to a stopped process is dropped then, so the handler the
+    // shared table has by the time it goes on never sees it.
+    int said[2];
+    pipe(said);
+    shared_fd = said[1];
+    signal(SIGUSR1, SIG_IGN);
+    fflush(stdout);
+    pid_t shared = clone(sharer, shared_stack + sizeof shared_stack, CLONE_VM | CLONE_SIGHAND | SIGCHLD, 0);
+    wait_sleeping(shared);
+    kill(shared, SIGSTOP);
+    wait_for("sharer, SIGSTOP", shared, WUNTRACED);
+    kill(shared, SIGUSR1);
+    signal(SIGUSR1, shared_handler);
+    kill(shared, SIGCONT);
+    usleep(200000);
+    kill(shared, SIGKILL);
+    wait_for("sharer, SIGKILL", shared, 0);
+    signal(SIGUSR1, SIG_DFL);
+    close(said[1]);
+    char text[64];
+    ssize_t length = read(said[0], text, sizeof text - 1);
+    text[length > 0 ? length : 0] = 0;
+    printf("sharer said: \"%s\"\n", text);
+    close(said[0]);
 }
 
 // A signal sent to a child stopped for its tracer waits: the stop stays the one it was, and the

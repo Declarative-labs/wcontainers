@@ -787,12 +787,13 @@ impl<S: crate::System, C: Executor + 'static> CallMemory<'_, '_, '_, S, C> {
             .is_some_and(|thread| thread.process == self.kernel.threads[&self.tid].process)
     }
 
-    /// The process of thread `id` if the caller traces it and it is stopped for it, whose memory
-    /// `PTRACE_PEEK*` and `PTRACE_POKE*` then reach.
-    pub(crate) fn stopped_tracee(&mut self, id: u64) -> Option<Pid> {
+    /// The process of thread `id` if the caller traces it, whose memory `PTRACE_PEEK*` and
+    /// `PTRACE_POKE*` reach (a request on a tracee that is not stopped fails, having met its
+    /// watches for nothing).
+    pub(crate) fn tracee(&mut self, id: u64) -> Option<Pid> {
         let thread = self.kernel.threads.get(&(id as Pid))?;
         let trace = thread.trace.as_ref()?;
-        (trace.tracer == self.tid && trace.stop.is_some()).then_some(thread.process)
+        (trace.tracer == self.tid).then_some(thread.process)
     }
 
     /// The process and the range of its memory that reading descriptor `fd` copies, as
