@@ -239,6 +239,51 @@ fn a_packed_target_is_rounded_to_its_bits_at_its_level_and_layer_alone() {
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 
+/// A `bgr5a1unorm` target held as `rgba8unorm`, every channel 0.4, is rounded to its bits: red, green
+/// and blue round(0.4 31) = 12 = 0b01100, widened to 0b01100011 = 99; alpha round(0.4) = 0.
+#[test]
+fn a_packed_target_with_one_bit_of_alpha_is_rounded_in_every_channel() {
+    let mut gpu = device();
+    let t = raw_texture(
+        &gpu,
+        false,
+        1,
+        1,
+        1,
+        wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+    );
+    fill_level(&gpu, &t, 0, 0, [HELD; 4]);
+    fill::quantise(
+        &mut gpu,
+        &PackedTarget {
+            format: Format::Bgr5a1Unorm,
+            texture: t.clone(),
+            mip: 0,
+            z: 0,
+        },
+    );
+    assert_eq!(read_level(&mut gpu, &t, 0, 0), level_of(0, [99, 99, 99, 0]));
+    // Alpha 0.6 rounds to one bit set, widened to 255.
+    fill_level(&gpu, &t, 0, 0, [HELD, HELD, HELD, 153]);
+    fill::quantise(
+        &mut gpu,
+        &PackedTarget {
+            format: Format::Bgr5a1Unorm,
+            texture: t.clone(),
+            mip: 0,
+            z: 0,
+        },
+    );
+    assert_eq!(
+        read_level(&mut gpu, &t, 0, 0),
+        level_of(0, [99, 99, 99, 255])
+    );
+    assert_eq!(gpu.status(), DeviceStatus::Ok);
+}
+
 /// A 3D `b5g6r5unorm` target held as `rgba8unorm` (three slices) is rounded at depth slice 1 alone:
 /// that slice reads [`ROUNDED`], slices 0 and 2 keep [`HELD`].
 #[test]
@@ -476,9 +521,9 @@ fn draw_samples_apart(gpu: &WebGpu, view: &wgpu::TextureView) {
             let module = gpu
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(
-                    format!(
+                    label: None,
+                    source: wgpu::ShaderSource::Wgsl(
+                        format!(
                         "@vertex fn v(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
     let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
     return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
@@ -487,9 +532,9 @@ fn draw_samples_apart(gpu: &WebGpu, view: &wgpu::TextureView) {
     return vec4f(floor(p.x) * 8.0 + {r}.0, floor(p.y) * 8.0 + {g}.0, {b}.0, {a}.0) / 255.0;
 }}"
                     )
-                    .into(),
-                ),
-            });
+                        .into(),
+                    ),
+                });
             gpu.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: None,
@@ -691,6 +736,140 @@ fn a_converted_format_copies_into_and_out_of_one_level_and_layer() {
         vec![0; (N * N * 2) as usize],
         "level 0, layer 1"
     );
+    assert_eq!(gpu.status(), DeviceStatus::Ok);
+}
+
+/// Reads level 0, layer 0 of `texture` (`texel` bytes a texel), row after row.
+fn read_raw(gpu: &mut WebGpu, texture: &wgpu::Texture, texel: u32) -> Vec<u8> {
+    gpu.submit();
+    let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(ROW * N),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &read,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(ROW),
+                rows_per_image: Some(N),
+            },
+        },
+        wgpu::Extent3d {
+            width: N,
+            height: N,
+            depth_or_array_layers: 1,
+        },
+    );
+    let index = gpu.queue.submit([encoder.finish()]);
+    let mapped = Arc::new(AtomicBool::new(false));
+    let flag = mapped.clone();
+    read.slice(..).map_async(wgpu::MapMode::Read, move |_| {
+        flag.store(true, Ordering::Release);
+    });
+    crate::wait::until(&gpu.device, Some(index), || mapped.load(Ordering::Acquire));
+    let bytes = read
+        .slice(..)
+        .get_mapped_range()
+        .expect("the read buffer maps")
+        .to_vec();
+    (0..N)
+        .flat_map(|y| bytes[(y * ROW) as usize..(y * ROW + N * texel) as usize].to_vec())
+        .collect()
+}
+
+/// Every converted format (the 8-bit alpha, BGRX, 16-bit packed, two-pixel and three-channel
+/// 32-bit ones): blocks of distinct bytes copied from a buffer into a region off the origin, at a
+/// column and a row that differ (by a draw widening them), leave in the held texture what the host
+/// widens those blocks to there and zero elsewhere; and that region copied into a buffer (by a draw
+/// packing it) gives the blocks back, but for BGRX's padding byte, which is packed as 255.
+#[test]
+fn converted_formats_copy_by_draws_as_the_host_widens_and_packs() {
+    use crate::packed;
+    let mut gpu = device();
+    let (x, y, w, h) = (2u32, 1u32, 4u32, 2u32);
+    for format in [
+        Format::A8Unorm,
+        Format::Bgrx8Unorm,
+        Format::Bgrx8UnormSrgb,
+        Format::B5g6r5Unorm,
+        Format::Bgr5a1Unorm,
+        Format::Bgra4Unorm,
+        Format::Rgbg8Unorm,
+        Format::Grgb8Unorm,
+        Format::Rgb32Float,
+        Format::Rgb32Uint,
+        Format::Rgb32Sint,
+    ] {
+        let t = texture(
+            &mut gpu,
+            format,
+            1,
+            1,
+            TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+        );
+        let row = packed::packed_bytes(format, u64::from(w)) as u32;
+        // Distinct bytes, no float of them a NaN (a draw may make a NaN canonical).
+        let blocks: Vec<u8> = (0..row * h).map(|i| (i * 29 + 7) as u8 & 0x7f).collect();
+        let src = upload(&mut gpu, &blocks);
+        let region = TextureRegion {
+            origin: Origin { x, y, z: 0 },
+            ..at(&t, 0, 0, false)
+        };
+        let copy = |buffer| CopyBufferTexture {
+            buffer,
+            offset: 0,
+            row_pitch: row,
+            rows_per_layer: h,
+        };
+        let size = Extent {
+            width: w,
+            height: h,
+            depth_or_layers: 1,
+        };
+        gpu.copy_buffer_to_texture(&copy(&src), &region, size);
+        let held = packed::held_bytes(format);
+        let mut want = vec![0; (N * N * held) as usize];
+        let mut packed_back = Vec::new();
+        for r in 0..h {
+            let mut texels = Vec::new();
+            packed::widen(
+                format,
+                &blocks[(r * row) as usize..((r + 1) * row) as usize],
+                &mut texels,
+            );
+            let at = (((y + r) * N + x) * held) as usize;
+            want[at..at + texels.len()].copy_from_slice(&texels);
+            packed::pack(format, &texels, &mut packed_back);
+        }
+        let padded = matches!(format, Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb);
+        assert_eq!(
+            packed_back,
+            blocks
+                .iter()
+                .enumerate()
+                .map(|(i, &b)| if padded && i % 4 == 3 { u8::MAX } else { b })
+                .collect::<Vec<u8>>(),
+            "{format:?} packed on the host"
+        );
+        let raw = crate::texture_of(&gpu, &t).expect("held").raw();
+        assert_eq!(
+            read_raw(&mut gpu, &raw, held),
+            want,
+            "{format:?} widened by a draw"
+        );
+        let dst = upload(&mut gpu, &vec![0; blocks.len()]);
+        gpu.copy_texture_to_buffer(&region, &copy(&dst), size);
+        assert_eq!(
+            read_buffer(&mut gpu, &dst, blocks.len() as u64),
+            packed_back,
+            "{format:?} packed by a draw"
+        );
+    }
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 

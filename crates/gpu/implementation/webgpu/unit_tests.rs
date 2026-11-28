@@ -58,6 +58,7 @@ mod first_draws;
 mod pulled_costs;
 mod query_sets;
 mod scenes;
+mod unorm16_read;
 mod unorm24_read;
 mod writes;
 

@@ -261,13 +261,14 @@ const PRESENT_WGSL: &str = "
 ";
 
 /// The fragment stage of a resolve by draw: the average of every sample at the same place, read
-/// through a view in the format the resolve names.
+/// through a view in the format the resolve names. The loop stops at the count itself: a load past
+/// the last sample gives any sample or zero.
 const RESOLVE_WGSL: &str = "
 @group(0) @binding(0) var samples: texture_multisampled_2d<f32>;
 @fragment fn average(@builtin(position) p: vec4f) -> @location(0) vec4f {
     let n = textureNumSamples(samples);
     var sum = vec4f(0.0);
-    for (var i = 0u; i < n; i++) {
+    for (var i = 0u; i != n; i++) {
         sum += textureLoad(samples, vec2i(p.xy), i);
     }
     return sum / f32(n);
@@ -1372,17 +1373,17 @@ fn nearest(word: u32) -> f32 {
 }
 
 /// The comparison pass: at the depth stored as the uniform's word (its second word that depth's bits),
-/// writes the word. Drawn with the depth test EQUAL against a 24-bit depth attachment, it writes only
+/// writes the word (into a one-channel target). Drawn with the depth test EQUAL against a 24-bit depth attachment, it writes only
 /// where the attachment holds the word: the device compares stored integers, which sampling cannot
 /// tell apart.
 const EQUAL_WGSL: &str = "
 @group(0) @binding(0) var<uniform> decided: vec4<u32>;
 struct Decided {
     @builtin(frag_depth) depth: f32,
-    @location(0) word: vec4<u32>,
+    @location(0) word: u32,
 }
 @fragment fn equal() -> Decided {
-    return Decided(bitcast<f32>(decided.y), vec4<u32>(decided.x, 0u, 0u, 0u));
+    return Decided(bitcast<f32>(decided.y), decided.x);
 }
 ";
 
@@ -1622,6 +1623,12 @@ pub(crate) fn unorm24_functions(by_product: bool) -> String {
         .replace("{MAX}", &Format::UNORM24_MAX.to_string())
 }
 
+/// WGSL for the 16-bit value stored for a sampled depth `sampled`: rounded once, as a device sampling a
+/// stored k as the float nearest k / (2^16 - 1) may give a float just below it.
+pub(crate) fn unorm16_of_sample(sampled: &str) -> String {
+    format!("u32(round({sampled} * {}.0))", u16::MAX)
+}
+
 fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat) -> DepthProgram {
     let cover = cover(gpu);
     // The conversions are exact: a unorm value stored as the nearest float is within half a
@@ -1629,10 +1636,7 @@ fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat)
     // the device's own conversion, which the probe at creation found.
     let mut functions = String::new();
     let (texture, value) = match read {
-        AspectRead::Unorm16 => (
-            "texture_2d<f32>",
-            format!("u32(round(v.x * {}.0))", u16::MAX),
-        ),
+        AspectRead::Unorm16 => ("texture_2d<f32>", unorm16_of_sample("v.x")),
         AspectRead::Unorm24 => {
             functions = unorm24_functions(gpu.depth24_by_product);
             ("texture_2d<f32>", UNORM24_OF_SAMPLE.to_string())
@@ -1644,9 +1648,9 @@ fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat)
         "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
          @group(0) @binding(1) var src: {texture};\n\
          {functions}\
-         @fragment fn read(@builtin(position) p: vec4f) -> @location(0) vec4<u32> {{\n\
+         @fragment fn read(@builtin(position) p: vec4f) -> @location(0) u32 {{\n\
              let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
-             return vec4<u32>({value}, 0u, 0u, 0u);\n\
+             return {value};\n\
          }}\n"
     );
     let module = gpu

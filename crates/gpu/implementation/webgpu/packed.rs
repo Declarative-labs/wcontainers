@@ -151,12 +151,12 @@ fn three_channel_program(format: Format, into: bool, three_d: bool) -> String {
         format!(
             "@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\
              @group(0) @binding(1) var src: {texture};\n\
-             @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) vec4u {{\n\
+             @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) u32 {{\n\
                  let i = u32(p.x);\n\
                  let j = u32(p.y);\n\
                  let t = {to_u}(textureLoad(src, {at}, 0));\n\
                  let k = i % 3u;\n\
-                 return vec4u(select(select(t.x, t.y, k == 1u), t.z, k == 2u), 0u, 0u, 0u);\n\
+                 return select(select(t.x, t.y, k == 1u), t.z, k == 2u);\n\
              }}\n"
         )
     }
@@ -270,11 +270,11 @@ pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
              fn texel(x: u32, y: u32) -> vec4u {{\n\
                  return vec4u(round(textureLoad(src, {at}, 0) * 255.0));\n\
              }}\n\
-             @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) vec4u {{\n\
+             @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) u32 {{\n\
                  let i = u32(p.x);\n\
                  let j = u32(p.y);\n\
                  {body}\n\
-                 return vec4u(w, 0u, 0u, 0u);\n\
+                 return w;\n\
              }}\n",
             body = pack_wgsl(format),
         )
