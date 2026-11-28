@@ -4,9 +4,9 @@ wcontainers_capability_table_conformance::tests!((
     (|number: u8| wcontainers_memory_shard::MemoryShardConfig {
         length: u64::from(number),
         permissions: wcontainers_memory_shard::MemoryPermissions {
-            read: true,
-            write: true,
-            execute: false
+            read: number.is_power_of_two(),
+            write: !number.is_power_of_two(),
+            execute: number.is_power_of_two(),
         },
     }) as fn(u8) -> wcontainers_memory_shard::MemoryShardConfig,
     (|| wcontainers_memory_shard::MemoryShardConfig {
@@ -17,10 +17,24 @@ wcontainers_capability_table_conformance::tests!((
             execute: false
         },
     }) as fn() -> wcontainers_memory_shard::MemoryShardConfig,
+    (|config: &wcontainers_memory_shard::MemoryShardConfig| {
+        let permissions = config.permissions;
+        (
+            config.length,
+            permissions.read,
+            permissions.write,
+            permissions.execute,
+        )
+    }) as fn(&wcontainers_memory_shard::MemoryShardConfig) -> (u64, bool, bool, bool),
     (|shard: &wcontainers_capability_table_ordered_map::Shard| {
-        u8::try_from(wcontainers_memory_shard::MemoryShard::len(shard))
-            .expect("every shard is as long as its number")
-    }) as fn(&wcontainers_capability_table_ordered_map::Shard) -> u8,
+        let permissions = wcontainers_memory_shard::MemoryShard::permissions(shard);
+        (
+            wcontainers_memory_shard::MemoryShard::len(shard),
+            permissions.read,
+            permissions.write,
+            permissions.execute,
+        )
+    }) as fn(&wcontainers_capability_table_ordered_map::Shard) -> (u64, bool, bool, bool),
     (|shard: &wcontainers_capability_table_ordered_map::Shard, mark: u8| {
         let length = wcontainers_memory_shard::MemoryShard::len(shard);
         let bytes = wcontainers_memory_shard::MemoryShard::borrow(shard, u64::MIN, length)
