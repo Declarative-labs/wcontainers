@@ -1,0 +1,28 @@
+[package]
+name = "wcontainers-capability-table-ordered-map"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+thiserror = { version = "2.0.21", default-features = false }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
+wcontainers-capability-table = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+
+[dev-dependencies]
+wcontainers-capability-table-conformance = { path = "../../conformance" }
+
+[package.metadata.verus]
+verify = true
+
+[lints]
+workspace = true
