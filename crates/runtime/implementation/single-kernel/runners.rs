@@ -181,9 +181,9 @@ fn drive<K: Kernel>(
         let stopped =
             catch_unwind(AssertUnwindSafe(|| runner.run(executor))).unwrap_or(StopReason::Panicked);
         match stopped {
-            StopReason::Interrupted => {}
+            // No kernel returns `Suspended` today, and the interface says nothing of it, so it is run again as an interrupt.
+            StopReason::Interrupted | StopReason::Suspended => {}
             StopReason::Idle { until } => signals.wait(until, clock),
-            StopReason::Suspended => signals.wait(None, clock),
             StopReason::Finished(_) | StopReason::Panicked => {
                 signals.stop(stopped);
                 return;
@@ -497,9 +497,12 @@ mod tests {
         }
     }
 
-    /// A system whose clock stands at zero and which keeps every warning it is told of.
-    #[derive(Default)]
+    /// A time far from zero for a clock to stand at, so a wait that reads the clock is told from one that does not.
+    const STANDING_TIME: Duration = Duration::from_secs(86_400);
+
+    /// A system whose clock stands at one time and which keeps every warning it is told of.
     struct StillSystem {
+        now: Duration,
         warnings: Mutex<Vec<(String, u64, u64)>>,
     }
 
@@ -515,7 +518,7 @@ mod tests {
 
     impl Clock for StillSystem {
         fn monotonic_nanoseconds(&self) -> u64 {
-            0
+            self.now.as_nanos() as u64
         }
 
         fn realtime_nanoseconds(&self) -> u64 {
@@ -542,7 +545,13 @@ mod tests {
         system: Arc<StillSystem>,
     }
 
+    /// A container on a double kernel whose runners follow `scripts`, with a clock that stands at zero.
     fn setup(scripts: Vec<Vec<Step>>, idle_poll: Duration) -> Setup {
+        setup_at(scripts, idle_poll, Duration::ZERO)
+    }
+
+    /// A container on a double kernel whose runners follow `scripts`, with a clock that stands at `now`.
+    fn setup_at(scripts: Vec<Vec<Step>>, idle_poll: Duration, now: Duration) -> Setup {
         let board = Arc::new(Board::default());
         let parallelism = NonZeroUsize::new(scripts.len()).expect("at least one script");
         let executors = scripts.iter().map(|_| StandIn::new()).collect();
@@ -553,7 +562,10 @@ mod tests {
             stop: Box::new(move || ended.change(|state| state.ended = true)),
             resume: Box::new(move || resumed.change(|state| state.ended = false)),
         };
-        let system = Arc::new(StillSystem::default());
+        let system = Arc::new(StillSystem {
+            now,
+            warnings: Mutex::default(),
+        });
         let (container, interrupter) =
             KernelContainer::new(kernel, runners, executors, stops, Arc::clone(&system));
         Setup {
@@ -672,11 +684,28 @@ mod tests {
             vec![vec![Step::RunsThenInterrupted, FINISHES_NOW]],
             LONG_POLL,
         );
-        let interrupting = interrupt_when(setup.interrupter, setup.board, Gate::Running(1));
+        let interrupting = interrupt_when(
+            setup.interrupter,
+            Arc::clone(&setup.board),
+            Gate::Running(1),
+        );
         let (first, container) = run_bounded(setup.container).expect("the first run ends");
         assert!(interrupting.join().expect("the interrupting thread"));
         assert_eq!(first, StopReason::Interrupted);
+        assert!(
+            !setup.board.lock().ended,
+            "the executions may run again once a run is over"
+        );
         assert_eq!(stopped(container), Some(FINISHED));
+    }
+
+    #[test]
+    fn a_container_that_finished_is_not_run_again() {
+        let setup = setup(vec![vec![FINISHES_NOW, Step::Panics(Gate::Now)]], LONG_POLL);
+        let (first, container) = run_bounded(setup.container).expect("the first run ends");
+        assert_eq!(first, FINISHED);
+        assert_eq!(stopped(container), Some(FINISHED));
+        assert_eq!(setup.board.lock().runs, 1);
     }
 
     #[test]
@@ -795,15 +824,51 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_runner_waits_the_time_left_on_the_clock() {
+        let setup = setup_at(
+            vec![vec![
+                Step::Idles(Some(STANDING_TIME + SETTLE)),
+                FINISHES_NOW,
+            ]],
+            LONG_POLL,
+            STANDING_TIME,
+        );
+        let started = Instant::now();
+        assert_eq!(stopped(setup.container), Some(FINISHED));
+        assert!(
+            started.elapsed() >= SETTLE,
+            "the runner waits until its time"
+        );
+        assert_eq!(setup.system.warnings(), vec![]);
+    }
+
+    #[test]
+    fn an_idle_runner_whose_time_has_passed_on_the_clock_is_run_again_and_not_told() {
+        let setup = setup_at(
+            vec![vec![Step::Idles(Some(SETTLE)), FINISHES_NOW]],
+            SHORT_POLL,
+            STANDING_TIME,
+        );
+        assert_eq!(stopped(setup.container), Some(FINISHED));
+        assert_eq!(setup.system.warnings(), vec![]);
+    }
+
+    #[test]
     fn the_idle_polls_are_told_again_only_when_they_grew() {
         let setup = setup(
             vec![vec![
                 Step::RunsThenInterrupted,
                 Step::Idles(None),
+                Step::RunsThenInterrupted,
                 FINISHES_NOW,
             ]],
             SHORT_POLL,
         );
+        let told_once = vec![(
+            IDLE_WITHOUT_WAKE.to_owned(),
+            1,
+            SHORT_POLL.as_nanos() as u64,
+        )];
         let interrupting = interrupt_when(
             setup.interrupter.clone(),
             Arc::clone(&setup.board),
@@ -813,12 +878,16 @@ mod tests {
         assert!(interrupting.join().expect("the interrupting thread"));
         assert_eq!(first, StopReason::Interrupted);
         assert_eq!(setup.system.warnings(), vec![]);
+        let interrupting = interrupt_when(
+            setup.interrupter.clone(),
+            Arc::clone(&setup.board),
+            Gate::Running(2),
+        );
+        let (second, container) = run_bounded(container).expect("the second run ends");
+        assert!(interrupting.join().expect("the interrupting thread"));
+        assert_eq!(second, StopReason::Interrupted);
+        assert_eq!(setup.system.warnings(), told_once);
         assert_eq!(stopped(container), Some(FINISHED));
-        let told = vec![(
-            IDLE_WITHOUT_WAKE.to_owned(),
-            1,
-            SHORT_POLL.as_nanos() as u64,
-        )];
-        assert_eq!(setup.system.warnings(), told);
+        assert_eq!(setup.system.warnings(), told_once);
     }
 }
