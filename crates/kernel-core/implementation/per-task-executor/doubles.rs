@@ -7,7 +7,9 @@ use std::rc::Rc;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_capability_table::{CapabilityTable, CreateError, DuplicateError};
-use wcontainers_memory_capability_table::{MemoryCapabilityTable, MemoryError, SetPermissionsError, SplitError};
+use wcontainers_memory_capability_table::{
+    MemoryCapabilityTable, MemoryError, SetPermissionsError, SplitError,
+};
 use wcontainers_memory_shard::{BorrowError, MemoryPermissions, MemoryShard, MemoryShardConfig};
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -101,7 +103,11 @@ pub struct SparseTable {
 }
 
 impl CapabilityTable<u64, SparseShard, MemoryShardConfig, MemoryError> for SparseTable {
-    fn create(&mut self, identifier: u64, config: MemoryShardConfig) -> Result<(), CreateError<MemoryError>> {
+    fn create(
+        &mut self,
+        identifier: u64,
+        config: MemoryShardConfig,
+    ) -> Result<(), CreateError<MemoryError>> {
         if self.shards.contains_key(&identifier) {
             return Err(CreateError::IdentifierTaken);
         }
@@ -123,8 +129,16 @@ impl CapabilityTable<u64, SparseShard, MemoryShardConfig, MemoryError> for Spars
         self.shards.remove(identifier);
     }
 
-    fn duplicate_within(&mut self, identifier: &u64, new_identifier: u64) -> Result<(), DuplicateError<MemoryError>> {
-        let shard = self.shards.get(identifier).cloned().ok_or(DuplicateError::NothingHeld)?;
+    fn duplicate_within(
+        &mut self,
+        identifier: &u64,
+        new_identifier: u64,
+    ) -> Result<(), DuplicateError<MemoryError>> {
+        let shard = self
+            .shards
+            .get(identifier)
+            .cloned()
+            .ok_or(DuplicateError::NothingHeld)?;
         self.insert_duplicate(shard, new_identifier)
     }
 
@@ -134,13 +148,21 @@ impl CapabilityTable<u64, SparseShard, MemoryShardConfig, MemoryError> for Spars
         identifier: &u64,
         new_identifier: u64,
     ) -> Result<(), DuplicateError<MemoryError>> {
-        let shard = other.shards.get(identifier).cloned().ok_or(DuplicateError::NothingHeld)?;
+        let shard = other
+            .shards
+            .get(identifier)
+            .cloned()
+            .ok_or(DuplicateError::NothingHeld)?;
         self.insert_duplicate(shard, new_identifier)
     }
 }
 
 impl SparseTable {
-    fn insert_duplicate(&mut self, shard: SparseShard, new_identifier: u64) -> Result<(), DuplicateError<MemoryError>> {
+    fn insert_duplicate(
+        &mut self,
+        shard: SparseShard,
+        new_identifier: u64,
+    ) -> Result<(), DuplicateError<MemoryError>> {
         if self.shards.contains_key(&new_identifier) {
             return Err(DuplicateError::IdentifierTaken);
         }
@@ -150,14 +172,24 @@ impl SparseTable {
 }
 
 impl MemoryCapabilityTable<SparseShard> for SparseTable {
-    fn set_permissions(&mut self, address: &u64, permissions: MemoryPermissions) -> Result<(), SetPermissionsError> {
-        let shard = self.shards.get_mut(address).ok_or(SetPermissionsError::NothingHeld)?;
+    fn set_permissions(
+        &mut self,
+        address: &u64,
+        permissions: MemoryPermissions,
+    ) -> Result<(), SetPermissionsError> {
+        let shard = self
+            .shards
+            .get_mut(address)
+            .ok_or(SetPermissionsError::NothingHeld)?;
         shard.permissions = permissions;
         Ok(())
     }
 
     fn split(&mut self, address: &u64, offset: u64) -> Result<(), SplitError> {
-        let shard = self.shards.get_mut(address).ok_or(SplitError::NothingHeld)?;
+        let shard = self
+            .shards
+            .get_mut(address)
+            .ok_or(SplitError::NothingHeld)?;
         if offset == u64::MIN || offset >= shard.length {
             return Err(SplitError::OutsideShard);
         }
