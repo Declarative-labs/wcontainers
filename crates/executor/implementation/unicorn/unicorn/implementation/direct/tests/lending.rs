@@ -27,12 +27,18 @@ fn an_engine_holds_its_memory_exactly_while_addresses_map_it() {
         .expect("the fourth page mapped after them");
     assert_eq!(memory.holders(), 3);
     // Unmapping the second page leaves two ranges of the first mapping, each holding the memory.
-    engine.mem_unmap(START + PAGE, PAGE).expect("the second page unmapped");
+    engine
+        .mem_unmap(START + PAGE, PAGE)
+        .expect("the second page unmapped");
     assert_eq!(memory.holders(), 4);
     // Unmapping the page right after the first range leaves that range and the fourth page's.
-    engine.mem_unmap(START + 2 * PAGE, PAGE).expect("the third page unmapped");
+    engine
+        .mem_unmap(START + 2 * PAGE, PAGE)
+        .expect("the third page unmapped");
     assert_eq!(memory.holders(), 3);
-    engine.mem_unmap(START, PAGE).expect("the first page unmapped");
+    engine
+        .mem_unmap(START, PAGE)
+        .expect("the first page unmapped");
     assert_eq!(memory.holders(), 2);
     // A refused unmap of addresses nothing maps holds on to what it held.
     assert!(engine.mem_unmap(START, PAGE).is_err());

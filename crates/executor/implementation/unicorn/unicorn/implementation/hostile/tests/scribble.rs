@@ -87,7 +87,13 @@ fn a_long_mapping_is_written_whole_and_no_further() {
         .mem_map_host_memory(CODE, PAGE, Prot(Prot::READ.0 | Prot::EXEC.0), &code, 0)
         .expect("the code mapped");
     engine
-        .mem_map_host_memory(DATA + PAGE, 5 * PAGE, Prot(Prot::READ.0 | Prot::WRITE.0), &data, PAGE)
+        .mem_map_host_memory(
+            DATA + PAGE,
+            5 * PAGE,
+            Prot(Prot::READ.0 | Prot::WRITE.0),
+            &data,
+            PAGE,
+        )
         .expect("five pages mapped writable");
     engine
         .mem_map_host_memory(DATA + 6 * PAGE, PAGE, Prot::READ, &data, 6 * PAGE)
