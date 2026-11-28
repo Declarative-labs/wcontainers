@@ -27,6 +27,8 @@ use crate::memory::GUEST_PAGE;
 const FLOOR_PAGE: u64 = IN_PROCESS_ENTRIES & !(GUEST_PAGE - 1);
 /// The link register, which holds the address after a call into the floor.
 const LINK: usize = GENERAL - 1;
+/// The bytes of an instruction: the branch into the floor is the one before its link.
+const INSTRUCTION_BYTES: u64 = wcontainers_processor_architecture_arm64::INSTRUCTION_SIZE;
 /// The register page's address in the hardware a piece is entered with: none, since the run itself puts its frame's
 /// address there.
 const FRAME_SET_BY_THE_RUN: u64 = 0;
@@ -134,7 +136,11 @@ impl InProcessThread {
             .linux
             .run_instructions(&mut self.host, instructions, &mut self.frame)
         {
-            RunEnd::Exit(exit) => call_at(exit),
+            // As every way gives a call to the stop crate: the pc at the branch into the floor, not after it.
+            RunEnd::Exit(exit) => {
+                self.frame.registers.pc -= INSTRUCTION_BYTES;
+                call_at(exit)
+            }
             RunEnd::Refused => Exit::Refused,
             RunEnd::NotEntered => Exit::NotEntered,
             RunEnd::Stopped => {
@@ -142,7 +148,7 @@ impl InProcessThread {
                 // Stopped in an exit before it changed a register: the call it was making, made.
                 if registers.pc & !(GUEST_PAGE - 1) == FLOOR_PAGE {
                     let exit = registers.pc & !(PROCESS_ENTRY_BYTES - 1);
-                    registers.pc = registers.x[LINK];
+                    registers.pc = registers.x[LINK] - INSTRUCTION_BYTES;
                     return call_at(exit);
                 }
                 Exit::Stopped
@@ -163,7 +169,7 @@ impl InProcessThread {
         }
     }
 
-    /// The hardware as the thread left it, its pc the address after its call into the floor.
+    /// The hardware as the thread left it, its pc at its branch into the floor after a call.
     pub fn hardware(&self) -> Interrupted {
         let registers = &self.frame.registers;
         Interrupted {

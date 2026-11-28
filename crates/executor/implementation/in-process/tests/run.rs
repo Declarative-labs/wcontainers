@@ -839,6 +839,8 @@ fn interrupts_that_land_anywhere_change_nothing_the_guest_sees() {
 
 /// The slice after which an execution that took no trap is interrupted: a tick at 1000 Hz.
 const SLICE: std::time::Duration = std::time::Duration::from_millis(1);
+/// The longest the guest that loops through two pieces may take to be interrupted [`SLICES`] times.
+const LANDING_LOOP_LONGEST: std::time::Duration = std::time::Duration::from_secs(5);
 /// Interrupts a guest that never traps is given before the handler ends it.
 const SLICES: usize = 20;
 
@@ -982,7 +984,12 @@ fn the_flags_vectors_and_float_status_the_guest_leaves_are_the_execution_s() {
     vectors[DUPLICATED_INTO] = duplicated << 64 | duplicated;
     assert_eq!(ended.vector_registers, vectors);
     assert_eq!(ended.floating_point_status, STATUS);
-    assert_eq!(ended.general_purpose_registers[STATUS_INTO], STATUS);
+    // Every general register as the guest left it, the link register among them, which each call into the floor
+    // around a float status access uses.
+    let mut wanted = start.general_purpose_registers;
+    wanted[0] = 0;
+    wanted[STATUS_INTO] = STATUS;
+    assert_eq!(ended.general_purpose_registers, wanted);
 }
 
 /// A load through a stack pointer into a page the guest may not touch is an abort at that address, not an alignment
@@ -1018,7 +1025,15 @@ fn a_guest_that_loops_through_two_pieces_is_interrupted_each_slice() {
         interrupts_before_end: Some(SLICES),
         ..Handler::default()
     };
+    let started = std::time::Instant::now();
     let ended = execute(&mut executor, &memory, before(18), &mut handler);
+    // A slice each, with room for a loaded host: not the many seconds a landing counted as a trap takes, where only a
+    // slice the host took from the thread ends without one.
+    assert!(
+        started.elapsed() < LANDING_LOOP_LONGEST,
+        "{:?}",
+        started.elapsed()
+    );
     assert_eq!(handler.interrupts, SLICES + 1);
     assert_eq!(ended.exception, None);
     assert!(handler.calls.is_empty());

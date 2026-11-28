@@ -1306,3 +1306,88 @@ wait on X2, X3. Item 6 waits on the same. Item 7: unsafe only in linux-process `
 Next, waiting on no other track: slot table pages (code mapped within the reserved table, one sealed page per 256
 slots, each slot unlinked when its line is announced changed or its page loses execute), so pieces link and the
 suite's count-down cases finish; then look-ahead beyond one instruction, and the window-edge exactness test.
+
+## The owner's `run_code` ruling, the check's plants, one operation per mark (run of 2026-11-27, fourth)
+
+### Start (MEASURED: `git fetch` of his checkout, `git merge-base --is-ancestor`, `git diff --quiet`)
+
+His main is still ac696ea19, already merged (`merge-base --is-ancestor` 0). Branch `translator-confinement` 5db90a9ff
+merged (a fast-forward: it was cut from this branch's tip) for `TranslatedInstructions`. Every owner `interface.rs` that
+main has is byte-identical to main's.
+
+### The ruling: `instructions`, the mapping a run takes, a `pc` outside it refused (commits 7f43c42d7, 7d8640f4e)
+
+- linux-process: `CodeMapping` is `InstructionMapping`, `map_code` is `map_instructions(address, instructions,
+  window, displaced)`, `code_file` is `instructions_file`, `exit_code` is `exit_instructions`, `run_code` is
+  `run_instructions(thread, &InstructionMapping, frame)`; every doc line says instructions. New `RunEnd::Refused` and
+  `WINDOW_BASE_REGISTER` (x24).
+- `run_instructions` refuses, running nothing and changing nothing, a `pc` that is not a 4-byte-aligned address inside
+  the mapping, and for instructions not displaced a stack pointer (top byte ignored) outside the mapping's window; it
+  sets x24 to the window's base itself (FOR-THE-NATIVE-TRACK.md (b), (c)).
+- The executor translates with `translate_instructions` and maps `TranslatedInstructions::padded`, each piece with its
+  window and displacement; `Loaded` holds the `TranslatedInstructions`.
+- The pool reserves 64 KiB below every window (FOR-THE-NATIVE-TRACK.md (d)): a slot is `[base - 64 KiB, base + 2^33
+  - 64 KiB)`, so a window's lower guard is its own whether the slot below is held or not. The test checks it for slot 1
+  and another, held and given back.
+- Not done, and why: `Entry::Start | Resume(Stopped)` (refusal by construction, entry only at a piece's start or a stop
+  point). The executor's resumes (`Resolved::Again` and the others) re-enter at a `pc` the stop crate computes with
+  answered registers; carrying a `Stopped` token through them is the next run's change. Until then a caller can still
+  enter mid-piece inside the mapping. The one UNSOUND mark stays, its obligation narrowed to that and to the bytes
+  being the translator's: linux-process cannot name `TranslatedInstructions` (it is below the translator), so
+  `map_instructions` takes bytes. For him, one line: may `TranslatedInstructions` live where linux-process can name it
+  (or linux-process take a sealed token the translator crate makes), so that `map_instructions` takes only it?
+
+### The check's surviving plants, each with a test (MEASURED, job nr-hand on Graviton4, each plant 3 rounds)
+
+| Plant | Test that catches it | Rounds caught |
+|---|---|---|
+| L12 `stp q0, q1` of the exit deleted | `takes_every_register_in_and_gives_every_register_back` (every x +1, x29 += x30, every v inverted) | 3 of 3 |
+| I7 interrupt asked before the run not checked | `an_interrupt_asked_before_the_execution_is_taken_first_by_a_guest_that_keeps_making_system_calls` | 3 of 3 |
+| I11 the write of an atomic to a read-only page | `a_fault_is_a_write_or_a_read_as_linux_reports_it` (ldadd, dc zva on READ_ONLY and outside, ic ivau) | 3 of 3 |
+| I6 code change announced on a forbidden page goes on | same test, `ic ivau` on NOTHING, and goes on on READ_ONLY and DATA | 3 of 3 |
+| L3 a stop in the entry not aborted (timing) | `keeps_every_register_through_stops_that_land_anywhere` (2,000 stops at least) | 3 of 3 |
+| I9 a stop in an exit on the floor page (timing) | `interrupts_that_land_anywhere_change_nothing_the_guest_sees` | 2 of 3 at 2,000 calls; lengthened |
+| dc zva not a write (check item 3) | `a_fault_is_a_write_or_a_read_as_linux_reports_it` | 3 of 3 |
+| no guard below the window | the slots and memory tests | 3 of 3 |
+
+The check's other items: I10 (`JumpAlignment`) is unreachable and removed (a misaligned pc is found before entry; a
+piece branches only to aligned addresses), and with it the alignment-at-pc arm of the stop; the host's write bit is no
+longer used (the instruction decides, `access_of`, atomics and `dc zva` now writes, as Linux's `is_write_abort`); a
+foreign fault or stop now goes to the handler the process had before (a SA_SIGINFO handler is called, a default or
+ignore is put back for a fault), and a run's handler stays: `earlier_handlers` test, own process, with signal-hook's
+safe handlers. Not this track's and left: `dc cvau` on a forbidden page (the translator's `CleanCache` copy), the
+whole-workspace `cargo fmt` diffs in other crates, form P's load-dependent flake in `moved.rs`.
+
+### Mutants (MEASURED: cargo-mutants 27.1.0 on Graviton4 only, each copy building in its own folder; not in any lock)
+
+A first run (nr-mut0) shared one build folder between copies, so its verdicts are void; it was stopped. The valid runs:
+
+- in-process `execution.rs`, `run.rs`, `memory.rs`, against tests run, memory, slots and behavior (the executor
+  conformance suite is too long per mutant): at 2fd27f085 74 missed of 366; at 3eeb1ec26 15; at 0132e8f2c (job
+  nr-mut3) 310 mutants, 210 caught, 13 timeouts, 73 unviable, **14 missed**.
+- linux-process `direct/implementation.rs`, against its conformance suite and the earlier-handler test: at 0132e8f2c
+  99 of 262 done when the machine reached a load of 424 and the job was stopped: 52 caught, 36 timeouts, 18 unviable,
+  **11 missed**.
+
+Each survivor at 0132e8f2c, and what was done:
+
+| Survivor | Verdict |
+|---|---|
+| execution.rs:52 `+`→`-`, `<<`→`>>` (the instruction area's start) | equivalent: any start outside the windows, tables and floor serves; the test that pieces lie outside every slot and table catches the one that is not |
+| execution.rs:160, 162 (the next free place's bound and step) | equivalent: allocation order and the area's 2^40 bytes, never filled by a test |
+| execution.rs:505 the landing guard made false | not equivalent: a two-piece loop then takes seconds, not a slice each; the test now bounds it (5 s), after this run's mutants |
+| execution.rs:643, every linux-process `|`→`^` (11 sites) | equivalent: each `|` joins disjoint bits (flags, instruction fields, a tag on an untagged address) |
+| memory.rs:200 `Block::eq` → false | equivalent: only stops adjacent equal ranges from merging; the `true` mutant is caught by the side-by-side blocks test |
+| memory.rs:284, 298 `<`→`>` (stop after a short read or write) | equivalent: a memory file's reads and writes below its end are whole |
+| memory.rs:746 `<`→`<=`, 760 `-`→`/` (copy loop) | equivalent: one more empty turn; a slower copy of the same bytes |
+| run.rs:36 `/`→`%` | equivalent: weakens a compile-time assertion only |
+| run.rs:143 `&`→`^` (the floor page of a stopped pc) | equivalent for every pc the test reaches; the floor-stop arm itself is caught by the interrupt storm |
+| run.rs:181 `resume` → () | not equivalent, and a real defect behind it: checking every general register after `msr`/`mrs fpsr` FOUND that the guest's x30 came back as a host address (0x2004_0000_..., this process's instruction area). Form I gave the stop crate a call's pc after its branch into the floor; form P and the stop crate's `after_call` take it at the branch, so the resume skipped the piece's reload of x30 from the register page. Fixed in run.rs (the pc at the branch, as form P's `h.pc - INSTRUCTION`); a guest-visible register and a leak of a host address to the guest (SECURITY) |
+| direct:115 `KEPT_BYTES` `+`→`*`, 135 `1 << 18`→`>>` | equivalent: a larger save area; the signal stack's floor from AT_MINSIGSTKSZ |
+
+### Assembly plants (MEASURED, docs/plants-linux-process-run.md, job nr-asm at 0132e8f2c)
+
+156 plants, one per instruction line of the naked run: 95 caught by a failing test, 55 past the 150 s limit at a load
+near 300 (to be run again with no limit), 6 missed: the saves and restores of the thread's d8 to d15 (5 lines; a
+caller's values in those registers are seen only by code built with optimization, and the tests are built without),
+and the exit's save of FPSR (the every-register test now sets every FPSR flag, after the plant run).
