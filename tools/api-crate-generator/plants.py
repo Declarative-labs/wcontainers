@@ -291,7 +291,7 @@ def apply(text, function, old, new):
 def run(list_path, only, command):
     with open(list_path) as handle:
         rows = [line.rstrip("\n").split("\t") for line in handle if line.strip()]
-    counts = {"CAUGHT": 0, "SURVIVED": 0, "INVALID": 0, "NOT FOUND": 0}
+    counts = {"CAUGHT": 0, "SURVIVED": 0, "INVALID": 0, "HUNG": 0, "NOT FOUND": 0}
     for number, (ident, path, function, old, new) in enumerate(rows, 1):
         if only and number not in only:
             continue
@@ -320,7 +320,10 @@ def run(list_path, only, command):
         finally:
             with open(path, "w") as handle:
                 handle.write(original)
-        if returncode == 0:
+        if "did not end" in output:
+            # Killed: the tests hung under the plant (or the build took longer than the limit): judged on its own.
+            verdict = "HUNG"
+        elif returncode == 0:
             verdict = "SURVIVED"
         elif re.search(r"^error(\[E\d+\])?: ", output, re.M) and "could not compile" in output:
             verdict = "INVALID"
