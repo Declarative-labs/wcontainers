@@ -692,3 +692,124 @@ comment_too_long +1 (the summaries of the new items shortened after this count).
 - KP2's leftovers: the harness's `Hooks` (37 uses, 5 test files implement it) and `DigestMemories`
   traits; the abi's `Cpu`, `Host`, `Event`, `Next`, `Exit` are gone from both crates (git grep: 0).
 - KF as listed. The presented chip's source waits on the owner's call above.
+
+## 2026-11-27, run 33: equality in `identity`, ptrace, the stand-in's tip and the LTP set
+
+Merges: `34b1061c4` (normal) of `origin/executor-restart` c5cec2ab4. His main is still `ac696ea19`
+(fetched from his checkout: FETCH_HEAD), already merged; every owner `interface.rs` and data file
+is byte-identical to it (the three that differ, kvm, linux-socket-options and wasmtime, are crates
+his main does not have).
+
+### (1) `identity` requires equality
+- guest/identity.c derives AT_HWCAP and AT_HWCAP2 from the ID-register fields it read itself, by
+  Linux's table (docs.kernel.org/arch/arm64/elf_hwcaps.html), and the Features line of
+  /proc/cpuinfo from the derived words with Linux's names in Linux's order; it also prints the
+  first processor's Features line and whether every processor's is the same.
+- tests/identity.rs requires, on each side, given == derived exactly (EVTSTRM, which no register
+  gives, is the reference kernel's own and must be 0 here), cpuinfo Features == derived names, all
+  processors the same. The reference side checks the derivation against Linux itself.
+- MEASURED: passes on both sides (the Graviton's HWCAP 0xeff3ffff and HWCAP2 0x3f3bf and its
+  cpuinfo line are exactly what its registers say by the guest's table).
+- The check's four surviving plants each break the equality by construction (a bit dropped from or
+  added to AT_HWCAP/HWCAP2, or a fixed Features line, no longer equals what the registers say).
+- `PRESENTED` stays equal to the list's presented registers; the presented chip from the executor
+  still waits on the owner's call (written above, unchanged).
+
+### (2) ptrace (call 117), his ruling: built
+- Built (kernel/implementation/linux trace.rs, syscall/ptrace.rs): PTRACE_TRACEME, ATTACH, CONT,
+  KILL, DETACH, PEEKTEXT/DATA, POKETEXT/DATA, GETSIGINFO, SETSIGINFO; every other request EIO, as
+  Linux's `ptrace_request` answers one it does not know (PEEKUSR/POKEUSR are such on arm64).
+- The stop at each signal but SIGKILL a traced thread is about to act on (`ptrace_signal`), even
+  one it ignores (`sig_ignored`), before a fatal one ends anything (`complete_signal`); the tracer
+  is sent SIGCHLD CLD_TRAPPED unless SA_NOCLDSTOP and its waits woken; wait4 and waitid report the
+  stop once (WNOWAIT keeps it) whatever WUNTRACED says, for a child or not, by number, group or any,
+  __WNOTHREAD to the tracing thread only; resuming with a signal delivers it (a blocked one is sent
+  again, another than the one stopped for comes from the tracer, SI_USER); a tracer that ends lets
+  its tracees go on without their signal (MEASURED on the reference); SIGKILL ends a stopped one;
+  /proc's State `t (tracing stop)` and TracerPid; a traced process counts as inspected.
+- Checks as Linux: TRACEME twice EPERM; ATTACH to its own process, one it may not trace by real
+  ids, one traced, a zombie: EPERM; unknown: ESRCH; requests of a non-tracer or on a running tracee
+  ESRCH (PTRACE_KILL excepted); a signal past 64: EIO. No Yama: the committed reference passes
+  ptrace11 (ATTACH to pid 1, an ancestor), so the reference it was recorded on has none in effect.
+- Tests: tests/tracing.rs (guest/tracing.c against the reference, every line equal), embedder
+  tests: a traced process is inspected; a stopped tracee taken off the kernel and put back stays
+  stopped; ptrace's copies meet the watches of tracer and tracee (lazy memory, against the reference).
+- Written gaps (not needed by the six LTP tests): SEIZE, INTERRUPT, LISTEN, SETOPTIONS and the
+  events (fork, exec, exit stops), SYSCALL and SINGLESTEP, GETREGSET/SETREGSET, PEEKSIGINFO, the
+  SIGTRAP after an exec while traced, CLONE_PTRACE, group-stop reports to a tracer, a traced
+  non-child's exit reported to its tracer first, the dumpable check of ptrace_access_vm.
+
+### (3) The stand-in's tip and the LTP set of verdicts
+- Full set at `34b1061c4` (job kp-ltpall/20261127-190900-1645462, 19:09 to 21:00 UTC, load 14
+  rising to 250, LTP_JOBS 8, LTP_LIMIT 900, 6,535 s): 4,226 compared, 4,167 match, 59 differ.
+  Against ours-20260930-a9f8631e.tsv: gained ADSP037, 038, 073, 074 (timeout before, pass now);
+  lost mtest05, shm_test01, hackbench01 (900 s timeouts: the stand-in's speed, profiles above) and
+  seven timer tests failing "slept for too long" (futex_wait05, nanosleep01, poll02, prctl09,
+  pselect01, pselect01_64, select02) at load 150 to 250.
+- Targeted set at `8f392b387` (KS's 30, ptrace01 to 11, kill, wait4, waitpid and waitid tests,
+  the moved ones; job kp-ltpset/20261128-011740-4192614, load 150 to 220): 87 compared, 81 match,
+  6 differ: prctl09 (the committed reference fails it, ours passes), pselect01 and pselect01_64
+  (slept too long), mtest05, shm_test01, hackbench01 (timeouts). ptrace01, 02, 03, 05, 06, 11 pass
+  as the reference does (were broken or failing); ptrace04, 07 to 10 skipped as the reference.
+- Timer tests alone (LTP_JOBS 1) at load 144 to 218: futex_wait05 passes; pselect01,
+  pselect01_64, select02, nanosleep01, poll02 fail "slept for too long". The stand-in track
+  measured the six pass alone at load 31 to 58 (READ, its status): load, not code (INFERRED).
+
+### KS at `d2a9b01ad` (MEASURED: job kp-whole/20261127-210525-2606423, 21:05 to 00:16 UTC, load 135 rising to 300 and more, three targets at a time, 4 test threads, 2,400 s per target, node and python 7,200 s)
+- clippy `--all-targets --no-deps -D warnings` of the kernel and the harness 0; fmt 0; kernel unit
+  tests 35 passed; the kernel's conformance suite 22 passed.
+- 116 targets (tracing new): 91 pass, 25 fail, none at its bound. Tests 378 passed, 36 failed, 8
+  ignored. The failing names are fails16's 35 and `streams::a_shell_on_the_terminal`, whose
+  reference container never showed its prompt at that load ("the reference never showed \"# \"");
+  alone at `8f392b387` (load 122) it passes.
+- node 2 of 2 (300 s), python 3 of 3 (5,565 s), identity, tracing, embedder 38 of 38 (801 s).
+- `runtime` feature (WebAssembly executor): hello 1 of 1, counterclock 2 of 2, busybox 3 passed,
+  1 failed (`system`, on fails16), 1 ignored.
+- At the last tip `dd34b7b3a` (job kp-dev/20261128-042130-680397; x86 job kp-x86 same tip): fmt 0,
+  clippy 0 on ARM64 (kernel and harness) and x86-64 (kernel), unit tests 35 on both, kernel
+  conformance 22, tracing, identity, the four traced embedder tests pass, ptrace01 to 11: 11 of 11
+  verdicts match the committed reference.
+
+### The mutation bar (cargo-mutants 27.1.0 on the ARM64 machine only, never in a lock file)
+- What: the new files whole (trace.rs, syscall/ptrace.rs), identification.rs whole (the check's
+  survivors), and every changed line of the other hand-written files (in-diff against
+  `34b1061c4`). The tests: tracing, the embedder's traced tests, identity, the kernel's units.
+  The tool cannot parse system.rs (return-type notation): in the job's copy only, the `System`
+  trait is wrapped in a pass-through macro on its own lines (scripts/wrap_system.py). Its baseline
+  runs only the mutated package's tests, so it is skipped; the unmutated tree passes these tests.
+- Round 1 at `d2a9b01ad`: 204 mutants: 170 caught, 21 missed, 2 timeouts, 11 unviable. Each miss
+  was answered: a redundant `signalled.retain` removed; a redundant early ECHILD removed; the touch
+  description of ptrace extended to the tracee's memory with an embedder test under lazy memory
+  (it was missing: a PEEK of a lazy tracee page read zeros); tests added for ISAR2/ISAR3 fields,
+  own-group waitid, an untraced ignored signal kept only while blocked, SIGSTOP to an untraced
+  child, SIGTERM to the first process, a signal ignored when sent to a stopped process; two
+  folds of disjoint bits made sums (the `|` to `^` mutants were equivalent).
+- Round 2 at `8f392b387`: 44 in-diff: 37 caught, 2 missed (answered), 4 unviable, the rest cut off
+  by a full disk. Round 3 at `10e700a73`: identification.rs whole 68 of 68 caught; the trace.rs
+  and ptrace.rs run cut off by the disk (16 caught, 1 missed, 10 unviable, 6 of them for space).
+  Round 4 at `10e700a73` (one copy): 20 mutants, 19 caught, 1 missed.
+- Left alive: signal.rs:630 `delete !` in `complete` (`!self.dropped(pid, signal)`), a line this
+  run did not change (the diff's context). It is reached only by a first process with several
+  threads whose first thread blocks the signal while another does not; no test has that, and what
+  Linux does there is to be measured first (its `complete_signal` has no unkillable check).
+- No generated code, assembly or product C changed: the plant lists do not apply; the guests
+  changed are tests.
+
+### Linter (reviewable-rust da55b9d7 built on the machine, no key): on this run's added lines
+- 105 findings at `f334513cc`, 58 at `10e700a73`: summary_unanswered 27 and name_unanswered 16
+  (need the model; no key there), public_outside_interface 9 (the `trace` field, as every field of
+  `Thread`), number_constant_without_link 4 and constant_defined_twice 2 (fixed in `dd34b7b3a`,
+  not recounted).
+
+### Not done this run
+- KP2's leftovers. `Hooks`: 34 test implementations (embedder 25, edges 5, taskend 2, away 1,
+  outside 1) behind `Box<dyn Hooks>` in driver.rs and busybox.rs; the status above kept it for the
+  owner's reason "several implementations exist". A ruling is needed: keep it, or make it a plain
+  struct of boxed functions (every test rewritten). `DigestMemories`: its two implementations are
+  in standin.rs and buffer.rs, the executor track's files; it goes when that track drops them.
+- KF: not started.
+- His main moved during this run: 13 commits, ac696ea19 to 838410479 (19:30 to 03:24 UTC). A
+  merge (tried, aborted, nothing committed) conflicts in Cargo.lock and in
+  crates/volatile-bytes/implementation/{pointer,shared-mapping} (implementation.rs, README.md),
+  not the kernel's files; `VolatileBytes` gains the required `read_at` and `write_at`, which every
+  implementation must add. The next run starts with that merge.
