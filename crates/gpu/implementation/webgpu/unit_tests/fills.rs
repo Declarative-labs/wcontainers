@@ -873,6 +873,65 @@ fn converted_formats_copy_by_draws_as_the_host_widens_and_packs() {
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 
+/// A region of an `rgb32uint` texture off the origin copied into its typeless twin `rgb32float` at
+/// another place (by draws through their raw words, each at a column and a row that differ) holds
+/// each word at its new place, and the twin's alpha one; everything else stays zero.
+#[test]
+fn three_channel_formats_copy_into_their_twins_word_for_word() {
+    let mut gpu = device();
+    let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let src = texture(&mut gpu, Format::Rgb32Uint, 1, 1, usage);
+    let dst = texture(&mut gpu, Format::Rgb32Float, 1, 1, usage);
+    // Distinct words, none of them a NaN or a denormal as a float.
+    let word = |x: u32, y: u32, c: u32| 0x3f00_0000 | (y * N + x) << 4 | c;
+    let words: Vec<u8> = (0..N)
+        .flat_map(|y| {
+            (0..N).flat_map(move |x| (0..3).flat_map(move |c| word(x, y, c).to_le_bytes()))
+        })
+        .collect();
+    gpu.write_texture(
+        &at(&src, 0, 0, false),
+        extent(N, 1),
+        &words,
+        N * 12,
+        N,
+        WriteMode::Ordered,
+    );
+    let (w, h) = (4, 2);
+    let from = TextureRegion {
+        origin: Origin { x: 2, y: 1, z: 0 },
+        ..at(&src, 0, 0, false)
+    };
+    let to = TextureRegion {
+        origin: Origin { x: 1, y: 3, z: 0 },
+        ..at(&dst, 0, 0, false)
+    };
+    gpu.copy_texture(
+        &from,
+        &to,
+        Extent {
+            width: w,
+            height: h,
+            depth_or_layers: 1,
+        },
+    );
+    let mut want = vec![0u8; (N * N * 16) as usize];
+    for r in 0..h {
+        for i in 0..w {
+            let at = (((3 + r) * N + 1 + i) * 16) as usize;
+            let texel: Vec<u8> = (0..3)
+                .map(|c| word(2 + i, 1 + r, c))
+                .chain([1f32.to_bits()])
+                .flat_map(u32::to_le_bytes)
+                .collect();
+            want[at..at + 16].copy_from_slice(&texel);
+        }
+    }
+    let raw = crate::texture_of(&gpu, &dst).expect("held").raw();
+    assert_eq!(read_raw(&mut gpu, &raw, 16), want);
+    assert_eq!(gpu.status(), DeviceStatus::Ok);
+}
+
 /// Depth and stencil written from a buffer into layers 1 and 2 of a three-layer texture (by draws:
 /// a part of a level) read back as written from those layers, by draws reading part of a level: each
 /// layer from its own rows of the buffer.

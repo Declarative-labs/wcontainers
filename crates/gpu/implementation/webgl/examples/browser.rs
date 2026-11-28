@@ -316,6 +316,7 @@ shared!(
     every_byte_of_an_srgb_texture_copies_into_its_linear_twin_as_stored,
     float_targets_drawn_with_every_kind_of_value_read_back_its_bits,
     typeless_group_copies_keep_every_bit,
+    float_texels_written_read_back_with_every_bit,
 );
 
 thread_local! {

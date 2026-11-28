@@ -7432,7 +7432,7 @@ pub fn every_face_of_a_cube_reads_and_copies_texel_for_texel<B: Gpu>(mut b: B) {
 /// Half floats of every kind with their 32-bit floats: normal values of both signs (the largest,
 /// the smallest, a fraction and an integer), denormals (the smallest, the largest exponent's, one
 /// of a negative sign), both zeros and both infinities. A NaN is drawn too ([`DRAWN_NAN`]).
-const DRAWN_HALVES: [(u32, u16); 15] = [
+const DRAWN_HALVES: [(u32, u16); 16] = [
     (0x3f80_0000, 0x3c00), // 1
     (0xc020_0000, 0xc100), // -2.5
     (0x477f_e000, 0x7bff), // 65504, the largest
@@ -7448,6 +7448,7 @@ const DRAWN_HALVES: [(u32, u16); 15] = [
     (0x7f80_0000, 0x7c00), // infinity
     (0xff80_0000, 0xfc00), // -infinity
     (0x4080_0000, 0x4400), // 4
+    (0xbf81_0000, 0xbc08), // -1.0078125, whose 32 bits have bit 16 set
 ];
 
 /// The 32-bit NaN drawn beside the values of [`DRAWN_HALVES`] and [`SMALL_FLOATS`]: any NaN of the format
@@ -7569,8 +7570,10 @@ pub fn float_targets_drawn_with_every_kind_of_value_read_back_its_bits<B: Gpu>(m
     let side = 4u32;
     let texels = (side * side) as usize;
     if uses(&b, Format::Rgba16Float) {
-        // Value k of the sixteen (the fifteen and the NaN) in channel c at texel (k + 5c) mod 16.
-        let value = |i: usize, c: usize| (i + 16 - 5 * c % 16) % 16;
+        // Value k of the seventeen (the sixteen and the NaN) in channel c at texel (k + 5c) mod 17;
+        // the seventeenth texel is the first again.
+        let count = DRAWN_HALVES.len() + 1;
+        let value = |i: usize, c: usize| (i + 5 * count - 5 * c) % count;
         let words: Vec<u32> = (0..texels)
             .flat_map(|i| (0..4).map(move |c| value(i, c)))
             .map(|k| DRAWN_HALVES.get(k).map_or(DRAWN_NAN, |h| h.0))
@@ -7633,6 +7636,81 @@ pub fn float_targets_drawn_with_every_kind_of_value_read_back_its_bits<B: Gpu>(m
     ok(&mut b);
 }
 
+/// Every half float word but the signalling NaNs (whose quiet bit a conversion may set), written into
+/// an `rgba16float` texture that is also a render target, and 2048 R11G11B10 words (every 11-bit red,
+/// greens and blues spread over their codes, no NaN) written into an `rg11b10float` one, read back
+/// with every bit: a back end reading such textures by sampling them recovers each value's bits from
+/// its float, denormals, infinities and NaN payloads too.
+pub fn float_texels_written_read_back_with_every_bit<B: Gpu>(mut b: B) {
+    let usage = TextureUsage::COPY_SRC
+        | TextureUsage::COPY_DST
+        | TextureUsage::RENDER
+        | TextureUsage::SAMPLE;
+    let uses = |b: &B, f: Format| {
+        b.caps().formats.uses[f as usize].contains(FormatUse::RENDER | FormatUse::COPY_OUT)
+    };
+    let round_trip = |b: &mut B, format: Format, (w, h): (u32, u32), bytes: &[u8], texel: u32| {
+        let t = texture(b, format, (w, h), 1, 1, usage);
+        b.write_texture(
+            &region(&t, 0, 0, 0, 0),
+            extent(w, h, 1),
+            bytes,
+            w * texel,
+            h,
+            WriteMode::Ordered,
+        );
+        read_texture(b, region(&t, 0, 0, 0, 0), extent(w, h, 1), texel as usize)
+    };
+    if uses(&b, Format::Rgba16Float) {
+        let signalling = |h: u16| h & 0x7c00 == 0x7c00 && h & 0x3ff != 0 && h & 0x200 == 0;
+        let words: Vec<u16> = (0..=u16::MAX)
+            .map(|h| if signalling(h) { 0 } else { h })
+            .collect();
+        let bytes: Vec<u8> = words.iter().flat_map(|h| h.to_le_bytes()).collect();
+        let got = round_trip(&mut b, Format::Rgba16Float, (128, 128), &bytes, 8);
+        let wrong: Vec<String> = got
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(&words)
+            .filter(|(g, w)| u16::from_le_bytes(**g) != **w)
+            .take(16)
+            .map(|(g, w)| format!("{w:#06x} read as {:#06x}", u16::from_le_bytes(*g)))
+            .collect();
+        assert!(wrong.is_empty(), "rgba16float: {wrong:?}");
+    }
+    if uses(&b, Format::Rg11b10Float) {
+        let no_nan = |v: u32, mantissa: u32| {
+            let exponent = 0x1f * (mantissa + 1);
+            if v & exponent == exponent && v & mantissa != 0 {
+                0
+            } else {
+                v
+            }
+        };
+        let words: Vec<u32> = (0..2048u32)
+            .map(|i| {
+                no_nan(i, 0x3f)
+                    | no_nan((i * 7 + 3) % 2048, 0x3f) << 11
+                    | no_nan((i * 5 + 1) % 1024, 0x1f) << 22
+            })
+            .collect();
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let got = round_trip(&mut b, Format::Rg11b10Float, (64, 32), &bytes, 4);
+        let wrong: Vec<String> = got
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(&words)
+            .filter(|(g, w)| u32::from_le_bytes(**g) != **w)
+            .take(16)
+            .map(|(g, w)| format!("{w:#010x} read as {:#010x}", u32::from_le_bytes(*g)))
+            .collect();
+        assert!(wrong.is_empty(), "rg11b10float: {wrong:?}");
+    }
+    ok(&mut b);
+}
+
 /// Copies between formats of one typeless group whose texels hold every value of their components
 /// arrive with every bit as stored: signed integers into unsigned ones and back (the sign bits of
 /// each width kept, none spread past it), unsigned into signed normalised sources' twins, unsigned
@@ -7677,7 +7755,7 @@ pub fn typeless_group_copies_keep_every_bit<B: Gpu>(mut b: B) {
     ];
     let has = |b: &B, f: Format, u: FormatUse| b.caps().formats.uses[f as usize].contains(u);
     for (from, to, bytes) in cases {
-        if !has(&b, from, FormatUse::COPY_OUT) || !has(&b, to, FormatUse::COPY_OUT) {
+        if !has(&b, from, FormatUse::SAMPLE) || !has(&b, to, FormatUse::COPY_OUT) {
             continue;
         }
         let texel = bytes.len() as u32 / (side * side);
@@ -8529,6 +8607,11 @@ macro_rules! tests {
         #[test]
         fn float_targets_drawn_with_every_kind_of_value_read_back_its_bits() {
             $crate::float_targets_drawn_with_every_kind_of_value_read_back_its_bits($value);
+        }
+
+        #[test]
+        fn float_texels_written_read_back_with_every_bit() {
+            $crate::float_texels_written_read_back_with_every_bit($value);
         }
 
         #[test]
