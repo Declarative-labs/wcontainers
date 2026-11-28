@@ -262,6 +262,8 @@ fn make_child<S: crate::System, C: Executor + 'static>(
     thread.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
     thread.process = child;
     thread.pidfd = None;
+    // A child is not traced unless its tracer asked for that (`ptrace_init_task`).
+    thread.trace = None;
     thread.cpu = thread_cpu;
     thread.resume = Resume::FromRegisters;
     thread.pending = Default::default();
