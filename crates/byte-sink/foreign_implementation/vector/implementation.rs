@@ -1,7 +1,11 @@
 use alloc::collections::TryReserveError;
 use alloc::vec::Vec;
 
+use vstd::prelude::*;
+
 use crate::ByteSink;
+
+verus! {
 
 /// Appends all the bytes to the vector.
 impl ByteSink for Vec<u8> {
@@ -13,6 +17,8 @@ impl ByteSink for Vec<u8> {
         self.extend_from_slice(bytes);
         Ok(bytes.len())
     }
+}
+
 }
 
 #[cfg(test)]

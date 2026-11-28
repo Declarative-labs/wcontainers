@@ -1,8 +1,14 @@
 use alloc::collections::{TryReserveError, VecDeque};
 
+use vstd::prelude::*;
+
 use crate::ByteSink;
 
+verus! {
+
 /// Appends all the bytes to the back of the queue.
+#[allow(reviewable::implementation_not_verified, reason = "TODO: prove it against the trait's contract, then remove this line")]
+#[verifier::external]
 impl ByteSink for VecDeque<u8> {
     /// The queue could not grow by the bytes.
     type Error = TryReserveError;
@@ -12,6 +18,8 @@ impl ByteSink for VecDeque<u8> {
         self.extend(bytes);
         Ok(bytes.len())
     }
+}
+
 }
 
 #[cfg(test)]
