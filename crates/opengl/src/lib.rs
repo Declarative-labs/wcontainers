@@ -38,6 +38,8 @@ mod position;
 #[cfg(mesa)]
 mod present;
 #[cfg(mesa)]
+mod queries;
+#[cfg(mesa)]
 mod query;
 #[cfg(mesa)]
 mod resource;

@@ -27,6 +27,7 @@ use crate::device::HostWindows;
 use crate::framebuffer::{self, Framebuffer};
 use crate::guest::{self, guest_call, refuse};
 use crate::pipe::*;
+use crate::queries::{self, ActiveQuery, EndOnlyQuery, Queries, Query};
 use crate::resources::{self, Mapping, Resource};
 use crate::screen::{DRIVER_NAME, whole};
 use crate::shaders::{self, Shader};
@@ -126,6 +127,8 @@ struct Set<B: Gpu> {
     /// The passes recorded, closed where later work must see what they wrote.
     tracker: PassTracker<B>,
     framebuffer: Framebuffer<B>,
+    /// The queries running, the render condition and the occlusion sets.
+    queries: Queries<B>,
 }
 
 impl<B: Gpu> Default for Set<B> {
@@ -146,6 +149,7 @@ impl<B: Gpu> Default for Set<B> {
             patch_vertices: 0,
             tracker: PassTracker::default(),
             framebuffer: Framebuffer::default(),
+            queries: Queries::default(),
         }
     }
 }
@@ -217,6 +221,19 @@ impl<B: HostWindows> DriverContext<B> {
         }
     }
 
+    /// Whether the render condition lets a draw or clear through.
+    fn condition_holds(&self, set: &mut Set<B>, backend: &mut B) -> bool {
+        queries::condition_holds(&mut set.queries, &mut set.tracker, backend)
+            .unwrap_or_else(|reason| refuse(format_args!("a render condition: {reason}")))
+    }
+
+    /// [`Self::condition_holds`], for a call that holds neither the back end nor the state.
+    fn condition_holds_now(&self) -> bool {
+        let mut backend = self.shared.backend();
+        let mut set = self.set.borrow_mut();
+        self.condition_holds(&mut set, &mut backend)
+    }
+
     /// Writes what `mapping` mapped for writing from `written`, unless the caller flushed its parts
     /// itself.
     fn unmap(&self, mapping: &Mapping<B>, written: &[u8]) {
@@ -279,9 +296,9 @@ impl<B: HostWindows> Gallium for Driver<B> {
     type ComputeShader = Arc<Shader>;
     type SamplerView = SamplerView<B>;
     type StreamOutputTarget = Unmoved;
-    type Query = Unmoved;
-    type ActiveQuery = Unmoved;
-    type EndOnlyQuery = Unmoved;
+    type Query = Query<B>;
+    type ActiveQuery = ActiveQuery<B>;
+    type EndOnlyQuery = EndOnlyQuery<B>;
     type Mapping = Mapping<B>;
 
     fn context_create(&self, _: u64, _: u32) -> Option<Self::Context> {
@@ -393,8 +410,22 @@ type Compiled = Bridge;
 impl<B: HostWindows> GalliumContext for DriverContext<B> {
     type Screen = Driver<B>;
 
-    fn begin_query(&self, q: Unmoved) -> Result<Unmoved, Unmoved> {
-        match q {}
+    /// A refused begin hands the query back, never begun.
+    fn begin_query(&self, q: Query<B>) -> Result<ActiveQuery<B>, Query<B>> {
+        self.call(Err(q.handle()), || {
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            let set = &mut *set;
+            queries::begin(q, &mut set.queries, &mut set.tracker, &mut *backend).map_err(
+                |(q, reason)| {
+                    eprintln!(
+                        "{}: a query's begin refused: {reason}",
+                        DRIVER_NAME.to_string_lossy()
+                    );
+                    q
+                },
+            )
+        })
     }
 
     fn bind_blend_state(&self, state: Option<&Arc<Blend>>) {
@@ -510,7 +541,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
     }
 
     /// Clears the framebuffer's targets `buffers` names, every layer of a layered one, a layer at
-    /// a time. The render condition always holds: a query, which sets one, is not yet moved.
+    /// a time; none while the render condition skips them.
     fn clear(
         &self,
         buffers: u32,
@@ -528,6 +559,9 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
             let mut backend = self.shared.backend();
             let mut set = self.set.borrow_mut();
             let set = &mut *set;
+            if !self.condition_holds(set, &mut backend) {
+                return;
+            }
             let depth = (buffers & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth));
             let stencil = (buffers & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil));
             let layers = set.framebuffer.layer_count();
@@ -581,7 +615,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         });
     }
 
-    /// The render condition always holds: a query, which sets one, is not yet moved.
+    /// Skipped while the render condition skips it, where `conditioned`.
     fn clear_depth_stencil(
         &self,
         dst: &Surface<'_, Resource<B>>,
@@ -592,9 +626,12 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         dsty: u32,
         width: u32,
         height: u32,
-        _: bool,
+        conditioned: bool,
     ) {
         self.call((), || {
+            if conditioned && !self.condition_holds_now() {
+                return;
+            }
             let value = ClearValue::DepthStencil {
                 depth: (clear_flags & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth)),
                 stencil: (clear_flags & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil)),
@@ -609,7 +646,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         });
     }
 
-    /// The render condition always holds: a query, which sets one, is not yet moved.
+    /// Skipped while the render condition skips it, where `conditioned`.
     fn clear_render_target(
         &self,
         dst: &Surface<'_, Resource<B>>,
@@ -618,9 +655,12 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         dsty: u32,
         width: u32,
         height: u32,
-        _: bool,
+        conditioned: bool,
     ) {
         self.call((), || {
+            if conditioned && !self.condition_holds_now() {
+                return;
+            }
             let rect = ScissorRect {
                 x: dstx,
                 y: dsty,
@@ -673,12 +713,25 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.call(None, || Some(shaders::create(Staged::Geometry(program))))
     }
 
-    fn create_query(&self, _: values::QueryType, _: u32) -> Option<Unmoved> {
-        self.call(None, || not_moved("create_query"))
+    /// Occlusion predicates, exact counts of samples and times elapsed; None for the rest, which
+    /// st/mesa reports as out of memory.
+    fn create_query(&self, kind: values::QueryType, _: u32) -> Option<Query<B>> {
+        self.call(None, || {
+            queries::create(&mut *self.shared.backend(), kind)
+                .unwrap_or_else(|reason| refuse(format_args!("{reason}")))
+        })
     }
 
-    fn create_query_end_only_query(&self, _: values::QueryType, _: u32) -> Option<Unmoved> {
-        self.call(None, || not_moved("create_query (end only)"))
+    /// Timestamps; None for the rest.
+    fn create_query_end_only_query(
+        &self,
+        kind: values::QueryType,
+        _: u32,
+    ) -> Option<EndOnlyQuery<B>> {
+        self.call(None, || {
+            queries::create_end_only(&mut *self.shared.backend(), kind)
+                .unwrap_or_else(|reason| refuse(format_args!("{reason}")))
+        })
     }
 
     fn create_rasterizer_state(&self, state: &RasterizerState) -> Option<Arc<Raster<B>>> {
@@ -817,19 +870,31 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         let mut old = std::mem::take(&mut *self.set.borrow_mut());
         old.framebuffer
             .release(|object| retire(&self.shared.retired, object));
+        old.queries.release(&self.shared.retired);
         guest::forget_reset(self.key);
     }
 
-    fn destroy_query(&self, q: Unmoved) {
-        match q {}
+    fn destroy_query(&self, q: Query<B>) {
+        q.destroy(&mut self.set.borrow_mut().queries, &self.shared.retired);
     }
 
-    fn destroy_query_end_only_query(&self, q: Unmoved) {
-        match q {}
+    fn destroy_query_end_only_query(&self, q: EndOnlyQuery<B>) {
+        q.destroy(&self.shared.retired);
     }
 
-    fn destroy_query_active_query(&self, q: Unmoved) {
-        match q {}
+    /// Destroyed while running: it ends first.
+    fn destroy_query_active_query(&self, q: ActiveQuery<B>) {
+        self.call((), || {
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            let set = &mut *set;
+            q.destroy(
+                &mut set.queries,
+                &mut set.tracker,
+                &mut *backend,
+                &self.shared.retired,
+            );
+        });
     }
 
     fn draw_vbo(
@@ -842,12 +907,32 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.call((), || not_moved("draw_vbo"));
     }
 
-    fn end_query(&self, q: Unmoved) -> Result<Unmoved, Unmoved> {
-        match q {}
+    /// A refused end hands the query back, still running.
+    fn end_query(&self, q: ActiveQuery<B>) -> Result<Query<B>, ActiveQuery<B>> {
+        self.call(Err(q.handle()), || {
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            let set = &mut *set;
+            queries::end(q, &mut set.queries, &mut set.tracker, &mut *backend).map_err(
+                |(q, reason)| {
+                    eprintln!(
+                        "{}: a query's end refused: {reason}",
+                        DRIVER_NAME.to_string_lossy()
+                    );
+                    q
+                },
+            )
+        })
     }
 
-    fn end_query_end_only_query(&self, q: &Unmoved) -> bool {
-        match *q {}
+    fn end_query_end_only_query(&self, q: &EndOnlyQuery<B>) -> bool {
+        self.call(false, || {
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            queries::end_only(q, &mut set.tracker, &mut *backend)
+                .unwrap_or_else(|reason| refuse(format_args!("a timestamp: {reason}")));
+            true
+        })
     }
 
     fn flush(&self, _: values::FlushFlags) -> Option<Unmoved> {
@@ -873,16 +958,38 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         values::ResetStatus(guest::reset_status(self.key))
     }
 
-    fn get_query_result(&self, q: &Unmoved, _: bool, _: &mut [u8]) -> bool {
-        match *q {}
+    /// False while the answer is not known; a refused answer is not known either.
+    fn get_query_result(&self, q: &Query<B>, wait: bool, result: &mut [u8]) -> bool {
+        self.call(false, || {
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            queries::result(q, &mut set.tracker, &mut *backend, wait, result)
+                .unwrap_or_else(|reason| refuse(format_args!("a query's result: {reason}")))
+        })
     }
 
-    fn get_query_result_end_only_query(&self, q: &Unmoved, _: bool, _: &mut [u8]) -> bool {
-        match *q {}
+    fn get_query_result_end_only_query(
+        &self,
+        q: &EndOnlyQuery<B>,
+        wait: bool,
+        result: &mut [u8],
+    ) -> bool {
+        self.call(false, || {
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            queries::end_only_result(q, &mut set.tracker, &mut *backend, wait, result)
+                .unwrap_or_else(|reason| refuse(format_args!("a timestamp's result: {reason}")))
+        })
     }
 
+    /// The GPU time now, after the work recorded so far.
     fn get_timestamp(&self) -> u64 {
-        self.call(0, || not_moved("get_timestamp"))
+        self.call(0, || {
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            queries::now(&mut set.tracker, &mut *backend, &self.shared.retired)
+                .unwrap_or_else(|reason| refuse(format_args!("{reason}")))
+        })
     }
 
     fn launch_grid(&self, _: &GridInfo<'_, Resource<B>>) {
@@ -895,15 +1002,28 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.texture_barrier(0);
     }
 
-    /// No condition can be set: a query is not yet moved; ending one holds always.
-    fn render_condition(&self, query: Option<&Unmoved>, _: bool, _: values::RenderCondFlag) {
-        if let Some(query) = query {
-            match *query {}
-        }
+    /// Draws and clears are skipped while the query's answer equals `condition`; every mode
+    /// waits for the answer (the waiting modes as they ask; the others may draw before it is
+    /// known and are given it).
+    fn render_condition(
+        &self,
+        query: Option<&Query<B>>,
+        condition: bool,
+        _: values::RenderCondFlag,
+    ) {
+        queries::condition(&mut self.set.borrow_mut().queries, query, condition);
     }
 
-    fn render_condition_end_only_query(&self, query: &Unmoved, _: bool, _: values::RenderCondFlag) {
-        match *query {}
+    /// A timestamp answers no condition: refused by name.
+    fn render_condition_end_only_query(
+        &self,
+        _: &EndOnlyQuery<B>,
+        _: bool,
+        _: values::RenderCondFlag,
+    ) {
+        self.call((), || {
+            refuse(format_args!("a render condition on a timestamp"))
+        });
     }
 
     fn resource_copy_region(
@@ -920,8 +1040,15 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.call((), || not_moved("resource_copy_region"));
     }
 
-    fn set_active_query_state(&self, _: bool) {
-        self.call((), || not_moved("set_active_query_state"));
+    /// st/mesa's own draws count in no query while it is off.
+    fn set_active_query_state(&self, enable: bool) {
+        self.call((), || {
+            let mut backend = self.shared.backend();
+            let mut set = self.set.borrow_mut();
+            let set = &mut *set;
+            queries::set_active(&mut set.queries, &mut set.tracker, &mut *backend, enable)
+                .unwrap_or_else(|reason| refuse(format_args!("pausing a query: {reason}")));
+        });
     }
 
     fn set_blend_color(&self, color: &BlendColor) {
