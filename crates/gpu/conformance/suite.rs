@@ -5341,22 +5341,32 @@ impl wcontainers_volatile_bytes::VolatileBytes for Drifting {
         self.bytes.borrow().len() as u64
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let count = {
             let held = self.bytes.borrow();
-            let count = into.len().min(held.len());
-            into[..count].copy_from_slice(&held[..count]);
+            let from = usize::try_from(offset)
+                .ok()
+                .and_then(|offset| held.get(offset..))
+                .unwrap_or_default();
+            let count = into.len().min(from.len());
+            into[..count].copy_from_slice(&from[..count]);
             count
         };
         self.drift();
         count
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         self.drift();
         let mut held = self.bytes.borrow_mut();
-        let count = bytes.len().min(held.len());
-        held[..count].copy_from_slice(&bytes[..count]);
+        let Some(to) = usize::try_from(offset)
+            .ok()
+            .and_then(|offset| held.get_mut(offset..))
+        else {
+            return usize::MIN;
+        };
+        let count = bytes.len().min(to.len());
+        to[..count].copy_from_slice(&bytes[..count]);
         count
     }
 
@@ -7301,6 +7311,156 @@ pub fn every_24_bit_depth_word_copies_out_as_written<B: Gpu>(mut b: B) {
     assert!(wrong.is_empty(), "{} words: {wrong:?}", wrong.len());
 }
 
+/// The side of each face of the cube tests.
+const CUBE_SIDE: u32 = 8;
+/// The faces of a cube.
+const CUBE_FACES: u32 = 6;
+
+/// A cube texture of `format`, each face [`CUBE_SIDE`] square.
+fn cube<B: Gpu>(b: &mut B, format: Format, usage: TextureUsage) -> B::Texture {
+    b.create_texture(&TextureDesc {
+        dimension: TextureDimension::D2,
+        format,
+        width: CUBE_SIDE,
+        height: CUBE_SIDE,
+        depth_or_layers: CUBE_FACES,
+        mip_levels: 1,
+        samples: 1,
+        usage,
+        cube: true,
+        reinterpret: false,
+    })
+    .expect("create_texture")
+}
+
+/// The word of texel (x, y) of `face` in the cube tests: a float of its own in 1 to 2 (no denormal,
+/// which a draw may flush), the face, the row and the column each in their own bits.
+fn cube_word(face: u32, x: u32, y: u32) -> u32 {
+    0x3f80_0000 | face << 16 | y << 8 | x
+}
+
+/// A cube of `r32uint` whose texels all differ ([`cube_word`]), each face copied into a 2D `r32float`
+/// texture of its typeless group and each face read back, holds every word at its own face, row and
+/// column; and a `depth32float` cube whose texels all differ, each face read back, holds each depth
+/// where it was written. A back end drawing such copies or reads samples the cube towards each
+/// texel's centre, so every face's direction and axes are told apart.
+pub fn every_face_of_a_cube_reads_and_copies_texel_for_texel<B: Gpu>(mut b: B) {
+    let n = CUBE_SIDE;
+    let face_words = |face: u32| -> Vec<u8> {
+        (0..n)
+            .flat_map(|y| (0..n).flat_map(move |x| cube_word(face, x, y).to_le_bytes()))
+            .collect()
+    };
+    let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLE;
+    let words = cube(&mut b, Format::R32Uint, usage);
+    for face in 0..CUBE_FACES {
+        b.write_texture(
+            &region(&words, 0, face, 0, 0),
+            extent(n, n, 1),
+            &face_words(face),
+            n * 4,
+            n,
+            WriteMode::Ordered,
+        );
+    }
+    for face in 0..CUBE_FACES {
+        assert_eq!(
+            read_texture(&mut b, region(&words, 0, face, 0, 0), extent(n, n, 1), 4),
+            face_words(face),
+            "face {face} of the r32uint cube read back"
+        );
+        let to = texture(&mut b, Format::R32Float, (n, n), 1, 1, usage);
+        b.copy_texture(
+            &region(&words, 0, face, 0, 0),
+            &region(&to, 0, 0, 0, 0),
+            extent(n, n, 1),
+        );
+        assert_eq!(
+            read_texture(&mut b, region(&to, 0, 0, 0, 0), extent(n, n, 1), 4),
+            face_words(face),
+            "face {face} of the r32uint cube copied into r32float"
+        );
+    }
+    ok(&mut b);
+    let depth = Format::Depth32Float;
+    if !b.caps().formats.uses[depth as usize].contains(FormatUse::COPY_OUT) {
+        return;
+    }
+    let depth_of =
+        |face: u32, x: u32, y: u32| ((face * n * n + y * n + x + 1) as f32 / 1024.0).to_bits();
+    let face_depths = |face: u32| -> Vec<u8> {
+        (0..n)
+            .flat_map(|y| (0..n).flat_map(move |x| depth_of(face, x, y).to_le_bytes()))
+            .collect()
+    };
+    let depths = cube(&mut b, depth, usage);
+    for face in 0..CUBE_FACES {
+        b.write_texture(
+            &region(&depths, 0, face, 0, 0),
+            extent(n, n, 1),
+            &face_depths(face),
+            n * 4,
+            n,
+            WriteMode::Ordered,
+        );
+    }
+    for face in 0..CUBE_FACES {
+        assert_eq!(
+            read_texture(&mut b, region(&depths, 0, face, 0, 0), extent(n, n, 1), 4),
+            face_depths(face),
+            "face {face} of the depth32float cube read back"
+        );
+    }
+    ok(&mut b);
+}
+
+/// Every byte value in every channel of an sRGB texture (`rgba8unorm_srgb` and `bgra8unorm_srgb`)
+/// copied into its linear twin, and the linear texture's bytes copied into the sRGB format, arrive
+/// as stored: a copy moves bits, so no channel is encoded, decoded or rounded on the way.
+pub fn every_byte_of_an_srgb_texture_copies_into_its_linear_twin_as_stored<B: Gpu>(mut b: B) {
+    let side = 16u32;
+    let bytes: Vec<u8> = (0..=u8::MAX)
+        .flat_map(|i| [i, u8::MAX - i, i.wrapping_mul(7).wrapping_add(3), i])
+        .collect();
+    let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLE;
+    for (srgb, linear) in [
+        (Format::Rgba8UnormSrgb, Format::Rgba8Unorm),
+        (Format::Bgra8UnormSrgb, Format::Bgra8Unorm),
+    ] {
+        for (from, to) in [(srgb, linear), (linear, srgb)] {
+            let src = texture(&mut b, from, (side, side), 1, 1, usage);
+            b.write_texture(
+                &region(&src, 0, 0, 0, 0),
+                extent(side, side, 1),
+                &bytes,
+                side * 4,
+                side,
+                WriteMode::Ordered,
+            );
+            let dst = texture(&mut b, to, (side, side), 1, 1, usage);
+            b.copy_texture(
+                &region(&src, 0, 0, 0, 0),
+                &region(&dst, 0, 0, 0, 0),
+                extent(side, side, 1),
+            );
+            let got = read_texture(&mut b, region(&dst, 0, 0, 0, 0), extent(side, side, 1), 4);
+            let wrong: Vec<String> = got
+                .iter()
+                .zip(&bytes)
+                .enumerate()
+                .filter(|(_, (g, w))| g != w)
+                .map(|(i, (g, w))| format!("texel {} channel {}: {w} became {g}", i / 4, i % 4))
+                .collect();
+            assert!(
+                wrong.is_empty(),
+                "{from:?} into {to:?}: {} bytes: {wrong:?}",
+                wrong.len()
+            );
+        }
+    }
+    ok(&mut b);
+}
+
 /// Every one of the 2^16 depth words, written into a 256 by 256 `Depth16Unorm` texture (word i at
 /// texel i) and copied out to a buffer, comes back as written: a back end reading depth by sampling
 /// it finds each word from its float. Every word that came back otherwise is named.
@@ -8017,6 +8177,16 @@ macro_rules! tests {
         #[test]
         fn every_16_bit_depth_word_copies_out_as_written() {
             $crate::every_16_bit_depth_word_copies_out_as_written($value);
+        }
+
+        #[test]
+        fn every_face_of_a_cube_reads_and_copies_texel_for_texel() {
+            $crate::every_face_of_a_cube_reads_and_copies_texel_for_texel($value);
+        }
+
+        #[test]
+        fn every_byte_of_an_srgb_texture_copies_into_its_linear_twin_as_stored() {
+            $crate::every_byte_of_an_srgb_texture_copies_into_its_linear_twin_as_stored($value);
         }
 
         $crate::tests!(@StandaloneGpu $standalone_gpu ($value) $(($standalone_gpu_value))?);

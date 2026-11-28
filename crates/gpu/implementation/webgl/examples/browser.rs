@@ -312,6 +312,8 @@ shared!(
     the_largest_16_bit_index_without_restart_is_a_vertex,
     a_24_bit_depth_copy_after_a_narrow_depth_range_copies_out_as_written,
     every_16_bit_depth_word_copies_out_as_written,
+    every_face_of_a_cube_reads_and_copies_texel_for_texel,
+    every_byte_of_an_srgb_texture_copies_into_its_linear_twin_as_stored,
 );
 
 thread_local! {
