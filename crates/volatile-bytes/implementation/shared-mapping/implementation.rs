@@ -1,7 +1,6 @@
 //! Bytes of a mapping that another party may change at any moment, kept mapped while any view lives and reached only
 //! through `PointerBytes`.
 
-use core::ops::Range;
 use std::io;
 #[cfg(target_os = "linux")]
 use std::os::fd::BorrowedFd;
@@ -16,12 +15,12 @@ use wcontainers_volatile_bytes_pointer::{PointerAndLength, PointerBytes};
 
 /// Bytes of a mapping that another party, such as a guest or another process, may read and write at any moment.
 ///
-/// A view of the whole mapping, or of a part of it, which keeps the mapping alive. Copies behave as `PointerBytes` says.
+/// A view of the whole mapping, which keeps the mapping alive. Copies behave as `PointerBytes` says.
 pub struct SharedMapping {
     /// The view's bytes, made only by `new` from the map below.
     bytes: PointerBytes,
     /// Kept only so that the bytes stay mapped.
-    map: Arc<MmapRaw>,
+    _map: Arc<MmapRaw>,
 }
 
 /// A mapping made and checked, from which `StandaloneVolatileBytes::new` makes a `SharedMapping`.
@@ -77,22 +76,6 @@ impl Mapped {
     }
 }
 
-impl SharedMapping {
-    /// Returns a view of the bytes at the offsets from this view's start, on the same mapping.
-    ///
-    /// PROVISIONAL: no interface declares how a view of a sub-range is made; the base's README.md.
-    pub fn part(&self, offsets: Range<u64>) -> Option<SharedMapping> {
-        Some(SharedMapping { bytes: self.bytes.part(offsets)?, map: Arc::clone(&self.map) })
-    }
-
-    /// Returns the address of the view's first byte, for an outside API that is given memory by its address.
-    ///
-    /// PROVISIONAL: no interface declares how memory is given to an outside API; the KVM bindings are the one user.
-    pub fn address(&self) -> usize {
-        self.bytes.address()
-    }
-}
-
 impl StandaloneVolatileBytes for SharedMapping {
     type Config = Mapped;
 
@@ -108,7 +91,7 @@ impl StandaloneVolatileBytes for SharedMapping {
         // (`vm.overcommit_memory=2`) a file's page can fail to be charged when first touched, and the access ends the
         // process with SIGBUS; a crash, not a write anywhere else.
         let pointer = unsafe { PointerAndLength::new(map.as_mut_ptr(), map.len()) };
-        SharedMapping { bytes: PointerBytes::new(pointer), map: Arc::new(map) }
+        SharedMapping { bytes: PointerBytes::new(pointer), _map: Arc::new(map) }
     }
 }
 
@@ -118,12 +101,12 @@ impl VolatileBytes for SharedMapping {
         self.bytes.len()
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        self.bytes.read(into)
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        self.bytes.read_at(offset, into)
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        self.bytes.write(bytes)
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        self.bytes.write_at(offset, bytes)
     }
 
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {

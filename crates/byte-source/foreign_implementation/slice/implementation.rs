@@ -1,6 +1,10 @@
 use core::convert::Infallible;
 
+use vstd::prelude::*;
+
 use crate::ByteSource;
+
+verus! {
 
 /// Reads from the start of the slice, which then starts after the bytes read.
 impl ByteSource for &[u8] {
@@ -12,6 +16,8 @@ impl ByteSource for &[u8] {
         *self = rest;
         Ok(read.len())
     }
+}
+
 }
 
 #[cfg(test)]

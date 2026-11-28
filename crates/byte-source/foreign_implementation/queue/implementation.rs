@@ -1,9 +1,15 @@
 use alloc::collections::VecDeque;
 use core::convert::Infallible;
 
+use vstd::prelude::*;
+
 use crate::ByteSource;
 
+verus! {
+
 /// Takes the bytes read from the front of the queue.
+#[allow(reviewable::implementation_not_verified, reason = "TODO: prove it against the trait's contract, then remove this line")]
+#[verifier::external]
 impl ByteSource for VecDeque<u8> {
     type Error = Infallible;
 
@@ -16,6 +22,8 @@ impl ByteSource for VecDeque<u8> {
         self.drain(..count);
         Ok(count)
     }
+}
+
 }
 
 #[cfg(test)]

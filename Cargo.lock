@@ -47,12 +47,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "allocation-counter"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "beb9e990c0a33699f1984d85a6abead615ccc72dd8130bf3e15dcabe2ca149c9"
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -264,22 +258,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "atomic_refcell"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
-
-[[package]]
-name = "base64"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bcdec_rs"
@@ -439,6 +421,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-rs"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f33498dde6d47bf09454b1c7221c888ddb2a59000b3b45fa155627d98fcb646e"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -498,6 +489,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbad30e4b4c14a39e3cc8aed085a12a327257c316619c93581e017bc52be591"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "cargo-lock"
+version = "11.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50524592e6bfbb1bf6f94e8184a786f637faeaf1cf37bbe65502b9a2c5c48939"
+dependencies = [
+ "semver",
+ "serde",
+ "toml",
+ "url",
 ]
 
 [[package]]
@@ -666,6 +669,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "concurrent-queue"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "const_format"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -691,6 +703,12 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
+name = "convert_case"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
 name = "core_detect"
@@ -967,29 +985,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "databake"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74d4b1db5ca40636726f1f73daff0d626accbd49bcd8136fcade87d7cf1e6bbb"
-dependencies = [
- "databake-derive",
- "proc-macro2",
- "quote",
-]
-
-[[package]]
-name = "databake-derive"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "495503291b258422ea2bb9863d9f4e31eadbc5bcbdbe8b721769fa2c98dc4d41"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.10",
- "synstructure",
-]
-
-[[package]]
 name = "derive_builder"
 version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1057,6 +1052,17 @@ checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.2",
  "objc2",
+]
+
+[[package]]
+name = "displaydoc"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -1147,18 +1153,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
-name = "enum-as-inner"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1e6a265c649f3f5979b601d26f1d05ada116434c87741c9493cb56218f76cbc"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1210,12 +1204,6 @@ name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
-
-[[package]]
-name = "fallible-iterator"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
 
 [[package]]
 name = "fastrand"
@@ -1282,6 +1270,15 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "form_urlencoded"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+dependencies = [
+ "percent-encoding",
+]
 
 [[package]]
 name = "funty"
@@ -1364,18 +1361,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gdt-cpus"
-version = "0.2606.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f60f6baf9eb03f64b3b2c0ab79160b535c7460f12252e9965a4a67e22c518c27"
-dependencies = [
- "bitflags 2.13.2",
- "libc",
- "raw-cpuid",
- "windows",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1420,17 +1405,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "gimli"
-version = "0.32.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
-dependencies = [
- "fallible-iterator 0.3.0",
- "indexmap",
- "stable_deref_trait",
 ]
 
 [[package]]
@@ -1555,8 +1529,6 @@ dependencies = [
  "allocator-api2 0.2.21",
  "equivalent",
  "foldhash 0.2.0",
- "serde",
- "serde_core",
 ]
 
 [[package]]
@@ -1577,10 +1549,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hex"
-version = "0.4.3"
+name = "hermit-abi"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
 name = "hybrid-array"
@@ -1601,12 +1573,86 @@ dependencies = [
 ]
 
 [[package]]
-name = "id-arena"
-version = "2.3.0"
+name = "icu_collections"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
+checksum = "fe090a42a0d3140fed8c63263ed1fecc02422cb2f4bfe55cd8de2de1b8e105dd"
 dependencies = [
- "rayon",
+ "displaydoc",
+ "potential_utf",
+ "utf8_iter",
+ "yoke",
+ "zerofrom",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_locale_core"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25d29b57c17c6528d0dc4c2141cfa2d08200465acb537a3909c8b9b8a4a984c0"
+dependencies = [
+ "displaydoc",
+ "litemap",
+ "tinystr",
+ "writeable",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_normalizer"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "404a3b8c486f205c87fe7f23ab6894d84a4ad76d6e4671ae1981ba7def87c599"
+dependencies = [
+ "icu_collections",
+ "icu_normalizer_data",
+ "icu_properties",
+ "icu_provider",
+ "smallvec",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_normalizer_data"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20f0088bfb7441f7a37fa0c9e20cb1e9cba1cac6b9ce8cd2a6dc44294f8e8cbc"
+
+[[package]]
+name = "icu_properties"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ea83d991c56158f7cf898bf86436c1dfe7c07ee82fe88951f2695c9f37a379f"
+dependencies = [
+ "displaydoc",
+ "icu_collections",
+ "icu_locale_core",
+ "icu_properties_data",
+ "icu_provider",
+ "zerotrie",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_properties_data"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b98f29af82d02b163fe50161388350e743bb3107cc8e8c2f7314cb505faddfcf"
+
+[[package]]
+name = "icu_provider"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413099315636c588ee8f011190b329b971a09a8fae9d157e01dcae8379468514"
+dependencies = [
+ "displaydoc",
+ "icu_locale_core",
+ "writeable",
+ "yoke",
+ "zerofrom",
+ "zerotrie",
+ "zerovec",
 ]
 
 [[package]]
@@ -1614,6 +1660,27 @@ name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
+
+[[package]]
+name = "idna"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b0875f23caa03898994f6ddc501886a45c7d3d62d04d2d90788d47be1b1e4de"
+dependencies = [
+ "idna_adapter",
+ "smallvec",
+ "utf8_iter",
+]
+
+[[package]]
+name = "idna_adapter"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
+dependencies = [
+ "icu_normalizer",
+ "icu_properties",
+]
 
 [[package]]
 name = "image"
@@ -1826,12 +1893,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "leb128"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c83bff1d572d6b9aeef67ddfc8448e4a3737909cb28e81f97c791b9018703e52"
-
-[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1856,7 +1917,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
 dependencies = [
  "cfg-if",
- "windows-link 0.2.1",
+ "windows-link",
 ]
 
 [[package]]
@@ -1892,6 +1953,12 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "litemap"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "litrs"
@@ -1996,17 +2063,6 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
  "simd-adler32",
-]
-
-[[package]]
-name = "mio"
-version = "1.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
-dependencies = [
- "libc",
- "wasi",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2525,7 +2581,7 @@ dependencies = [
  "libc",
  "redox_syscall",
  "smallvec",
- "windows-link 0.2.1",
+ "windows-link",
 ]
 
 [[package]]
@@ -2546,10 +2602,16 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82040a392923abe6279c00ab4aff62d5250d1c8555dc780e4b02783a7aa74863"
 dependencies = [
- "fallible-iterator 0.2.0",
+ "fallible-iterator",
  "scroll",
  "uuid",
 ]
+
+[[package]]
+name = "percent-encoding"
+version = "2.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "perf-event-data"
@@ -2598,6 +2660,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pico-args"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2620,6 +2688,20 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide 0.8.9",
+]
+
+[[package]]
+name = "polling"
+version = "3.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0e4f59085d47d8241c88ead0f274e8a0cb551f3625263c05eb8dd897c34218"
+dependencies = [
+ "cfg-if",
+ "concurrent-queue",
+ "hermit-abi",
+ "pin-project-lite",
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2653,6 +2735,15 @@ dependencies = [
  "embedded-io 0.4.0",
  "embedded-io 0.6.1",
  "serde",
+]
+
+[[package]]
+name = "potential_utf"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661"
+dependencies = [
+ "zerovec",
 ]
 
 [[package]]
@@ -2718,27 +2809,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "procfs"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25485360a54d6861439d60facef26de713b1e126bf015ec8f98239467a2b82f7"
-dependencies = [
- "bitflags 2.13.2",
- "procfs-core",
- "rustix",
-]
-
-[[package]]
-name = "procfs-core"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6401bf7b6af22f78b563665d15a22e9aef27775b79b149a66ca022468a4e405"
-dependencies = [
- "bitflags 2.13.2",
- "hex",
 ]
 
 [[package]]
@@ -3136,21 +3206,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "safe_arch"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
-
-[[package]]
-name = "same-file"
-version = "1.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
-dependencies = [
- "winapi-util",
-]
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3180,6 +3235,16 @@ checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -3223,6 +3288,15 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_spanned"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782"
+dependencies = [
+ "serde_core",
 ]
 
 [[package]]
@@ -3352,12 +3426,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "stats_alloc"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c0e04424e733e69714ca1bbb9204c1a57f09f5493439520f9f68c132ad25eec"
-
-[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3408,6 +3476,17 @@ dependencies = [
 
 [[package]]
 name = "synstructure"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "synstructure"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02"
@@ -3415,20 +3494,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
-]
-
-[[package]]
-name = "sysctl"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cca424247104946a59dacd27eaad296223b7feec3d168a6dd04585183091eb0b"
-dependencies = [
- "bitflags 2.13.2",
- "byteorder",
- "enum-as-inner",
- "libc",
- "thiserror",
- "walkdir",
 ]
 
 [[package]]
@@ -3507,6 +3572,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinystr"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc840c238154d58f9e86b2792261edfde565a17696e1cda1a449de27979801a"
+dependencies = [
+ "displaydoc",
+ "zerovec",
+]
+
+[[package]]
 name = "tock-registers"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3519,6 +3594,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "pin-project-lite",
+]
+
+[[package]]
+name = "toml"
+version = "1.2.1+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5755c51863cdac711f1956baf8eb9588e060755f7d3c4c979e70ea1e1f32cd7"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
 ]
 
 [[package]]
@@ -3550,6 +3640,12 @@ checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.2.0+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a"
 
 [[package]]
 name = "twox-hash"
@@ -3614,10 +3710,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "url"
+version = "2.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+dependencies = [
+ "form_urlencoded",
+ "idna",
+ "percent-encoding",
+ "serde",
+]
+
+[[package]]
+name = "utf8_iter"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af3bd9d3e571c26fcce9d033b87ea5ab061b8d2ffe9b7a5675d810d68f03edf0"
+dependencies = [
+ "utf_types",
+]
+
+[[package]]
 name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
+name = "utf_types"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
 
 [[package]]
 name = "uuid"
@@ -3636,6 +3759,60 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "verus_builtin"
+version = "0.0.0-2026-11-22-0344"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd4bce6a5fe5fb9bfca2949a689a7b92e80d35f50e2ba3e9ba87dfb63f2337e1"
+
+[[package]]
+name = "verus_builtin_macros"
+version = "0.0.0-2026-11-22-0344"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa86fd414dfa7694a49811c7b907a7500d129d2a5b4c3a6c0671af0defec2a0"
+dependencies = [
+ "convert_case",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "synstructure 0.13.2",
+ "verus_prettyplease",
+ "verus_syn",
+]
+
+[[package]]
+name = "verus_prettyplease"
+version = "0.0.0-2026-11-01-0251"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b2cf0618d8d5ed0cde78122effaf56f5be0a0d0e0f9066735fa9f17d6ba6a4a"
+dependencies = [
+ "proc-macro2",
+ "verus_syn",
+]
+
+[[package]]
+name = "verus_state_machines_macros"
+version = "0.0.0-2026-11-22-0344"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eed47dcce51e4881a43825d2fab07089bf90a3df53ec887be86171a0114abb61"
+dependencies = [
+ "indexmap",
+ "proc-macro2",
+ "quote",
+ "verus_syn",
+]
+
+[[package]]
+name = "verus_syn"
+version = "0.0.0-2026-11-01-0251"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "461620a5ec0fb547ba398e42fb25a017bd8764798a32099eed73c77dd979ac39"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
 name = "vmm-sys-util"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3646,51 +3823,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vstd"
+version = "0.0.0-2026-11-22-0344"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66760ffdbcefb8a21dd2fb99d72c4bad27b4bd3217bcab50f36dc9f6b7dbe330"
+dependencies = [
+ "verus_builtin",
+ "verus_builtin_macros",
+ "verus_state_machines_macros",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "walkdir"
-version = "2.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b42e295b7452c4604982280d8586001fcad9b8b201cac67bca9771e7a7475403"
-dependencies = [
- "same-file",
- "winapi-util",
-]
-
-[[package]]
-name = "walrus"
-version = "0.27.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5691aeb3546554822fe2c13d63149c26a027cd07d900a72c7c7f37f4321bfaea"
-dependencies = [
- "anyhow",
- "gimli 0.32.3",
- "id-arena",
- "leb128",
- "log",
- "rayon",
- "walrus-macro",
- "wasm-encoder 0.245.1",
- "wasmparser 0.245.1",
-]
-
-[[package]]
-name = "walrus-macro"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a9b0525d7ea6e5f906aca581a172e5c91b4c595290dfa8ad4a2bc9ffef33b44"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -3727,24 +3876,6 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
-]
-
-[[package]]
-name = "wasm-bindgen-cli-support"
-version = "0.2.130"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a0b02907e04196ef0148c858bb700aa3916630f8a6fb1dfed0924443239469b"
-dependencies = [
- "anyhow",
- "base64",
- "leb128",
- "log",
- "rustc-demangle",
- "serde",
- "serde_json",
- "walrus",
- "wasm-bindgen-shared",
- "wasmparser 0.245.1",
 ]
 
 [[package]]
@@ -3792,16 +3923,6 @@ dependencies = [
 
 [[package]]
 name = "wasm-encoder"
-version = "0.245.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f9dca005e69bf015e45577e415b9af8c67e8ee3c0e38b5b0add5aa92581ed5c"
-dependencies = [
- "leb128fmt",
- "wasmparser 0.245.1",
-]
-
-[[package]]
-name = "wasm-encoder"
 version = "0.261.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2608e8bb6d67fd68f5a8d0eb1363d6e7bcbc1f8ded5a0bd3a1e382462b876b22"
@@ -3818,19 +3939,6 @@ checksum = "0b883a26aea02eaabe2d2c3fba7eb039ef5cdcb5d5201ae5551e73d5e251a81f"
 dependencies = [
  "leb128fmt",
  "wasmparser 0.263.0",
-]
-
-[[package]]
-name = "wasmparser"
-version = "0.245.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f08c9adee0428b7bddf3890fc27e015ac4b761cc608c822667102b8bfd6995e"
-dependencies = [
- "bitflags 2.13.2",
- "hashbrown 0.16.1",
- "indexmap",
- "semver",
- "serde",
 ]
 
 [[package]]
@@ -4088,72 +4196,14 @@ name = "wcontainers-behavior-source-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-behavior-source",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-processor-architecture",
-]
-
-[[package]]
-name = "wcontainers-behavior-source-kvm-single-step"
-version = "0.1.0"
-dependencies = [
- "aarch64-cpu",
- "aarch64-paging",
- "arm-sysregs",
- "cc",
- "kvm-bindings",
- "kvm-ioctls",
- "object 0.37.3",
- "wcontainers-abi",
- "wcontainers-behavior-source",
- "wcontainers-behavior-source-conformance",
- "wcontainers-distinguishing-state-generator-arm64",
- "wcontainers-kvm",
- "wcontainers-kvm-direct",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-arm64",
- "wcontainers-volatile-bytes",
- "zerocopy",
-]
-
-[[package]]
-name = "wcontainers-behavior-source-kvm-single-step-x86-64"
-version = "0.1.0"
-dependencies = [
- "iced-x86",
- "kvm-bindings",
- "kvm-ioctls",
- "wcontainers-behavior-source",
- "wcontainers-behavior-source-conformance",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-x86-64",
- "wcontainers-instruction-input-domain",
- "wcontainers-instruction-input-domain-x86-64",
- "wcontainers-kvm",
- "wcontainers-kvm-direct",
- "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-measured",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-x86-64",
- "wcontainers-volatile-bytes",
- "zerocopy",
-]
-
-[[package]]
-name = "wcontainers-behavior-source-recording"
-version = "0.1.0"
-dependencies = [
- "wcontainers-behavior-source",
- "wcontainers-behavior-source-conformance",
- "wcontainers-behavior-source-kvm-single-step",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-arm64",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-arm64",
 ]
 
 [[package]]
 name = "wcontainers-byte-sink"
 version = "0.1.0"
+dependencies = [
+ "vstd",
+]
 
 [[package]]
 name = "wcontainers-byte-sink-conformance"
@@ -4165,12 +4215,23 @@ dependencies = [
 [[package]]
 name = "wcontainers-byte-source"
 version = "0.1.0"
+dependencies = [
+ "vstd",
+]
 
 [[package]]
 name = "wcontainers-byte-source-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-byte-source",
+]
+
+[[package]]
+name = "wcontainers-capability-table"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "vstd",
 ]
 
 [[package]]
@@ -4201,29 +4262,6 @@ dependencies = [
  "rand_chacha",
  "wcontainers-clock",
  "wcontainers-clock-conformance",
-]
-
-[[package]]
-name = "wcontainers-collect-observations"
-version = "0.1.0"
-dependencies = [
- "databake",
- "wcontainers-behavior-source",
- "wcontainers-behavior-source-kvm-single-step",
- "wcontainers-behavior-source-kvm-single-step-x86-64",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-arm64",
- "wcontainers-distinguishing-state-generator-x86-64",
- "wcontainers-instruction-input-domain-x86-64",
- "wcontainers-machine-labels",
- "wcontainers-observation-collector",
- "wcontainers-observation-collector-pinned-behavior-sources",
- "wcontainers-precise-instruction-set-collected",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-architecture-x86-64",
- "wcontainers-processor-cores",
- "wcontainers-processor-cores-linux",
 ]
 
 [[package]]
@@ -4312,18 +4350,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-distinguishing-state-generator-arm64"
-version = "0.1.0"
-dependencies = [
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-conformance",
- "wcontainers-instruction-input-domain",
- "wcontainers-instruction-input-domain-arm64",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-arm64",
-]
-
-[[package]]
 name = "wcontainers-distinguishing-state-generator-conformance"
 version = "0.1.0"
 dependencies = [
@@ -4341,19 +4367,6 @@ dependencies = [
  "wcontainers-instruction-input-domain-arm64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
-]
-
-[[package]]
-name = "wcontainers-distinguishing-state-generator-x86-64"
-version = "0.1.0"
-dependencies = [
- "iced-x86",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-conformance",
- "wcontainers-instruction-input-domain",
- "wcontainers-instruction-input-domain-x86-64",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-x86-64",
 ]
 
 [[package]]
@@ -4375,16 +4388,11 @@ dependencies = [
 name = "wcontainers-executor-conformance"
 version = "0.1.0"
 dependencies = [
- "wcontainers-abi",
- "wcontainers-behavior-source-conformance",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-executor",
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-arm64",
- "wcontainers-volatile-bytes",
+ "wcontainers-processor-architecture-conformance",
 ]
 
 [[package]]
@@ -4467,28 +4475,16 @@ dependencies = [
 name = "wcontainers-executor-simulation"
 version = "0.1.0"
 dependencies = [
- "wcontainers-abi",
- "wcontainers-behavior-source",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-executor",
- "wcontainers-executor-conformance",
  "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-measured",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
- "wcontainers-random-source",
- "wcontainers-random-source-seeded",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
 name = "wcontainers-executor-unicorn"
 version = "0.1.0"
 dependencies = [
- "aarch64-cpu",
  "cargo_metadata",
  "coarsetime",
  "domain",
@@ -4496,35 +4492,26 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "memmap2",
- "nix",
- "procfs",
  "proptest",
  "rand 0.9.5",
  "regex",
- "rustix",
- "socket2",
- "stats_alloc",
  "tar",
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
- "wcontainers-behavior-source",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-configurable",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-docker",
  "wcontainers-executor",
  "wcontainers-executor-conformance",
  "wcontainers-executor-wasmtime",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-negative-route-advisable",
- "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-measured",
+ "wcontainers-precise-instruction-set-unicorn",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
@@ -4534,7 +4521,6 @@ dependencies = [
  "wcontainers-system-seeded-test-policy",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
- "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
@@ -4542,33 +4528,43 @@ dependencies = [
 name = "wcontainers-executor-wasmtime"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "blake3",
+ "build-rs",
+ "cargo-lock",
+ "cargo_metadata",
+ "flate2",
+ "gimli 0.34.0",
+ "libc",
+ "mach2 0.6.0",
+ "object 0.41.0",
+ "pico-args",
+ "postcard",
+ "rayon",
  "rustix",
- "thiserror",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
  "wasm-encoder 0.263.0",
  "wasmtime",
  "wcontainers-abi",
  "wcontainers-arm64",
- "wcontainers-behavior-source",
- "wcontainers-behavior-source-conformance",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-docker",
  "wcontainers-executor",
  "wcontainers-executor-conformance",
  "wcontainers-guest-cpu",
- "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-measured",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-precise-instruction-set-translator",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
+ "wcontainers-runtime-single-kernel",
  "wcontainers-translator",
- "wcontainers-volatile-bytes",
- "wcontainers-volatile-bytes-conformance",
- "wcontainers-wasmtime",
- "wcontainers-wasmtime-direct",
  "zerocopy",
+ "zstd",
 ]
 
 [[package]]
@@ -4717,21 +4713,15 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "mitsein",
- "nix",
  "rustix",
  "wcontainers-abi",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-configurable-conformance",
  "wcontainers-icmp-sockets",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
- "wcontainers-linux-socket-options",
- "wcontainers-linux-socket-options-direct",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4743,10 +4733,7 @@ dependencies = [
  "linux-raw-sys",
  "rustix",
  "socket2",
- "stats_alloc",
  "wcontainers-abi",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-icmp-sockets",
  "wcontainers-icmp-sockets-conformance",
@@ -4756,7 +4743,6 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-host",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4768,21 +4754,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-instruction-input-domain-accumulator-machine"
-version = "0.1.0"
-dependencies = [
- "wcontainers-instruction-input-domain",
- "wcontainers-instruction-input-domain-conformance",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-accumulator-machine",
-]
-
-[[package]]
 name = "wcontainers-instruction-input-domain-arm64"
 version = "0.1.0"
 dependencies = [
  "itertools 0.14.0",
- "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-instruction-input-domain",
  "wcontainers-instruction-input-domain-conformance",
  "wcontainers-processor-architecture",
@@ -4795,18 +4770,6 @@ version = "0.1.0"
 dependencies = [
  "wcontainers-instruction-input-domain",
  "wcontainers-processor-architecture",
-]
-
-[[package]]
-name = "wcontainers-instruction-input-domain-x86-64"
-version = "0.1.0"
-dependencies = [
- "iced-x86",
- "itertools 0.14.0",
- "wcontainers-instruction-input-domain",
- "wcontainers-instruction-input-domain-conformance",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-x86-64",
 ]
 
 [[package]]
@@ -4825,17 +4788,13 @@ dependencies = [
  "etherparse",
  "libc",
  "linux-raw-sys",
- "mio",
- "nix",
+ "polling",
  "rustix",
  "socket2",
  "wcontainers-abi",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
- "wcontainers-linux-socket-options",
- "wcontainers-linux-socket-options-direct",
  "wcontainers-readiness",
- "zerocopy",
 ]
 
 [[package]]
@@ -4843,6 +4802,7 @@ name = "wcontainers-kernel"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "vstd",
  "wcontainers-abi",
  "wcontainers-executor",
 ]
@@ -4851,18 +4811,22 @@ dependencies = [
 name = "wcontainers-kernel-conformance"
 version = "0.1.0"
 dependencies = [
- "wcontainers-executor",
  "wcontainers-kernel",
+]
+
+[[package]]
+name = "wcontainers-kernel-core"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+ "wcontainers-memory-capability-table",
+ "wcontainers-memory-shard",
 ]
 
 [[package]]
 name = "wcontainers-kernel-linux"
 version = "0.1.0"
 dependencies = [
- "aarch64-cpu",
- "allocation-counter",
- "atomic_refcell",
- "crossbeam-utils",
  "domain",
  "etherparse",
  "flate2",
@@ -4874,9 +4838,6 @@ dependencies = [
  "smallvec",
  "spin 0.10.1",
  "wcontainers-abi",
- "wcontainers-behavior-source",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-executor",
  "wcontainers-executor-unicorn",
@@ -4890,84 +4851,27 @@ dependencies = [
  "wcontainers-system",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
- "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
 [[package]]
-name = "wcontainers-kvm"
+name = "wcontainers-memory-capability-table"
 version = "0.1.0"
 dependencies = [
- "kvm-ioctls",
- "wcontainers-volatile-bytes",
-]
-
-[[package]]
-name = "wcontainers-kvm-conformance"
-version = "0.1.0"
-dependencies = [
- "kvm-ioctls",
- "wcontainers-kvm",
- "wcontainers-volatile-bytes",
-]
-
-[[package]]
-name = "wcontainers-kvm-direct"
-version = "0.1.0"
-dependencies = [
- "kvm-bindings",
- "kvm-ioctls",
  "thiserror",
- "wcontainers-kvm",
- "wcontainers-kvm-conformance",
+ "vstd",
+ "wcontainers-capability-table",
+ "wcontainers-memory-shard",
+]
+
+[[package]]
+name = "wcontainers-memory-shard"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "vstd",
+ "wcontainers-capability-table",
  "wcontainers-volatile-bytes",
- "wcontainers-volatile-bytes-shared-mapping",
-]
-
-[[package]]
-name = "wcontainers-linux-socket-options"
-version = "0.1.0"
-dependencies = [
- "libc",
- "linux-raw-sys",
- "wcontainers-abi",
- "zerocopy",
-]
-
-[[package]]
-name = "wcontainers-linux-socket-options-conformance"
-version = "0.1.0"
-dependencies = [
- "libc",
- "linux-raw-sys",
- "netlink-packet-core",
- "netlink-packet-route",
- "netlink-sys",
- "nix",
- "socket2",
- "wcontainers-abi",
- "wcontainers-linux-socket-options",
- "zerocopy",
-]
-
-[[package]]
-name = "wcontainers-linux-socket-options-direct"
-version = "0.1.0"
-dependencies = [
- "libc",
- "linux-raw-sys",
- "wcontainers-abi",
- "wcontainers-linux-socket-options",
- "wcontainers-linux-socket-options-conformance",
- "zerocopy",
-]
-
-[[package]]
-name = "wcontainers-machine-labels"
-version = "0.1.0"
-dependencies = [
- "sysctl",
- "windows-registry",
 ]
 
 [[package]]
@@ -5022,21 +4926,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-observation-collector-pinned-behavior-sources"
-version = "0.1.0"
-dependencies = [
- "wcontainers-behavior-source",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-instruction-input-domain-accumulator-machine",
- "wcontainers-observation-collector",
- "wcontainers-observation-collector-conformance",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-accumulator-machine",
- "wcontainers-processor-cores",
-]
-
-[[package]]
 name = "wcontainers-opengl"
 version = "0.1.0"
 dependencies = [
@@ -5065,34 +4954,11 @@ dependencies = [
 name = "wcontainers-precise-instruction-set-apple-m5"
 version = "0.1.0"
 dependencies = [
- "wcontainers-behavior-source-recording",
  "wcontainers-precise-instruction-set",
  "wcontainers-precise-instruction-set-conformance",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
-]
-
-[[package]]
-name = "wcontainers-precise-instruction-set-collected"
-version = "0.1.0"
-dependencies = [
- "databake",
- "prettyplease",
- "syn 2.0.119",
- "wcontainers-behavior-source",
- "wcontainers-behavior-source-kvm-single-step",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-arm64",
- "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-instruction-input-domain-accumulator-machine",
- "wcontainers-observation-collector",
- "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-conformance",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-accumulator-machine",
- "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-cores",
- "wcontainers-processor-cores-linux",
+ "wcontainers-processor-architecture-recording",
 ]
 
 [[package]]
@@ -5101,34 +4967,40 @@ version = "0.1.0"
 dependencies = [
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-conformance",
 ]
 
 [[package]]
 name = "wcontainers-precise-instruction-set-measured"
 version = "0.1.0"
 dependencies = [
- "wcontainers-behavior-source",
- "wcontainers-behavior-source-kvm-single-step",
- "wcontainers-behavior-source-recording",
  "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-arm64",
- "wcontainers-instruction-input-domain",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-executor",
+ "wcontainers-executor-conformance",
+ "wcontainers-executor-hardware-virtualization",
+ "wcontainers-executor-hardware-virtualization-inside",
+ "wcontainers-executor-simulation",
  "wcontainers-instruction-input-domain-arm64",
  "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-apple-m5",
  "wcontainers-precise-instruction-set-conformance",
+ "wcontainers-precise-instruction-set-neoverse-v2",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
+ "wcontainers-processor-architecture-conformance",
+ "wcontainers-processor-architecture-recording",
 ]
 
 [[package]]
 name = "wcontainers-precise-instruction-set-neoverse-v2"
 version = "0.1.0"
 dependencies = [
- "wcontainers-behavior-source-recording",
  "wcontainers-precise-instruction-set",
  "wcontainers-precise-instruction-set-conformance",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
+ "wcontainers-processor-architecture-recording",
 ]
 
 [[package]]
@@ -5136,11 +5008,7 @@ name = "wcontainers-precise-instruction-set-translator"
 version = "0.1.0"
 dependencies = [
  "wcontainers-arm64",
- "wcontainers-behavior-source",
- "wcontainers-behavior-source-recording",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-arm64",
- "wcontainers-processor-architecture",
+ "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture-arm64",
 ]
 
@@ -5157,21 +5025,6 @@ name = "wcontainers-privilege-level"
 version = "0.1.0"
 
 [[package]]
-name = "wcontainers-privilege-level-arm64-user"
-version = "0.1.0"
-dependencies = [
- "wcontainers-privilege-level",
- "wcontainers-privilege-level-conformance",
-]
-
-[[package]]
-name = "wcontainers-privilege-level-conformance"
-version = "0.1.0"
-dependencies = [
- "wcontainers-privilege-level",
-]
-
-[[package]]
 name = "wcontainers-processor-architecture"
 version = "0.1.0"
 dependencies = [
@@ -5179,29 +5032,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-processor-architecture-accumulator-machine"
-version = "0.1.0"
-dependencies = [
- "databake",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-instruction-input-domain-accumulator-machine",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-conformance",
-]
-
-[[package]]
 name = "wcontainers-processor-architecture-arm64"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "bitflags 2.13.2",
- "databake",
- "wcontainers-behavior-source",
- "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-arm64",
- "wcontainers-privilege-level",
- "wcontainers-privilege-level-arm64-user",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-conformance",
 ]
@@ -5211,22 +5049,20 @@ name = "wcontainers-processor-architecture-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-arm64",
 ]
 
 [[package]]
-name = "wcontainers-processor-architecture-x86-64"
+name = "wcontainers-processor-architecture-recording"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.2",
- "databake",
- "iced-x86",
- "serde",
- "serde_json",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-instruction-input-domain-x86-64",
+ "wcontainers-executor",
+ "wcontainers-executor-simulation",
+ "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-precise-instruction-set-apple-m5",
  "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
  "wcontainers-processor-architecture-conformance",
 ]
 
@@ -5242,41 +5078,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-processor-cores-linux"
-version = "0.1.0"
-dependencies = [
- "rustix",
- "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-architecture-x86-64",
- "wcontainers-processor-cores",
- "wcontainers-processor-cores-conformance",
-]
-
-[[package]]
-name = "wcontainers-processor-cores-macos"
-version = "0.1.0"
-dependencies = [
- "gdt-cpus",
- "sysctl",
- "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-architecture-x86-64",
- "wcontainers-processor-cores",
- "wcontainers-processor-cores-conformance",
-]
-
-[[package]]
-name = "wcontainers-processor-cores-windows"
-version = "0.1.0"
-dependencies = [
- "gdt-cpus",
- "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-architecture-x86-64",
- "wcontainers-processor-cores",
- "wcontainers-processor-cores-conformance",
- "windows-registry",
-]
-
-[[package]]
 name = "wcontainers-random-source"
 version = "0.1.0"
 dependencies = [
@@ -5289,7 +5090,6 @@ name = "wcontainers-random-source-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-random-source",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5298,10 +5098,8 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "wcontainers-abi",
- "wcontainers-byte-source",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5311,10 +5109,8 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha",
  "wcontainers-abi",
- "wcontainers-byte-source",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5345,7 +5141,6 @@ dependencies = [
  "wcontainers-raw-sockets",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5357,9 +5152,7 @@ dependencies = [
  "linux-raw-sys",
  "rustix",
  "socket2",
- "stats_alloc",
  "wcontainers-abi",
- "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
@@ -5369,7 +5162,6 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-host",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5404,15 +5196,11 @@ dependencies = [
  "etherparse",
  "libc",
  "linux-raw-sys",
- "nix",
  "rustix",
- "socket2",
  "wcontainers-abi",
  "wcontainers-icmp-sockets-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
- "wcontainers-linux-socket-options",
- "wcontainers-linux-socket-options-direct",
  "wcontainers-route-resolver",
 ]
 
@@ -5426,14 +5214,12 @@ dependencies = [
  "netlink-packet-core",
  "netlink-packet-route",
  "netlink-sys",
- "nix",
  "rustix",
  "socket2",
  "wcontainers-abi",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
- "wcontainers-linux-socket-options",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-conformance",
 ]
@@ -5452,7 +5238,6 @@ dependencies = [
 name = "wcontainers-runtime-conformance"
 version = "0.1.0"
 dependencies = [
- "oci-spec",
  "wcontainers-executor",
  "wcontainers-kernel",
  "wcontainers-runtime",
@@ -5468,9 +5253,9 @@ dependencies = [
  "flate2",
  "fuse-abi",
  "getrandom 0.3.4",
- "mio",
- "nix",
+ "libc",
  "oci-spec",
+ "polling",
  "rustix",
  "ruzstd",
  "serde_ignored",
@@ -5479,28 +5264,17 @@ dependencies = [
  "socket2",
  "tar",
  "wcontainers-abi",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-configurable",
- "wcontainers-executor",
- "wcontainers-icmp-sockets",
- "wcontainers-icmp-sockets-host",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-negative-route-advisable",
  "wcontainers-random-source",
- "wcontainers-raw-sockets",
- "wcontainers-raw-sockets-host",
  "wcontainers-readiness",
- "wcontainers-route-resolver",
- "wcontainers-route-resolver-host",
- "wcontainers-runtime",
  "wcontainers-system",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
- "wcontainers-volatile-bytes",
  "zerocopy",
  "zstd",
 ]
@@ -5552,14 +5326,8 @@ name = "wcontainers-system-conformance"
 version = "0.1.0"
 dependencies = [
  "domain",
- "wcontainers-abi",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-kernel",
- "wcontainers-readiness",
- "wcontainers-readiness-conformance",
  "wcontainers-system",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5580,10 +5348,8 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-runtime-single-kernel",
  "wcontainers-system",
- "wcontainers-system-conformance",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5605,14 +5371,9 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "linux-raw-sys",
- "netlink-packet-core",
- "netlink-packet-route",
- "netlink-sys",
  "nix",
  "rustix",
  "wcontainers-abi",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
@@ -5622,14 +5383,12 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
  "wcontainers-tcp-sockets",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
 name = "wcontainers-tcp-sockets-host"
 version = "0.1.0"
 dependencies = [
- "allocation-counter",
  "etherparse",
  "libc",
  "linux-raw-sys",
@@ -5638,19 +5397,14 @@ dependencies = [
  "rustix",
  "socket2",
  "wcontainers-abi",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
- "wcontainers-linux-socket-options",
  "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
  "wcontainers-tcp-sockets",
  "wcontainers-tcp-sockets-conformance",
- "wcontainers-volatile-bytes",
- "zerocopy",
 ]
 
 [[package]]
@@ -5676,24 +5430,20 @@ dependencies = [
  "flate2",
  "gimli 0.34.0",
  "iced-x86",
- "libc",
  "linux-raw-sys",
  "object 0.40.0",
  "proptest",
  "rayon",
  "rustc-hash 2.1.3",
- "safe_arch",
  "serde",
  "serde_json",
  "sha2",
  "wait-timeout",
- "wasm-bindgen-cli-support",
  "wasm-encoder 0.263.0",
  "wasmparser 0.263.0",
  "wasmtime",
  "wcontainers-abi",
  "wcontainers-arm64",
- "wcontainers-clock",
  "wcontainers-docker",
  "wcontainers-guest-cpu",
  "wcontainers-kernel",
@@ -5724,8 +5474,6 @@ dependencies = [
  "mitsein",
  "rustix",
  "wcontainers-abi",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
@@ -5733,7 +5481,6 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
  "wcontainers-udp-sockets",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5743,28 +5490,24 @@ dependencies = [
  "etherparse",
  "libc",
  "linux-raw-sys",
- "nix",
  "rustix",
  "socket2",
- "stats_alloc",
  "wcontainers-abi",
- "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
- "wcontainers-linux-socket-options",
  "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
  "wcontainers-udp-sockets",
  "wcontainers-udp-sockets-conformance",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
 name = "wcontainers-volatile-bytes"
 version = "0.1.0"
 dependencies = [
+ "vstd",
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
 ]
@@ -5803,45 +5546,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-wasmtime"
-version = "0.1.0"
-dependencies = [
- "rustix",
- "wasmtime",
- "wcontainers-executor",
- "wcontainers-volatile-bytes",
-]
-
-[[package]]
-name = "wcontainers-wasmtime-conformance"
-version = "0.1.0"
-dependencies = [
- "rustix",
- "wasm-encoder 0.263.0",
- "wasmtime",
- "wcontainers-abi",
- "wcontainers-executor",
- "wcontainers-volatile-bytes",
- "wcontainers-wasmtime",
-]
-
-[[package]]
-name = "wcontainers-wasmtime-direct"
-version = "0.1.0"
-dependencies = [
- "rustix",
- "wasm-encoder 0.263.0",
- "wasmtime",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
- "wcontainers-executor",
- "wcontainers-volatile-bytes",
- "wcontainers-volatile-bytes-pointer",
- "wcontainers-wasmtime",
- "wcontainers-wasmtime-conformance",
-]
-
-[[package]]
 name = "wcontainers-webassembly-engine"
 version = "0.1.0"
 dependencies = [
@@ -5862,18 +5566,13 @@ name = "wcontainers-x86"
 version = "0.1.0"
 dependencies = [
  "astro-float-num",
- "fastrand",
  "iced-x86",
- "lazy_static",
- "libm",
  "raw-cpuid",
  "rustc_apfloat",
  "wasm-encoder 0.263.0",
  "wcontainers-abi",
- "wcontainers-clock",
  "wcontainers-guest-cpu",
  "wcontainers-kernel",
- "wcontainers-translator",
  "zerocopy",
 ]
 
@@ -6029,7 +5728,7 @@ dependencies = [
  "wgpu-types",
  "windows",
  "windows-core",
- "windows-result 0.4.1",
+ "windows-result",
 ]
 
 [[package]]
@@ -6118,9 +5817,9 @@ checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
 dependencies = [
  "windows-implement",
  "windows-interface",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
+ "windows-link",
+ "windows-result",
+ "windows-strings",
 ]
 
 [[package]]
@@ -6130,7 +5829,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1d6f90251fe18a279739e78025bd6ddc52a7e22f921070ccdc67dde84c605cb"
 dependencies = [
  "windows-core",
- "windows-link 0.2.1",
+ "windows-link",
  "windows-threading",
 ]
 
@@ -6163,30 +5862,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
-name = "windows-link"
-version = "0.100.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b39de7c7fe78858b0144c50c3fc000bab3be17d5e9b85b1053871693c7f7415"
-
-[[package]]
 name = "windows-numerics"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
 dependencies = [
  "windows-core",
- "windows-link 0.2.1",
-]
-
-[[package]]
-name = "windows-registry"
-version = "0.100.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a14b75dbbc0f2bb1ebbf6dcb6dc0035ae17f10ec280045d10fa27ad8874903b2"
-dependencies = [
- "windows-link 0.100.0",
- "windows-result 0.100.0",
- "windows-strings 0.100.0",
+ "windows-link",
 ]
 
 [[package]]
@@ -6195,16 +5877,7 @@ version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
 dependencies = [
- "windows-link 0.2.1",
-]
-
-[[package]]
-name = "windows-result"
-version = "0.100.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44873a1ef61c85d5e2991db91fe656cfcf0731097e00dff1ac860f1cb3b752a0"
-dependencies = [
- "windows-link 0.100.0",
+ "windows-link",
 ]
 
 [[package]]
@@ -6213,16 +5886,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
 dependencies = [
- "windows-link 0.2.1",
-]
-
-[[package]]
-name = "windows-strings"
-version = "0.100.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a70b590c684f1d2854f74999896f7c0558f1bdde62f599088599e20ea1d2f60"
-dependencies = [
- "windows-link 0.100.0",
+ "windows-link",
 ]
 
 [[package]]
@@ -6240,7 +5904,7 @@ version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
- "windows-link 0.2.1",
+ "windows-link",
 ]
 
 [[package]]
@@ -6265,7 +5929,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
 dependencies = [
- "windows-link 0.2.1",
+ "windows-link",
 ]
 
 [[package]]
@@ -6332,6 +5996,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
+name = "writeable"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
 name = "wyz"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6380,6 +6050,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoke"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "417ef3fcf6c300b7dbd25c85531a746931c02ad536f3cf4786ed1e88223340b3"
+dependencies = [
+ "stable_deref_trait",
+ "yoke-derive",
+ "zerofrom",
+]
+
+[[package]]
+name = "yoke-derive"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+ "synstructure 0.14.0",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6397,6 +6090,60 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "zerofrom"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272"
+dependencies = [
+ "zerofrom-derive",
+]
+
+[[package]]
+name = "zerofrom-derive"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f75b4683f6c7f45248d4d64056a24298c6281e0993356d7d1b4a1a962ef10d4a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+ "synstructure 0.14.0",
+]
+
+[[package]]
+name = "zerotrie"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ea269c3bd32f0a32c321907a2ae912ba6f4649bb0fc764a15627e99a7095a3f"
+dependencies = [
+ "displaydoc",
+ "yoke",
+ "zerofrom",
+]
+
+[[package]]
+name = "zerovec"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f58a2799cfe9a1670c7ea8edbd52ef8edb93cb37a7f83bf31ba9e35d9dae6a40"
+dependencies = [
+ "yoke",
+ "zerofrom",
+ "zerovec-derive",
+]
+
+[[package]]
+name = "zerovec-derive"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3743ddbf47738d929cd1ae2e199d40d0162979dfe31aef8ae646d2bf00bf97a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
 ]
 
 [[package]]
