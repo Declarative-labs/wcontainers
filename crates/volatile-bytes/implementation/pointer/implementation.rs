@@ -49,6 +49,11 @@ verus! {
 /// call need not come from one moment, and a byte may be read more than once. A write stores only the bytes of the view,
 /// each its new value, possibly more than once. Nothing here orders this program's other memory, atomics or locks. It
 /// does not keep the memory alive.
+///
+/// Part of the assumption below: the copies' specifications bound each copy by this view's own `length`, so the type is
+/// trusted (`verus::trusted`) and the two may name it. Verus checks nothing about a struct but its fields' types; what is
+/// trusted is that `length` is the length the pointer was promised with, which only the unverified `new` sets.
+#[verus::trusted]
 pub struct PointerBytes {
     /// An `AtomicPtr` only so that the type is `Send` and `Sync` without an `unsafe impl`, which the promise of
     /// `PointerAndLength::new` covers: the pointer never changes.
@@ -71,11 +76,11 @@ impl VolatileBytes for PointerBytes {
             return usize::MIN;
         };
         #[expect(unsafe_code, reason = "the copy out of the bytes")]
-        // SAFETY: `pointer` and `length` are this view's, which `PointerAndLength::new` promised; Verus proves
-        // `at + count <= length` here (the copy's `requires`, from `range`), and the promise keeps any reference, so
+        // SAFETY: the view is this one, whose pointer and length `PointerAndLength::new` promised; Verus proves
+        // `at + count <= self.length` here (the copy's `requires`, from `range`), and the promise keeps any reference, so
         // `into`, off the view.
         unsafe {
-            copy_out(&self.pointer, self.length, at, &mut into[..count]);
+            copy_out(self, at, &mut into[..count]);
         }
         count
     }
@@ -85,11 +90,11 @@ impl VolatileBytes for PointerBytes {
             return usize::MIN;
         };
         #[expect(unsafe_code, reason = "the copy into the bytes")]
-        // SAFETY: `pointer` and `length` are this view's, which `PointerAndLength::new` promised; Verus proves
-        // `at + count <= length` here (the copy's `requires`, from `range`), and the promise keeps any reference, so
+        // SAFETY: the view is this one, whose pointer and length `PointerAndLength::new` promised; Verus proves
+        // `at + count <= self.length` here (the copy's `requires`, from `range`), and the promise keeps any reference, so
         // `bytes`, off the view.
         unsafe {
-            copy_in(&self.pointer, self.length, at, &bytes[..count]);
+            copy_in(self, at, &bytes[..count]);
         }
         count
     }
@@ -143,25 +148,26 @@ fn range(length: usize, offset: u64, buffer: usize) -> (found: Option<(usize, us
 // view and a buffer. Verus can neither see into a call to C nor reason about memory another party changes during the
 // copy, so it is given, for each direction, by `assume_specification` (Verus's form for the specification of a function
 // it does not verify), marked `verus::trusted` so that strict mode (`--no-cheating`) takes it and nothing else here.
-// Each copy reaches only the `count` bytes at `at` of the view (`at + count <= length`, which Verus checks at every
-// call); the copy out writes only the buffer it is handed, keeping its length, and the copy in writes no buffer. Nothing
+// Each copy takes the view itself and reaches only the `count` bytes at `at` of it (`at + count <= view.length`, the
+// view's own length, which Verus checks at every call; `PointerBytes` is trusted so that the specifications may name
+// it); the copy out writes only the buffer it is handed, keeping its length, and the copy in writes no buffer. Nothing
 // is said about the bytes' values, which another party may be changing.
 verus! {
 
 #[verus::trusted]
 #[expect(unsafe_code, reason = "Verus makes each specification an unsafe function that calls the function it specifies")]
-assume_specification[ copy_out ](pointer: &AtomicPtr<u8>, length: usize, at: usize, into: &mut [u8])
+assume_specification[ copy_out ](view: &PointerBytes, at: usize, into: &mut [u8])
     requires
-        at + old(into)@.len() <= length,
+        at + old(into)@.len() <= view.length,
     ensures
         final(into)@.len() == old(into)@.len(),
 ;
 
 #[verus::trusted]
 #[expect(unsafe_code, reason = "Verus makes each specification an unsafe function that calls the function it specifies")]
-assume_specification[ copy_in ](pointer: &AtomicPtr<u8>, length: usize, at: usize, bytes: &[u8])
+assume_specification[ copy_in ](view: &PointerBytes, at: usize, bytes: &[u8])
     requires
-        at + bytes@.len() <= length,
+        at + bytes@.len() <= view.length,
 ;
 
 /// The C library's `memcpy`, which the copies read back by a volatile load so that the compiler cannot know which
@@ -175,22 +181,21 @@ static MEMCPY: unsafe extern "C" fn (*mut c_void, *const c_void, usize) -> *mut 
 /// makes no call for no bytes, so that C's rules for the pointers of an empty copy never arise.
 ///
 /// # Safety
-/// `pointer` and `length` are those of a view `PointerAndLength::new` promised, `at + into.len() <= length`, and
-/// `into` is not over the view. `length` is used only to check the bound in a debug build.
+/// `at + into.len() <= view.length`, and `into` is not over the view.
 #[verus::trusted]
 #[verifier::external]
 #[expect(unsafe_code, reason = "the copy out, whose caller promises the view, the bound and no overlap")]
-unsafe fn copy_out(pointer: &AtomicPtr<u8>, length: usize, at: usize, into: &mut [u8]) {
-    debug_assert!(at + into.len() <= length, "the copy out stays inside the view");
+unsafe fn copy_out(view: &PointerBytes, at: usize, into: &mut [u8]) {
+    debug_assert!(at + into.len() <= view.length, "the copy out stays inside the view");
     if into.is_empty() {
         return;
     }
-    let from = pointer.load(Relaxed).wrapping_add(at);
+    let from = view.pointer.load(Relaxed).wrapping_add(at);
     #[expect(unsafe_code, reason = "the volatile load of the C library's memcpy")]
     // SAFETY: `MEMCPY` is a static that lives for the whole program and holds a valid function pointer.
     let memcpy = unsafe { addr_of!(MEMCPY).read_volatile() };
     #[expect(unsafe_code, reason = "the call to the C library's memcpy")]
-    // SAFETY: `at + into.len() <= length`, so `from` lies in the view and is readable for `into.len()` bytes by the
+    // SAFETY: `at + into.len() <= view.length`, so `from` lies in the view and is readable for `into.len()` bytes by the
     // promise, and does not wrap; `into` is writable for as many and not over the view. What `memcpy` does with a
     // source another party changes meanwhile is the assumption above.
     unsafe {
@@ -201,22 +206,21 @@ unsafe fn copy_out(pointer: &AtomicPtr<u8>, length: usize, at: usize, into: &mut
 /// Copies all of `bytes` to the byte at `at` of the view, with the C library's `memcpy`; makes no call for no bytes.
 ///
 /// # Safety
-/// `pointer` and `length` are those of a view `PointerAndLength::new` promised, `at + bytes.len() <= length`, and
-/// `bytes` is not over the view. `length` is used only to check the bound in a debug build.
+/// `at + bytes.len() <= view.length`, and `bytes` is not over the view.
 #[verus::trusted]
 #[verifier::external]
 #[expect(unsafe_code, reason = "the copy in, whose caller promises the view, the bound and no overlap")]
-unsafe fn copy_in(pointer: &AtomicPtr<u8>, length: usize, at: usize, bytes: &[u8]) {
-    debug_assert!(at + bytes.len() <= length, "the copy in stays inside the view");
+unsafe fn copy_in(view: &PointerBytes, at: usize, bytes: &[u8]) {
+    debug_assert!(at + bytes.len() <= view.length, "the copy in stays inside the view");
     if bytes.is_empty() {
         return;
     }
-    let to = pointer.load(Relaxed).wrapping_add(at);
+    let to = view.pointer.load(Relaxed).wrapping_add(at);
     #[expect(unsafe_code, reason = "the volatile load of the C library's memcpy")]
     // SAFETY: `MEMCPY` is a static that lives for the whole program and holds a valid function pointer.
     let memcpy = unsafe { addr_of!(MEMCPY).read_volatile() };
     #[expect(unsafe_code, reason = "the call to the C library's memcpy")]
-    // SAFETY: `at + bytes.len() <= length`, so `to` lies in the view and is writable for `bytes.len()` bytes by the
+    // SAFETY: `at + bytes.len() <= view.length`, so `to` lies in the view and is writable for `bytes.len()` bytes by the
     // promise, and does not wrap; `bytes` is readable for as many and not over the view.
     unsafe {
         memcpy(to.cast(), bytes.as_ptr().cast(), bytes.len());
