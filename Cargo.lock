@@ -4231,7 +4231,6 @@ name = "wcontainers-capability-table"
 version = "0.1.0"
 dependencies = [
  "vstd",
- "wcontainers-kernel",
 ]
 
 [[package]]
@@ -4812,6 +4811,14 @@ name = "wcontainers-kernel-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-kernel",
+]
+
+[[package]]
+name = "wcontainers-kernel-core"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+ "wcontainers-capability-table",
 ]
 
 [[package]]
