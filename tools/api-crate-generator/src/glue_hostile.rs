@@ -666,6 +666,41 @@ impl Writer<'_, '_> {
         Shape::Other
     }
 
+    /// The object of kind `kind` a call names: the suite's first of that kind, or (the kind named before in the call the
+    /// suite writes) its second where it has one.
+    fn object_of(&self, kind: usize) -> String {
+        let mut seconds = self.seconds.borrow_mut();
+        match seconds.as_mut() {
+            Some(named) if named.contains(&kind) => format!("o.s{kind}.as_ref().or(o.k{kind}.as_ref())"),
+            Some(named) => {
+                named.push(kind);
+                format!("o.k{kind}.as_ref()")
+            }
+            None => format!("o.k{kind}.as_ref()"),
+        }
+    }
+
+    /// The arms choosing an object of one of `kinds` for a reference of several kinds (`path`): the first held, in order;
+    /// in a call the suite writes whose earlier arguments named every one of the kinds, a second object of any of them
+    /// first, then an object of another kind than the first such reference took (the kinds turned by one).
+    fn ref_arms(&self, path: &str, kinds: &[usize]) -> Vec<String> {
+        let arm = |object: &str, k: usize| format!("if let Some(x) = {object} {{ Some({path}::{}(x)) }}", self.g.kinds[k].name);
+        let mut seconds = self.seconds.borrow_mut();
+        match seconds.as_mut() {
+            Some(named) if kinds.iter().all(|k| named.contains(k)) => {
+                let firsts = kinds.iter().map(|&k| arm(&format!("o.s{k}.as_ref()"), k));
+                let turned = kinds.iter().cycle().skip(1).take(kinds.len()).map(|&k| arm(&format!("o.k{k}.as_ref()"), k));
+                firsts.chain(turned).collect()
+            }
+            Some(named) => {
+                let new: Vec<usize> = kinds.iter().filter(|&&k| !named.contains(&k)).copied().collect();
+                named.extend(new);
+                kinds.iter().map(|&k| arm(&format!("o.k{k}.as_ref()"), k)).collect()
+            }
+            None => kinds.iter().map(|&k| arm(&format!("o.k{k}.as_ref()"), k)).collect(),
+        }
+    }
+
     /// The expression of one argument, with the lines that bind what it needs (each of which leaves the call with
     /// `skip` when an object is missing); none when the driver cannot make it.
     #[allow(clippy::too_many_arguments, reason = "the argument's own parts")]
@@ -689,12 +724,12 @@ impl Writer<'_, '_> {
             // An object the suite holds, or a known value of plain data, so that dropping it on the way is seen.
             let inner = inner.trim();
             match self.shape(inner, scope) {
-                Shape::Object { kind, by_ref: true } => return Some(format!("o.k{kind}.as_ref()")),
+                Shape::Object { kind, by_ref: true } => return Some(self.object_of(kind)),
                 // One of the objects a reference of several kinds may name: the first held, or none.
                 Shape::Ref { path, kinds } => {
                     *counter += 1;
                     let var = format!("v{counter}");
-                    let arms: Vec<String> = kinds.iter().map(|&k| format!("if let Some(x) = o.k{k}.as_ref() {{ Some({path}::{}(x)) }}", self.g.kinds[k].name)).collect();
+                    let arms = self.ref_arms(&path, &kinds);
                     let _ = writeln!(prelude, "        let {var} = {} else {{ None }};", arms.join(" else "));
                     return Some(var);
                 }
@@ -726,7 +761,7 @@ impl Writer<'_, '_> {
             // suite holds (or none), or a known value.
             if let Some(object) = element.trim().strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
                 if let Shape::Object { kind, by_ref: true } = self.shape(object.trim(), scope) {
-                    return Some(format!("&[o.k{kind}.as_ref()]"));
+                    return Some(format!("&[{}]", self.object_of(kind)));
                 }
                 return Some("&[None]".to_string());
             }
@@ -742,10 +777,11 @@ impl Writer<'_, '_> {
             Shape::Object { kind, by_ref } => {
                 *counter += 1;
                 let var = format!("v{counter}");
+                let object = self.object_of(kind);
                 if skip == "None" {
-                    let _ = writeln!(prelude, "        let {var} = o.k{kind}.as_ref()?;");
+                    let _ = writeln!(prelude, "        let {var} = {object}?;");
                 } else {
-                    let _ = writeln!(prelude, "        let Some({var}) = o.k{kind}.as_ref() else {{ return {skip}; }};");
+                    let _ = writeln!(prelude, "        let Some({var}) = {object} else {{ return {skip}; }};");
                 }
                 return Some(if by_ref { var } else { format!("{var}.clone()") });
             }
@@ -755,7 +791,7 @@ impl Writer<'_, '_> {
                 }
                 *counter += 1;
                 let var = format!("v{counter}");
-                let arms: Vec<String> = kinds.iter().map(|&k| format!("if let Some(x) = o.k{k}.as_ref() {{ Some({path}::{}(x)) }}", self.g.kinds[k].name)).collect();
+                let arms = self.ref_arms(&path, &kinds);
                 if skip == "None" {
                     let _ = writeln!(prelude, "        let {var} = ({} else {{ None }})?;", arms.join(" else "));
                 } else {
@@ -938,10 +974,11 @@ impl Writer<'_, '_> {
         let mut prelude = String::new();
         let receiver = match bind {
             Some(kind) => {
+                let this = self.object_of(kind);
                 if skip == "None" {
-                    let _ = writeln!(prelude, "        let this = o.k{kind}.as_ref()?;");
+                    let _ = writeln!(prelude, "        let this = {this}?;");
                 } else {
-                    let _ = writeln!(prelude, "        let Some(this) = o.k{kind}.as_ref() else {{ return {skip}; }};");
+                    let _ = writeln!(prelude, "        let Some(this) = {this} else {{ return {skip}; }};");
                 }
                 "this"
             }
@@ -1187,86 +1224,6 @@ struct Maker {
     fallible: bool,
     pattern: String,
     stores: Vec<(usize, String)>,
-}
-
-/// A drive's call with each object of a kind it names a second time or more (`o.k<n>.as_ref()`, the receiver first) the
-/// suite's second object of that kind where it has one: the same call made with two objects of one kind, so that a glue
-/// passing one for the other is seen. A reference of several kinds (`if let Some(x) = o.k<n>.as_ref() { .. } else ..`)
-/// whose kinds were all named before takes a second object of any of them first, then an object of another kind than
-/// the first reference took (its kinds turned by one).
-fn with_second_objects(prelude: &str, call: &str) -> (String, String) {
-    const SEPARATOR: char = '\u{0}';
-    const ARM: &str = "if let Some(x) = o.k";
-    const LAST: &str = " else { None })";
-    let text = format!("{prelude}{SEPARATOR}{call}");
-    let mut met: Vec<String> = Vec::new();
-    // The references of several kinds first: (start, end, kinds and their variants).
-    let mut chains: Vec<(usize, usize, Vec<(String, String)>)> = Vec::new();
-    let mut from = 0;
-    while let Some(found) = text[from..].find(&format!("({ARM}")) {
-        let start = from + found;
-        let Some(length) = text[start..].find(LAST) else { break };
-        let end = start + length + LAST.len();
-        let arms: Vec<(String, String)> = text[start + 1..end - LAST.len()]
-            .split(" else ")
-            .filter_map(|arm| {
-                let rest = arm.strip_prefix(ARM)?;
-                let (kind, rest) = rest.split_once(".as_ref() { Some(")?;
-                let variant = rest.strip_suffix("(x)) }")?;
-                Some((kind.to_string(), variant.to_string()))
-            })
-            .collect();
-        chains.push((start, end, arms));
-        from = end;
-    }
-    let mut out = String::new();
-    let mut at = 0;
-    for (start, end, arms) in &chains {
-        out.push_str(&single_objects(&text[at..*start], &mut met));
-        if !arms.is_empty() && arms.iter().all(|(kind, _)| met.contains(kind)) {
-            let seconds = arms.iter().map(|(kind, variant)| format!("if let Some(x) = o.s{kind}.as_ref() {{ Some({variant}(x)) }}"));
-            let turned = arms.iter().cycle().skip(1).take(arms.len()).map(|(kind, variant)| format!("if let Some(x) = o.k{kind}.as_ref() {{ Some({variant}(x)) }}"));
-            let _ = write!(out, "({}{LAST}", seconds.chain(turned).collect::<Vec<_>>().join(" else "));
-        } else {
-            for (kind, _) in arms {
-                if !met.contains(kind) {
-                    met.push(kind.clone());
-                }
-            }
-            out.push_str(&text[*start..*end]);
-        }
-        at = *end;
-    }
-    out.push_str(&single_objects(&text[at..], &mut met));
-    let (prelude, call) = out.split_once(SEPARATOR).unwrap_or((&out, ""));
-    (prelude.to_string(), call.to_string())
-}
-
-/// `text` with each object of a kind already `met` (`o.k<n>.as_ref()`) the second of that kind where there is one; the
-/// kinds it names first are met from then on.
-fn single_objects(text: &str, met: &mut Vec<String>) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(at) = rest.find("o.k") {
-        out.push_str(&rest[..at]);
-        let after = &rest[at + 3..];
-        let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-        let kind = &after[..digits];
-        if digits == 0 || !after[digits..].starts_with(".as_ref()") {
-            out.push_str("o.k");
-            rest = after;
-            continue;
-        }
-        if met.iter().any(|seen| seen == kind) {
-            let _ = write!(out, "o.s{kind}.as_ref().or(o.k{kind}.as_ref())");
-        } else {
-            met.push(kind.to_string());
-            let _ = write!(out, "o.k{kind}.as_ref()");
-        }
-        rest = &after[digits + ".as_ref()".len()..];
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Splits a tuple's types at their top-level commas.
@@ -1943,8 +1900,10 @@ impl Writer<'_, '_> {
                 self.current.set(saved);
                 let rust_name = Self::method_name(method);
                 let asked = glued.as_ref().and_then(|glued| self.asked_interface(glued, &result, &scope));
-                if let Some((prelude, call)) = self.driven_call(&place, Some(k), &generic(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", asked.as_ref().map(|(riid, iid)| (riid.as_str(), iid.as_str()))) {
-                    let (prelude, call) = with_second_objects(&prelude, &call);
+                *self.seconds.borrow_mut() = Some(Vec::new());
+                let driven = self.driven_call(&place, Some(k), &generic(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", asked.as_ref().map(|(riid, iid)| (riid.as_str(), iid.as_str())));
+                *self.seconds.borrow_mut() = None;
+                if let Some((prelude, call)) = driven {
                     let logged = compared(&place, glued.is_some(), &result, &prelude, &call);
                     calls.push((format!("{place} on {}", g.kinds[k].name), prelude, check(&result, &logged, &scope)));
                 }
@@ -1959,8 +1918,10 @@ impl Writer<'_, '_> {
             renamed.name = crate::names::strip_first(&function.name, spec.function_prefixes).to_string();
             let (inputs, result) = self.trait_signature(&renamed, api, "Self", &function.name);
             let asked = self.glue_of(function, &function.name).ok().and_then(|glued| self.asked_interface(&glued, &result, &scope));
-            if let Some((prelude, call)) = self.driven_call(&function.name, None, "A", &top, &rust_name, &inputs, &scope, codecs, "false", asked.as_ref().map(|(riid, iid)| (riid.as_str(), iid.as_str()))) {
-                let (prelude, call) = with_second_objects(&prelude, &call);
+            *self.seconds.borrow_mut() = Some(Vec::new());
+            let driven = self.driven_call(&function.name, None, "A", &top, &rust_name, &inputs, &scope, codecs, "false", asked.as_ref().map(|(riid, iid)| (riid.as_str(), iid.as_str())));
+            *self.seconds.borrow_mut() = None;
+            if let Some((prelude, call)) = driven {
                 let logged = compared(&function.name, self.glue_of(function, &function.name).is_ok(), &result, &prelude, &call);
                 calls.push((function.name.clone(), prelude, check(&result, &logged, &scope)));
             }

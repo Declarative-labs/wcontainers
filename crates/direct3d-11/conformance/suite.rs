@@ -17901,7 +17901,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k2.as_ref() else {
             return false;
         };
-        let v1 = if let Some(x) = o.s2.as_ref().or(o.k2.as_ref()) {
+        let v1 = if let Some(x) = o.k2.as_ref() {
             Some(direct3d_11::UnknownRef::AuthenticatedChannel(x))
         } else if let Some(x) = o.k3.as_ref() {
             Some(direct3d_11::UnknownRef::BlendState(x))
@@ -18163,7 +18163,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         let v1 = if let Some(x) = o.k2.as_ref() {
             Some(direct3d_11::UnknownRef::AuthenticatedChannel(x))
-        } else if let Some(x) = o.s3.as_ref().or(o.k3.as_ref()) {
+        } else if let Some(x) = o.k3.as_ref() {
             Some(direct3d_11::UnknownRef::BlendState(x))
         } else if let Some(x) = o.k4.as_ref() {
             Some(direct3d_11::UnknownRef::Buffer(x))
@@ -18436,7 +18436,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::AuthenticatedChannel(x))
         } else if let Some(x) = o.k3.as_ref() {
             Some(direct3d_11::UnknownRef::BlendState(x))
-        } else if let Some(x) = o.s4.as_ref().or(o.k4.as_ref()) {
+        } else if let Some(x) = o.k4.as_ref() {
             Some(direct3d_11::UnknownRef::Buffer(x))
         } else if let Some(x) = o.k5.as_ref() {
             Some(direct3d_11::UnknownRef::ClassInstance(x))
@@ -18983,7 +18983,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::BlendState(x))
         } else if let Some(x) = o.k4.as_ref() {
             Some(direct3d_11::UnknownRef::Buffer(x))
-        } else if let Some(x) = o.s5.as_ref().or(o.k5.as_ref()) {
+        } else if let Some(x) = o.k5.as_ref() {
             Some(direct3d_11::UnknownRef::ClassInstance(x))
         } else if let Some(x) = o.k6.as_ref() {
             Some(direct3d_11::UnknownRef::ClassLinkage(x))
@@ -19259,7 +19259,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::Buffer(x))
         } else if let Some(x) = o.k5.as_ref() {
             Some(direct3d_11::UnknownRef::ClassInstance(x))
-        } else if let Some(x) = o.s6.as_ref().or(o.k6.as_ref()) {
+        } else if let Some(x) = o.k6.as_ref() {
             Some(direct3d_11::UnknownRef::ClassLinkage(x))
         } else if let Some(x) = o.k7.as_ref() {
             Some(direct3d_11::UnknownRef::CommandList(x))
@@ -19504,7 +19504,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::ClassInstance(x))
         } else if let Some(x) = o.k6.as_ref() {
             Some(direct3d_11::UnknownRef::ClassLinkage(x))
-        } else if let Some(x) = o.s7.as_ref().or(o.k7.as_ref()) {
+        } else if let Some(x) = o.k7.as_ref() {
             Some(direct3d_11::UnknownRef::CommandList(x))
         } else if let Some(x) = o.k8.as_ref() {
             Some(direct3d_11::UnknownRef::ComputeShader(x))
@@ -19732,7 +19732,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::ClassLinkage(x))
         } else if let Some(x) = o.k7.as_ref() {
             Some(direct3d_11::UnknownRef::CommandList(x))
-        } else if let Some(x) = o.s8.as_ref().or(o.k8.as_ref()) {
+        } else if let Some(x) = o.k8.as_ref() {
             Some(direct3d_11::UnknownRef::ComputeShader(x))
         } else if let Some(x) = o.k9.as_ref() {
             Some(direct3d_11::UnknownRef::Counter(x))
@@ -19984,7 +19984,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::CommandList(x))
         } else if let Some(x) = o.k8.as_ref() {
             Some(direct3d_11::UnknownRef::ComputeShader(x))
-        } else if let Some(x) = o.s9.as_ref().or(o.k9.as_ref()) {
+        } else if let Some(x) = o.k9.as_ref() {
             Some(direct3d_11::UnknownRef::Counter(x))
         } else if let Some(x) = o.k10.as_ref() {
             Some(direct3d_11::UnknownRef::CryptoSession(x))
@@ -20311,7 +20311,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::ComputeShader(x))
         } else if let Some(x) = o.k9.as_ref() {
             Some(direct3d_11::UnknownRef::Counter(x))
-        } else if let Some(x) = o.s10.as_ref().or(o.k10.as_ref()) {
+        } else if let Some(x) = o.k10.as_ref() {
             Some(direct3d_11::UnknownRef::CryptoSession(x))
         } else if let Some(x) = o.k11.as_ref() {
             Some(direct3d_11::UnknownRef::Debug(x))
@@ -20768,7 +20768,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::CryptoSession(x))
         } else if let Some(x) = o.k11.as_ref() {
             Some(direct3d_11::UnknownRef::Debug(x))
-        } else if let Some(x) = o.s12.as_ref().or(o.k12.as_ref()) {
+        } else if let Some(x) = o.k12.as_ref() {
             Some(direct3d_11::UnknownRef::DepthStencilState(x))
         } else if let Some(x) = o.k13.as_ref() {
             Some(direct3d_11::UnknownRef::DepthStencilView(x))
@@ -21023,7 +21023,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::Debug(x))
         } else if let Some(x) = o.k12.as_ref() {
             Some(direct3d_11::UnknownRef::DepthStencilState(x))
-        } else if let Some(x) = o.s13.as_ref().or(o.k13.as_ref()) {
+        } else if let Some(x) = o.k13.as_ref() {
             Some(direct3d_11::UnknownRef::DepthStencilView(x))
         } else if let Some(x) = o.k14.as_ref() {
             Some(direct3d_11::UnknownRef::Device(x))
@@ -22525,7 +22525,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::DepthStencilState(x))
         } else if let Some(x) = o.k13.as_ref() {
             Some(direct3d_11::UnknownRef::DepthStencilView(x))
-        } else if let Some(x) = o.s14.as_ref().or(o.k14.as_ref()) {
+        } else if let Some(x) = o.k14.as_ref() {
             Some(direct3d_11::UnknownRef::Device(x))
         } else if let Some(x) = o.k15.as_ref() {
             Some(direct3d_11::UnknownRef::DeviceContext(x))
@@ -23483,7 +23483,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::DeviceChildRef::DepthStencilState(x))
         } else if let Some(x) = o.k13.as_ref() {
             Some(direct3d_11::DeviceChildRef::DepthStencilView(x))
-        } else if let Some(x) = o.s15.as_ref().or(o.k15.as_ref()) {
+        } else if let Some(x) = o.k15.as_ref() {
             Some(direct3d_11::DeviceChildRef::DeviceContext(x))
         } else if let Some(x) = o.k16.as_ref() {
             Some(direct3d_11::DeviceChildRef::DomainShader(x))
@@ -23538,80 +23538,154 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         } else {
             None
         };
-        let v2 = if let Some(x) = o.s2.as_ref().or(o.k2.as_ref()) {
+        let v2 = if let Some(x) = o.s2.as_ref() {
             Some(direct3d_11::DeviceChildRef::AuthenticatedChannel(x))
-        } else if let Some(x) = o.s3.as_ref().or(o.k3.as_ref()) {
+        } else if let Some(x) = o.s3.as_ref() {
             Some(direct3d_11::DeviceChildRef::BlendState(x))
-        } else if let Some(x) = o.s4.as_ref().or(o.k4.as_ref()) {
+        } else if let Some(x) = o.s4.as_ref() {
             Some(direct3d_11::DeviceChildRef::Buffer(x))
-        } else if let Some(x) = o.s5.as_ref().or(o.k5.as_ref()) {
+        } else if let Some(x) = o.s5.as_ref() {
             Some(direct3d_11::DeviceChildRef::ClassInstance(x))
-        } else if let Some(x) = o.s6.as_ref().or(o.k6.as_ref()) {
+        } else if let Some(x) = o.s6.as_ref() {
             Some(direct3d_11::DeviceChildRef::ClassLinkage(x))
-        } else if let Some(x) = o.s7.as_ref().or(o.k7.as_ref()) {
+        } else if let Some(x) = o.s7.as_ref() {
             Some(direct3d_11::DeviceChildRef::CommandList(x))
-        } else if let Some(x) = o.s8.as_ref().or(o.k8.as_ref()) {
+        } else if let Some(x) = o.s8.as_ref() {
             Some(direct3d_11::DeviceChildRef::ComputeShader(x))
-        } else if let Some(x) = o.s9.as_ref().or(o.k9.as_ref()) {
+        } else if let Some(x) = o.s9.as_ref() {
             Some(direct3d_11::DeviceChildRef::Counter(x))
-        } else if let Some(x) = o.s10.as_ref().or(o.k10.as_ref()) {
+        } else if let Some(x) = o.s10.as_ref() {
             Some(direct3d_11::DeviceChildRef::CryptoSession(x))
-        } else if let Some(x) = o.s12.as_ref().or(o.k12.as_ref()) {
+        } else if let Some(x) = o.s12.as_ref() {
             Some(direct3d_11::DeviceChildRef::DepthStencilState(x))
-        } else if let Some(x) = o.s13.as_ref().or(o.k13.as_ref()) {
+        } else if let Some(x) = o.s13.as_ref() {
             Some(direct3d_11::DeviceChildRef::DepthStencilView(x))
-        } else if let Some(x) = o.s15.as_ref().or(o.k15.as_ref()) {
+        } else if let Some(x) = o.s15.as_ref() {
             Some(direct3d_11::DeviceChildRef::DeviceContext(x))
-        } else if let Some(x) = o.s16.as_ref().or(o.k16.as_ref()) {
+        } else if let Some(x) = o.s16.as_ref() {
             Some(direct3d_11::DeviceChildRef::DomainShader(x))
-        } else if let Some(x) = o.s17.as_ref().or(o.k17.as_ref()) {
+        } else if let Some(x) = o.s17.as_ref() {
             Some(direct3d_11::DeviceChildRef::Fence(x))
-        } else if let Some(x) = o.s18.as_ref().or(o.k18.as_ref()) {
+        } else if let Some(x) = o.s18.as_ref() {
             Some(direct3d_11::DeviceChildRef::GeometryShader(x))
-        } else if let Some(x) = o.s19.as_ref().or(o.k19.as_ref()) {
+        } else if let Some(x) = o.s19.as_ref() {
             Some(direct3d_11::DeviceChildRef::HullShader(x))
-        } else if let Some(x) = o.s21.as_ref().or(o.k21.as_ref()) {
+        } else if let Some(x) = o.s21.as_ref() {
             Some(direct3d_11::DeviceChildRef::InputLayout(x))
-        } else if let Some(x) = o.s23.as_ref().or(o.k23.as_ref()) {
+        } else if let Some(x) = o.s23.as_ref() {
             Some(direct3d_11::DeviceChildRef::PixelShader(x))
-        } else if let Some(x) = o.s24.as_ref().or(o.k24.as_ref()) {
+        } else if let Some(x) = o.s24.as_ref() {
             Some(direct3d_11::DeviceChildRef::Predicate(x))
-        } else if let Some(x) = o.s25.as_ref().or(o.k25.as_ref()) {
+        } else if let Some(x) = o.s25.as_ref() {
             Some(direct3d_11::DeviceChildRef::Query(x))
-        } else if let Some(x) = o.s26.as_ref().or(o.k26.as_ref()) {
+        } else if let Some(x) = o.s26.as_ref() {
             Some(direct3d_11::DeviceChildRef::RasterizerState(x))
-        } else if let Some(x) = o.s29.as_ref().or(o.k29.as_ref()) {
+        } else if let Some(x) = o.s29.as_ref() {
             Some(direct3d_11::DeviceChildRef::RenderTargetView(x))
-        } else if let Some(x) = o.s30.as_ref().or(o.k30.as_ref()) {
+        } else if let Some(x) = o.s30.as_ref() {
             Some(direct3d_11::DeviceChildRef::SamplerState(x))
-        } else if let Some(x) = o.s31.as_ref().or(o.k31.as_ref()) {
+        } else if let Some(x) = o.s31.as_ref() {
             Some(direct3d_11::DeviceChildRef::ShaderResourceView(x))
-        } else if let Some(x) = o.s35.as_ref().or(o.k35.as_ref()) {
+        } else if let Some(x) = o.s35.as_ref() {
             Some(direct3d_11::DeviceChildRef::Texture1D(x))
-        } else if let Some(x) = o.s36.as_ref().or(o.k36.as_ref()) {
+        } else if let Some(x) = o.s36.as_ref() {
             Some(direct3d_11::DeviceChildRef::Texture2D(x))
-        } else if let Some(x) = o.s37.as_ref().or(o.k37.as_ref()) {
+        } else if let Some(x) = o.s37.as_ref() {
             Some(direct3d_11::DeviceChildRef::Texture3D(x))
-        } else if let Some(x) = o.s39.as_ref().or(o.k39.as_ref()) {
+        } else if let Some(x) = o.s39.as_ref() {
             Some(direct3d_11::DeviceChildRef::UnorderedAccessView(x))
-        } else if let Some(x) = o.s40.as_ref().or(o.k40.as_ref()) {
+        } else if let Some(x) = o.s40.as_ref() {
             Some(direct3d_11::DeviceChildRef::VertexShader(x))
-        } else if let Some(x) = o.s41.as_ref().or(o.k41.as_ref()) {
+        } else if let Some(x) = o.s41.as_ref() {
             Some(direct3d_11::DeviceChildRef::VideoContext(x))
-        } else if let Some(x) = o.s42.as_ref().or(o.k42.as_ref()) {
+        } else if let Some(x) = o.s42.as_ref() {
             Some(direct3d_11::DeviceChildRef::VideoDecoder(x))
-        } else if let Some(x) = o.s43.as_ref().or(o.k43.as_ref()) {
+        } else if let Some(x) = o.s43.as_ref() {
             Some(direct3d_11::DeviceChildRef::VideoDecoderOutputView(x))
-        } else if let Some(x) = o.s45.as_ref().or(o.k45.as_ref()) {
+        } else if let Some(x) = o.s45.as_ref() {
             Some(direct3d_11::DeviceChildRef::VideoProcessor(x))
-        } else if let Some(x) = o.s46.as_ref().or(o.k46.as_ref()) {
+        } else if let Some(x) = o.s46.as_ref() {
             Some(direct3d_11::DeviceChildRef::VideoProcessorEnumerator(x))
-        } else if let Some(x) = o.s47.as_ref().or(o.k47.as_ref()) {
+        } else if let Some(x) = o.s47.as_ref() {
             Some(direct3d_11::DeviceChildRef::VideoProcessorInputView(x))
-        } else if let Some(x) = o.s48.as_ref().or(o.k48.as_ref()) {
+        } else if let Some(x) = o.s48.as_ref() {
             Some(direct3d_11::DeviceChildRef::VideoProcessorOutputView(x))
-        } else if let Some(x) = o.s49.as_ref().or(o.k49.as_ref()) {
+        } else if let Some(x) = o.s49.as_ref() {
             Some(direct3d_11::DeviceChildRef::DeviceContextState(x))
+        } else if let Some(x) = o.k3.as_ref() {
+            Some(direct3d_11::DeviceChildRef::BlendState(x))
+        } else if let Some(x) = o.k4.as_ref() {
+            Some(direct3d_11::DeviceChildRef::Buffer(x))
+        } else if let Some(x) = o.k5.as_ref() {
+            Some(direct3d_11::DeviceChildRef::ClassInstance(x))
+        } else if let Some(x) = o.k6.as_ref() {
+            Some(direct3d_11::DeviceChildRef::ClassLinkage(x))
+        } else if let Some(x) = o.k7.as_ref() {
+            Some(direct3d_11::DeviceChildRef::CommandList(x))
+        } else if let Some(x) = o.k8.as_ref() {
+            Some(direct3d_11::DeviceChildRef::ComputeShader(x))
+        } else if let Some(x) = o.k9.as_ref() {
+            Some(direct3d_11::DeviceChildRef::Counter(x))
+        } else if let Some(x) = o.k10.as_ref() {
+            Some(direct3d_11::DeviceChildRef::CryptoSession(x))
+        } else if let Some(x) = o.k12.as_ref() {
+            Some(direct3d_11::DeviceChildRef::DepthStencilState(x))
+        } else if let Some(x) = o.k13.as_ref() {
+            Some(direct3d_11::DeviceChildRef::DepthStencilView(x))
+        } else if let Some(x) = o.k15.as_ref() {
+            Some(direct3d_11::DeviceChildRef::DeviceContext(x))
+        } else if let Some(x) = o.k16.as_ref() {
+            Some(direct3d_11::DeviceChildRef::DomainShader(x))
+        } else if let Some(x) = o.k17.as_ref() {
+            Some(direct3d_11::DeviceChildRef::Fence(x))
+        } else if let Some(x) = o.k18.as_ref() {
+            Some(direct3d_11::DeviceChildRef::GeometryShader(x))
+        } else if let Some(x) = o.k19.as_ref() {
+            Some(direct3d_11::DeviceChildRef::HullShader(x))
+        } else if let Some(x) = o.k21.as_ref() {
+            Some(direct3d_11::DeviceChildRef::InputLayout(x))
+        } else if let Some(x) = o.k23.as_ref() {
+            Some(direct3d_11::DeviceChildRef::PixelShader(x))
+        } else if let Some(x) = o.k24.as_ref() {
+            Some(direct3d_11::DeviceChildRef::Predicate(x))
+        } else if let Some(x) = o.k25.as_ref() {
+            Some(direct3d_11::DeviceChildRef::Query(x))
+        } else if let Some(x) = o.k26.as_ref() {
+            Some(direct3d_11::DeviceChildRef::RasterizerState(x))
+        } else if let Some(x) = o.k29.as_ref() {
+            Some(direct3d_11::DeviceChildRef::RenderTargetView(x))
+        } else if let Some(x) = o.k30.as_ref() {
+            Some(direct3d_11::DeviceChildRef::SamplerState(x))
+        } else if let Some(x) = o.k31.as_ref() {
+            Some(direct3d_11::DeviceChildRef::ShaderResourceView(x))
+        } else if let Some(x) = o.k35.as_ref() {
+            Some(direct3d_11::DeviceChildRef::Texture1D(x))
+        } else if let Some(x) = o.k36.as_ref() {
+            Some(direct3d_11::DeviceChildRef::Texture2D(x))
+        } else if let Some(x) = o.k37.as_ref() {
+            Some(direct3d_11::DeviceChildRef::Texture3D(x))
+        } else if let Some(x) = o.k39.as_ref() {
+            Some(direct3d_11::DeviceChildRef::UnorderedAccessView(x))
+        } else if let Some(x) = o.k40.as_ref() {
+            Some(direct3d_11::DeviceChildRef::VertexShader(x))
+        } else if let Some(x) = o.k41.as_ref() {
+            Some(direct3d_11::DeviceChildRef::VideoContext(x))
+        } else if let Some(x) = o.k42.as_ref() {
+            Some(direct3d_11::DeviceChildRef::VideoDecoder(x))
+        } else if let Some(x) = o.k43.as_ref() {
+            Some(direct3d_11::DeviceChildRef::VideoDecoderOutputView(x))
+        } else if let Some(x) = o.k45.as_ref() {
+            Some(direct3d_11::DeviceChildRef::VideoProcessor(x))
+        } else if let Some(x) = o.k46.as_ref() {
+            Some(direct3d_11::DeviceChildRef::VideoProcessorEnumerator(x))
+        } else if let Some(x) = o.k47.as_ref() {
+            Some(direct3d_11::DeviceChildRef::VideoProcessorInputView(x))
+        } else if let Some(x) = o.k48.as_ref() {
+            Some(direct3d_11::DeviceChildRef::VideoProcessorOutputView(x))
+        } else if let Some(x) = o.k49.as_ref() {
+            Some(direct3d_11::DeviceChildRef::DeviceContextState(x))
+        } else if let Some(x) = o.k2.as_ref() {
+            Some(direct3d_11::DeviceChildRef::AuthenticatedChannel(x))
         } else {
             None
         };
@@ -26879,7 +26953,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::DepthStencilView(x))
         } else if let Some(x) = o.k14.as_ref() {
             Some(direct3d_11::UnknownRef::Device(x))
-        } else if let Some(x) = o.s15.as_ref().or(o.k15.as_ref()) {
+        } else if let Some(x) = o.k15.as_ref() {
             Some(direct3d_11::UnknownRef::DeviceContext(x))
         } else if let Some(x) = o.k16.as_ref() {
             Some(direct3d_11::UnknownRef::DomainShader(x))
@@ -27227,7 +27301,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::Device(x))
         } else if let Some(x) = o.k15.as_ref() {
             Some(direct3d_11::UnknownRef::DeviceContext(x))
-        } else if let Some(x) = o.s16.as_ref().or(o.k16.as_ref()) {
+        } else if let Some(x) = o.k16.as_ref() {
             Some(direct3d_11::UnknownRef::DomainShader(x))
         } else if let Some(x) = o.k17.as_ref() {
             Some(direct3d_11::UnknownRef::Fence(x))
@@ -27509,7 +27583,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::DeviceContext(x))
         } else if let Some(x) = o.k16.as_ref() {
             Some(direct3d_11::UnknownRef::DomainShader(x))
-        } else if let Some(x) = o.s17.as_ref().or(o.k17.as_ref()) {
+        } else if let Some(x) = o.k17.as_ref() {
             Some(direct3d_11::UnknownRef::Fence(x))
         } else if let Some(x) = o.k18.as_ref() {
             Some(direct3d_11::UnknownRef::GeometryShader(x))
@@ -27734,7 +27808,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::DomainShader(x))
         } else if let Some(x) = o.k17.as_ref() {
             Some(direct3d_11::UnknownRef::Fence(x))
-        } else if let Some(x) = o.s18.as_ref().or(o.k18.as_ref()) {
+        } else if let Some(x) = o.k18.as_ref() {
             Some(direct3d_11::UnknownRef::GeometryShader(x))
         } else if let Some(x) = o.k19.as_ref() {
             Some(direct3d_11::UnknownRef::HullShader(x))
@@ -27962,7 +28036,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::Fence(x))
         } else if let Some(x) = o.k18.as_ref() {
             Some(direct3d_11::UnknownRef::GeometryShader(x))
-        } else if let Some(x) = o.s19.as_ref().or(o.k19.as_ref()) {
+        } else if let Some(x) = o.k19.as_ref() {
             Some(direct3d_11::UnknownRef::HullShader(x))
         } else if let Some(x) = o.k20.as_ref() {
             Some(direct3d_11::UnknownRef::InfoQueue(x))
@@ -28800,7 +28874,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::HullShader(x))
         } else if let Some(x) = o.k20.as_ref() {
             Some(direct3d_11::UnknownRef::InfoQueue(x))
-        } else if let Some(x) = o.s21.as_ref().or(o.k21.as_ref()) {
+        } else if let Some(x) = o.k21.as_ref() {
             Some(direct3d_11::UnknownRef::InputLayout(x))
         } else if let Some(x) = o.k22.as_ref() {
             Some(direct3d_11::UnknownRef::Multithread(x))
@@ -29106,7 +29180,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::InputLayout(x))
         } else if let Some(x) = o.k22.as_ref() {
             Some(direct3d_11::UnknownRef::Multithread(x))
-        } else if let Some(x) = o.s23.as_ref().or(o.k23.as_ref()) {
+        } else if let Some(x) = o.k23.as_ref() {
             Some(direct3d_11::UnknownRef::PixelShader(x))
         } else if let Some(x) = o.k24.as_ref() {
             Some(direct3d_11::UnknownRef::Predicate(x))
@@ -29348,7 +29422,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::Multithread(x))
         } else if let Some(x) = o.k23.as_ref() {
             Some(direct3d_11::UnknownRef::PixelShader(x))
-        } else if let Some(x) = o.s24.as_ref().or(o.k24.as_ref()) {
+        } else if let Some(x) = o.k24.as_ref() {
             Some(direct3d_11::UnknownRef::Predicate(x))
         } else if let Some(x) = o.k25.as_ref() {
             Some(direct3d_11::UnknownRef::Query(x))
@@ -29607,7 +29681,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::PixelShader(x))
         } else if let Some(x) = o.k24.as_ref() {
             Some(direct3d_11::UnknownRef::Predicate(x))
-        } else if let Some(x) = o.s25.as_ref().or(o.k25.as_ref()) {
+        } else if let Some(x) = o.k25.as_ref() {
             Some(direct3d_11::UnknownRef::Query(x))
         } else if let Some(x) = o.k26.as_ref() {
             Some(direct3d_11::UnknownRef::RasterizerState(x))
@@ -29886,7 +29960,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::Predicate(x))
         } else if let Some(x) = o.k25.as_ref() {
             Some(direct3d_11::UnknownRef::Query(x))
-        } else if let Some(x) = o.s26.as_ref().or(o.k26.as_ref()) {
+        } else if let Some(x) = o.k26.as_ref() {
             Some(direct3d_11::UnknownRef::RasterizerState(x))
         } else if let Some(x) = o.k27.as_ref() {
             Some(direct3d_11::UnknownRef::RefDefaultTrackingOptions(x))
@@ -30272,7 +30346,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::RefDefaultTrackingOptions(x))
         } else if let Some(x) = o.k28.as_ref() {
             Some(direct3d_11::UnknownRef::RefTrackingOptions(x))
-        } else if let Some(x) = o.s29.as_ref().or(o.k29.as_ref()) {
+        } else if let Some(x) = o.k29.as_ref() {
             Some(direct3d_11::UnknownRef::RenderTargetView(x))
         } else if let Some(x) = o.k30.as_ref() {
             Some(direct3d_11::UnknownRef::SamplerState(x))
@@ -30517,7 +30591,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::RefTrackingOptions(x))
         } else if let Some(x) = o.k29.as_ref() {
             Some(direct3d_11::UnknownRef::RenderTargetView(x))
-        } else if let Some(x) = o.s30.as_ref().or(o.k30.as_ref()) {
+        } else if let Some(x) = o.k30.as_ref() {
             Some(direct3d_11::UnknownRef::SamplerState(x))
         } else if let Some(x) = o.k31.as_ref() {
             Some(direct3d_11::UnknownRef::ShaderResourceView(x))
@@ -30795,7 +30869,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::RenderTargetView(x))
         } else if let Some(x) = o.k30.as_ref() {
             Some(direct3d_11::UnknownRef::SamplerState(x))
-        } else if let Some(x) = o.s31.as_ref().or(o.k31.as_ref()) {
+        } else if let Some(x) = o.k31.as_ref() {
             Some(direct3d_11::UnknownRef::ShaderResourceView(x))
         } else if let Some(x) = o.k32.as_ref() {
             Some(direct3d_11::UnknownRef::ShaderTrace(x))
@@ -31511,7 +31585,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::ShaderTraceFactory(x))
         } else if let Some(x) = o.k34.as_ref() {
             Some(direct3d_11::UnknownRef::SwitchToRef(x))
-        } else if let Some(x) = o.s35.as_ref().or(o.k35.as_ref()) {
+        } else if let Some(x) = o.k35.as_ref() {
             Some(direct3d_11::UnknownRef::Texture1D(x))
         } else if let Some(x) = o.k36.as_ref() {
             Some(direct3d_11::UnknownRef::Texture2D(x))
@@ -32069,7 +32143,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::SwitchToRef(x))
         } else if let Some(x) = o.k35.as_ref() {
             Some(direct3d_11::UnknownRef::Texture1D(x))
-        } else if let Some(x) = o.s36.as_ref().or(o.k36.as_ref()) {
+        } else if let Some(x) = o.k36.as_ref() {
             Some(direct3d_11::UnknownRef::Texture2D(x))
         } else if let Some(x) = o.k37.as_ref() {
             Some(direct3d_11::UnknownRef::Texture3D(x))
@@ -32706,7 +32780,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::Texture1D(x))
         } else if let Some(x) = o.k36.as_ref() {
             Some(direct3d_11::UnknownRef::Texture2D(x))
-        } else if let Some(x) = o.s37.as_ref().or(o.k37.as_ref()) {
+        } else if let Some(x) = o.k37.as_ref() {
             Some(direct3d_11::UnknownRef::Texture3D(x))
         } else if let Some(x) = o.k38.as_ref() {
             Some(direct3d_11::UnknownRef::TracingDevice(x))
@@ -33432,7 +33506,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::Texture3D(x))
         } else if let Some(x) = o.k38.as_ref() {
             Some(direct3d_11::UnknownRef::TracingDevice(x))
-        } else if let Some(x) = o.s39.as_ref().or(o.k39.as_ref()) {
+        } else if let Some(x) = o.k39.as_ref() {
             Some(direct3d_11::UnknownRef::UnorderedAccessView(x))
         } else if let Some(x) = o.k40.as_ref() {
             Some(direct3d_11::UnknownRef::VertexShader(x))
@@ -33660,7 +33734,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::TracingDevice(x))
         } else if let Some(x) = o.k39.as_ref() {
             Some(direct3d_11::UnknownRef::UnorderedAccessView(x))
-        } else if let Some(x) = o.s40.as_ref().or(o.k40.as_ref()) {
+        } else if let Some(x) = o.k40.as_ref() {
             Some(direct3d_11::UnknownRef::VertexShader(x))
         } else if let Some(x) = o.k41.as_ref() {
             Some(direct3d_11::UnknownRef::VideoContext(x))
@@ -35848,7 +35922,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::UnorderedAccessView(x))
         } else if let Some(x) = o.k40.as_ref() {
             Some(direct3d_11::UnknownRef::VertexShader(x))
-        } else if let Some(x) = o.s41.as_ref().or(o.k41.as_ref()) {
+        } else if let Some(x) = o.k41.as_ref() {
             Some(direct3d_11::UnknownRef::VideoContext(x))
         } else if let Some(x) = o.k42.as_ref() {
             Some(direct3d_11::UnknownRef::VideoDecoder(x))
@@ -36113,7 +36187,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::VertexShader(x))
         } else if let Some(x) = o.k41.as_ref() {
             Some(direct3d_11::UnknownRef::VideoContext(x))
-        } else if let Some(x) = o.s42.as_ref().or(o.k42.as_ref()) {
+        } else if let Some(x) = o.k42.as_ref() {
             Some(direct3d_11::UnknownRef::VideoDecoder(x))
         } else if let Some(x) = o.k43.as_ref() {
             Some(direct3d_11::UnknownRef::VideoDecoderOutputView(x))
@@ -36374,7 +36448,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::VideoContext(x))
         } else if let Some(x) = o.k42.as_ref() {
             Some(direct3d_11::UnknownRef::VideoDecoder(x))
-        } else if let Some(x) = o.s43.as_ref().or(o.k43.as_ref()) {
+        } else if let Some(x) = o.k43.as_ref() {
             Some(direct3d_11::UnknownRef::VideoDecoderOutputView(x))
         } else if let Some(x) = o.k44.as_ref() {
             Some(direct3d_11::UnknownRef::VideoDevice(x))
@@ -37166,7 +37240,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::VideoDecoder(x))
         } else if let Some(x) = o.k43.as_ref() {
             Some(direct3d_11::UnknownRef::VideoDecoderOutputView(x))
-        } else if let Some(x) = o.s44.as_ref().or(o.k44.as_ref()) {
+        } else if let Some(x) = o.k44.as_ref() {
             Some(direct3d_11::UnknownRef::VideoDevice(x))
         } else if let Some(x) = o.k45.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessor(x))
@@ -37434,7 +37508,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::VideoDecoderOutputView(x))
         } else if let Some(x) = o.k44.as_ref() {
             Some(direct3d_11::UnknownRef::VideoDevice(x))
-        } else if let Some(x) = o.s45.as_ref().or(o.k45.as_ref()) {
+        } else if let Some(x) = o.k45.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessor(x))
         } else if let Some(x) = o.k46.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessorEnumerator(x))
@@ -37805,7 +37879,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::VideoDevice(x))
         } else if let Some(x) = o.k45.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessor(x))
-        } else if let Some(x) = o.s46.as_ref().or(o.k46.as_ref()) {
+        } else if let Some(x) = o.k46.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessorEnumerator(x))
         } else if let Some(x) = o.k47.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessorInputView(x))
@@ -38066,7 +38140,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::VideoProcessor(x))
         } else if let Some(x) = o.k46.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessorEnumerator(x))
-        } else if let Some(x) = o.s47.as_ref().or(o.k47.as_ref()) {
+        } else if let Some(x) = o.k47.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessorInputView(x))
         } else if let Some(x) = o.k48.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessorOutputView(x))
@@ -38327,7 +38401,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::VideoProcessorEnumerator(x))
         } else if let Some(x) = o.k47.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessorInputView(x))
-        } else if let Some(x) = o.s48.as_ref().or(o.k48.as_ref()) {
+        } else if let Some(x) = o.k48.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessorOutputView(x))
         } else if let Some(x) = o.k49.as_ref() {
             Some(direct3d_11::UnknownRef::DeviceContextState(x))
@@ -38558,7 +38632,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(direct3d_11::UnknownRef::VideoProcessorInputView(x))
         } else if let Some(x) = o.k48.as_ref() {
             Some(direct3d_11::UnknownRef::VideoProcessorOutputView(x))
-        } else if let Some(x) = o.s49.as_ref().or(o.k49.as_ref()) {
+        } else if let Some(x) = o.k49.as_ref() {
             Some(direct3d_11::UnknownRef::DeviceContextState(x))
         } else if let Some(x) = o.k50.as_ref() {
             Some(direct3d_11::UnknownRef::UserDefinedAnnotation(x))
@@ -38963,7 +39037,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        let v1 = if let Some(x) = o.s61.as_ref().or(o.k61.as_ref()) {
+        let v1 = if let Some(x) = o.k61.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
         } else if let Some(x) = o.k62.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
@@ -39554,7 +39628,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
         } else if let Some(x) = o.k63.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-        } else if let Some(x) = o.s64.as_ref().or(o.k64.as_ref()) {
+        } else if let Some(x) = o.k64.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Device(x))
         } else if let Some(x) = o.k65.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
@@ -40202,7 +40276,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ))
-        } else if let Some(x) = o.s66.as_ref().or(o.k66.as_ref()) {
+        } else if let Some(x) = o.k66.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
         } else if let Some(x) = o.k67.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
@@ -41099,7 +41173,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
         } else if let Some(x) = o.k68.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-        } else if let Some(x) = o.s69.as_ref().or(o.k69.as_ref()) {
+        } else if let Some(x) = o.k69.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
         } else if let Some(x) = o.k70.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Output(x))
@@ -41343,7 +41417,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else { return false; };
-        let v1 = if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.s70.as_ref().or(o.k70.as_ref()) { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None };
+        let v1 = if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None };
         failure_is_negative({ let answer = directx_graphics_infrastructure::Output1::find_closest_matching_mode1(this, &directx_graphics_infrastructure::structures::ModeDesc1 { width: 4_u32, height: 11_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 25_u32, denominator: 32_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED, stereo: true }, v1); answers.push(format!("IDXGIOutput1::FindClosestMatchingMode1 -> {}", format!("{:?}", &answer))); answer })
     });
     answers.not_called_since(noted, "IDXGIOutput1::FindClosestMatchingMode1 on Output");
@@ -41472,7 +41546,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else { return false; };
-        let v1 = if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.s70.as_ref().or(o.k70.as_ref()) { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None };
+        let v1 = if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None };
         failure_is_negative({ let answer = directx_graphics_infrastructure::Output::find_closest_matching_mode(this, &directx_graphics_infrastructure::structures::ModeDesc { width: 4_u32, height: 11_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 25_u32, denominator: 32_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, v1); answers.push(format!("IDXGIOutput::FindClosestMatchingMode -> {}", format!("{:?}", &answer))); answer })
     });
     answers.not_called_since(noted, "IDXGIOutput::FindClosestMatchingMode on Output");
@@ -41749,7 +41823,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
         } else if let Some(x) = o.k69.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-        } else if let Some(x) = o.s70.as_ref().or(o.k70.as_ref()) {
+        } else if let Some(x) = o.k70.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Output(x))
         } else if let Some(x) = o.k71.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
@@ -42041,7 +42115,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
         } else if let Some(x) = o.k70.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-        } else if let Some(x) = o.s71.as_ref().or(o.k71.as_ref()) {
+        } else if let Some(x) = o.k71.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
         } else if let Some(x) = o.k72.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
@@ -42314,7 +42388,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(directx_graphics_infrastructure::UnknownRef::Output(x))
         } else if let Some(x) = o.k71.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-        } else if let Some(x) = o.s72.as_ref().or(o.k72.as_ref()) {
+        } else if let Some(x) = o.k72.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
         } else if let Some(x) = o.k73.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
@@ -42549,7 +42623,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
         } else if let Some(x) = o.k72.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-        } else if let Some(x) = o.s73.as_ref().or(o.k73.as_ref()) {
+        } else if let Some(x) = o.k73.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
         } else if let Some(x) = o.k74.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
@@ -43336,7 +43410,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
         } else if let Some(x) = o.k73.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-        } else if let Some(x) = o.s74.as_ref().or(o.k74.as_ref()) {
+        } else if let Some(x) = o.k74.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
         } else if let Some(x) = o.k75.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(

@@ -237,6 +237,9 @@ pub(super) struct Writer<'g, 'a> {
     struct_values: RefCell<BTreeMap<String, String>>,
     /// For the recorder's known answers: the set's structures and enumerations, read from the interface crates.
     shapes: RefCell<hostile::Shapes>,
+    /// While the conformance suite writes one call: the kinds its arguments (and receiver) named so far, so that a kind
+    /// named again takes the suite's second object of it (none while any other writer writes a call).
+    seconds: RefCell<Option<Vec<usize>>>,
     /// Whether the codecs also write, per crate, a test of each mirror's offsets and size against the generator's own
     /// (the mirror-check build, never the crates the repository keeps).
     pub(super) mirror_check: std::cell::Cell<bool>,
@@ -261,6 +264,7 @@ impl<'g, 'a> Writer<'g, 'a> {
             hostile: std::cell::Cell::new(false),
             struct_values: RefCell::new(BTreeMap::new()),
             shapes: RefCell::new(hostile::Shapes::default()),
+            seconds: RefCell::new(None),
             mirror_check: std::cell::Cell::new(std::env::var_os("MIRROR_CHECK").is_some()),
             mirror_checks: RefCell::new(String::new()),
             union_tests: RefCell::new(Vec::new()),

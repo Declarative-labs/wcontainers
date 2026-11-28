@@ -7473,7 +7473,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         let Some(this) = o.k61.as_ref() else {
             return false;
         };
-        let v1 = if let Some(x) = o.s61.as_ref().or(o.k61.as_ref()) {
+        let v1 = if let Some(x) = o.k61.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
         } else if let Some(x) = o.k62.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
@@ -8064,7 +8064,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
         } else if let Some(x) = o.k63.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-        } else if let Some(x) = o.s64.as_ref().or(o.k64.as_ref()) {
+        } else if let Some(x) = o.k64.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Device(x))
         } else if let Some(x) = o.k65.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
@@ -8712,7 +8712,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ))
-        } else if let Some(x) = o.s66.as_ref().or(o.k66.as_ref()) {
+        } else if let Some(x) = o.k66.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
         } else if let Some(x) = o.k67.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
@@ -9609,7 +9609,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
         } else if let Some(x) = o.k68.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-        } else if let Some(x) = o.s69.as_ref().or(o.k69.as_ref()) {
+        } else if let Some(x) = o.k69.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
         } else if let Some(x) = o.k70.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Output(x))
@@ -9853,7 +9853,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else { return false; };
-        let v1 = if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.s70.as_ref().or(o.k70.as_ref()) { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None };
+        let v1 = if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None };
         failure_is_negative({ let answer = directx_graphics_infrastructure::Output1::find_closest_matching_mode1(this, &directx_graphics_infrastructure::structures::ModeDesc1 { width: 4_u32, height: 11_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 25_u32, denominator: 32_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED, stereo: true }, v1); answers.push(format!("IDXGIOutput1::FindClosestMatchingMode1 -> {}", format!("{:?}", &answer))); answer })
     });
     answers.not_called_since(noted, "IDXGIOutput1::FindClosestMatchingMode1 on Output");
@@ -9982,7 +9982,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else { return false; };
-        let v1 = if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.s70.as_ref().or(o.k70.as_ref()) { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None };
+        let v1 = if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None };
         failure_is_negative({ let answer = directx_graphics_infrastructure::Output::find_closest_matching_mode(this, &directx_graphics_infrastructure::structures::ModeDesc { width: 4_u32, height: 11_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 25_u32, denominator: 32_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, v1); answers.push(format!("IDXGIOutput::FindClosestMatchingMode -> {}", format!("{:?}", &answer))); answer })
     });
     answers.not_called_since(noted, "IDXGIOutput::FindClosestMatchingMode on Output");
@@ -10259,7 +10259,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
         } else if let Some(x) = o.k69.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-        } else if let Some(x) = o.s70.as_ref().or(o.k70.as_ref()) {
+        } else if let Some(x) = o.k70.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Output(x))
         } else if let Some(x) = o.k71.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
@@ -10551,7 +10551,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
         } else if let Some(x) = o.k70.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-        } else if let Some(x) = o.s71.as_ref().or(o.k71.as_ref()) {
+        } else if let Some(x) = o.k71.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
         } else if let Some(x) = o.k72.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
@@ -10824,7 +10824,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             Some(directx_graphics_infrastructure::UnknownRef::Output(x))
         } else if let Some(x) = o.k71.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-        } else if let Some(x) = o.s72.as_ref().or(o.k72.as_ref()) {
+        } else if let Some(x) = o.k72.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
         } else if let Some(x) = o.k73.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
@@ -11059,7 +11059,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
         } else if let Some(x) = o.k72.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-        } else if let Some(x) = o.s73.as_ref().or(o.k73.as_ref()) {
+        } else if let Some(x) = o.k73.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
         } else if let Some(x) = o.k74.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
@@ -11846,7 +11846,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
         } else if let Some(x) = o.k73.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-        } else if let Some(x) = o.s74.as_ref().or(o.k74.as_ref()) {
+        } else if let Some(x) = o.k74.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
         } else if let Some(x) = o.k75.as_ref() {
             Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
