@@ -1905,7 +1905,8 @@ impl Writer<'_, '_> {
         // A second object of each kind a creation both glues carry to the implementation makes, by the same creation (one a
         // glue refuses would make a second object directly and none through both glues).
         let carried = |place: &str| self.outcomes.borrow().get(place).is_some_and(|outcome| outcome.serving.iter().any(|what| what.starts_with("glued")) && outcome.calling.iter().any(|what| what.starts_with("glued")));
-        for maker in makers.iter().filter(|maker| maker.place.contains("::Create") && !maker.place.contains(" for ") && carried(&maker.place)) {
+        // (A creation that hands out its object by an interface id, `... for ID`, makes a second one the same way.)
+        for maker in makers.iter().filter(|maker| maker.place.contains("::Create") && carried(maker.place.split(" for ").next().unwrap_or_default())) {
             let [(kind, var)] = maker.stores.as_slice() else { continue };
             let answer = if maker.fallible { "answer.ok()" } else { "Some(answer)" };
             let _ = writeln!(text, "    // {}, a second time\n    if o.s{kind}.is_none() {{\n        let answer = {{\n            let o = &*o;\n            made(|| {{\n{}        let answer = {};\n        {answer}\n            }})\n        }};\n        if let Some({}) = answer {{\n            o.s{kind} = Some({var});\n        }}\n    }}", maker.place, maker.prelude, maker.call, maker.pattern);

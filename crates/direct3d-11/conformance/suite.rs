@@ -16768,6 +16768,937 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
             o.s73 = Some(p0);
         }
     }
+    // ID3D11Device5::CreateFence for AuthenticatedChannel, a second time
+    if o.s2.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::AuthenticatedChannel(p0)) = answer {
+            o.s2 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for BlendState, a second time
+    if o.s3.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_BLEND_STATE1,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::BlendState(p0)) = answer {
+            o.s3 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Buffer, a second time
+    if o.s4.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_BUFFER,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Buffer(p0)) = answer {
+            o.s4 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for ClassInstance, a second time
+    if o.s5.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_CLASS_INSTANCE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::ClassInstance(p0)) = answer {
+            o.s5 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for ClassLinkage, a second time
+    if o.s6.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_CLASS_LINKAGE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::ClassLinkage(p0)) = answer {
+            o.s6 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for CommandList, a second time
+    if o.s7.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_COMMAND_LIST,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::CommandList(p0)) = answer {
+            o.s7 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for ComputeShader, a second time
+    if o.s8.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_COMPUTE_SHADER,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::ComputeShader(p0)) = answer {
+            o.s8 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Counter, a second time
+    if o.s9.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_COUNTER,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Counter(p0)) = answer {
+            o.s9 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for CryptoSession, a second time
+    if o.s10.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_CRYPTO_SESSION,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::CryptoSession(p0)) = answer {
+            o.s10 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Debug, a second time
+    if o.s11.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_DEBUG,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Debug(p0)) = answer {
+            o.s11 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for DepthStencilState, a second time
+    if o.s12.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_STATE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::DepthStencilState(p0)) = answer {
+            o.s12 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for DepthStencilView, a second time
+    if o.s13.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_VIEW,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::DepthStencilView(p0)) = answer {
+            o.s13 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Device, a second time
+    if o.s14.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_DEVICE5,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Device(p0)) = answer {
+            o.s14 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for DeviceContext, a second time
+    if o.s15.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_DEVICE_CONTEXT4,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::DeviceContext(p0)) = answer {
+            o.s15 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for DomainShader, a second time
+    if o.s16.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_DOMAIN_SHADER,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::DomainShader(p0)) = answer {
+            o.s16 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Fence, a second time
+    if o.s17.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_FENCE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Fence(p0)) = answer {
+            o.s17 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for GeometryShader, a second time
+    if o.s18.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_GEOMETRY_SHADER,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::GeometryShader(p0)) = answer {
+            o.s18 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for HullShader, a second time
+    if o.s19.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_HULL_SHADER,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::HullShader(p0)) = answer {
+            o.s19 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for InfoQueue, a second time
+    if o.s20.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_INFO_QUEUE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::InfoQueue(p0)) = answer {
+            o.s20 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for InputLayout, a second time
+    if o.s21.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_INPUT_LAYOUT,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::InputLayout(p0)) = answer {
+            o.s21 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Multithread, a second time
+    if o.s22.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_MULTITHREAD,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Multithread(p0)) = answer {
+            o.s22 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for PixelShader, a second time
+    if o.s23.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_PIXEL_SHADER,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::PixelShader(p0)) = answer {
+            o.s23 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Predicate, a second time
+    if o.s24.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_PREDICATE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Predicate(p0)) = answer {
+            o.s24 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Query, a second time
+    if o.s25.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_QUERY1,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Query(p0)) = answer {
+            o.s25 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for RasterizerState, a second time
+    if o.s26.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_RASTERIZER_STATE2,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::RasterizerState(p0)) = answer {
+            o.s26 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for RefDefaultTrackingOptions, a second time
+    if o.s27.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_REF_DEFAULT_TRACKING_OPTIONS,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::RefDefaultTrackingOptions(p0)) = answer {
+            o.s27 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for RefTrackingOptions, a second time
+    if o.s28.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_REF_TRACKING_OPTIONS,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::RefTrackingOptions(p0)) = answer {
+            o.s28 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for RenderTargetView, a second time
+    if o.s29.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_RENDER_TARGET_VIEW1,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::RenderTargetView(p0)) = answer {
+            o.s29 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for SamplerState, a second time
+    if o.s30.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_SAMPLER_STATE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::SamplerState(p0)) = answer {
+            o.s30 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for ShaderResourceView, a second time
+    if o.s31.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_SHADER_RESOURCE_VIEW1,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::ShaderResourceView(p0)) = answer {
+            o.s31 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for ShaderTrace, a second time
+    if o.s32.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_SHADER_TRACE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::ShaderTrace(p0)) = answer {
+            o.s32 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for ShaderTraceFactory, a second time
+    if o.s33.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_SHADER_TRACE_FACTORY,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::ShaderTraceFactory(p0)) = answer {
+            o.s33 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for SwitchToRef, a second time
+    if o.s34.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_SWITCH_TO_REF,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::SwitchToRef(p0)) = answer {
+            o.s34 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Texture1D, a second time
+    if o.s35.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_TEXTURE_1D,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Texture1D(p0)) = answer {
+            o.s35 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Texture2D, a second time
+    if o.s36.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_TEXTURE_2D1,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Texture2D(p0)) = answer {
+            o.s36 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for Texture3D, a second time
+    if o.s37.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_TEXTURE_3D1,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::Texture3D(p0)) = answer {
+            o.s37 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for TracingDevice, a second time
+    if o.s38.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_TRACING_DEVICE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::TracingDevice(p0)) = answer {
+            o.s38 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for UnorderedAccessView, a second time
+    if o.s39.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_UNORDERED_ACCESS_VIEW1,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::UnorderedAccessView(p0)) = answer {
+            o.s39 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for VertexShader, a second time
+    if o.s40.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_VERTEX_SHADER,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::VertexShader(p0)) = answer {
+            o.s40 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for VideoContext, a second time
+    if o.s41.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_VIDEO_CONTEXT3,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::VideoContext(p0)) = answer {
+            o.s41 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for VideoDecoder, a second time
+    if o.s42.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::VideoDecoder(p0)) = answer {
+            o.s42 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for VideoDecoderOutputView, a second time
+    if o.s43.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER_OUTPUT_VIEW,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::VideoDecoderOutputView(p0)) = answer {
+            o.s43 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for VideoDevice, a second time
+    if o.s44.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_VIDEO_DEVICE2,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::VideoDevice(p0)) = answer {
+            o.s44 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for VideoProcessor, a second time
+    if o.s45.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::VideoProcessor(p0)) = answer {
+            o.s45 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for VideoProcessorEnumerator, a second time
+    if o.s46.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_ENUMERATOR1,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::VideoProcessorEnumerator(p0)) = answer {
+            o.s46 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for VideoProcessorInputView, a second time
+    if o.s47.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_INPUT_VIEW,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::VideoProcessorInputView(p0)) = answer {
+            o.s47 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for VideoProcessorOutputView, a second time
+    if o.s48.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_OUTPUT_VIEW,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::VideoProcessorOutputView(p0)) = answer {
+            o.s48 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for DeviceContextState, a second time
+    if o.s49.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D_DEVICE_CONTEXT_STATE,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::DeviceContextState(p0)) = answer {
+            o.s49 = Some(p0);
+        }
+    }
+    // ID3D11Device5::CreateFence for UserDefinedAnnotation, a second time
+    if o.s50.is_none() {
+        let answer = {
+            let o = &*o;
+            made(|| {
+                let this = o.k14.as_ref()?;
+                let answer = direct3d_11::Device5::create_fence(
+                    this,
+                    54_u64,
+                    direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                    &direct3d_11::constants::IID_ID3D_USER_DEFINED_ANNOTATION,
+                );
+                answer.ok()
+            })
+        };
+        if let Some(direct3d_11::UnknownObject::UserDefinedAnnotation(p0)) = answer {
+            o.s50 = Some(p0);
+        }
+    }
     o.kinds_held()
 }
 
