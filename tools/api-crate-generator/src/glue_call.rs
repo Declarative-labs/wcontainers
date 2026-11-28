@@ -246,6 +246,16 @@ impl Writer<'_, '_> {
         }
         for ((name, part), param) in glued.parts.iter().zip(&method.params) {
             match part {
+                // A value a pin lets pass only as zero (false, null) is passed as that zero: the caller's value never reaches
+                // the system.
+                Part::Value { .. } if holds.iter().any(|hold| match hold {
+                    Hold::Refuses { param, when, .. } => crate::names::value_name(param) == *name && (*when == "{}" || *when == "{} != 0"),
+                    Hold::NullOnly { param, .. } => crate::names::value_name(param) == *name,
+                    _ => false,
+                }) =>
+                {
+                    args.push("0".to_string());
+                }
                 Part::Value { .. } => args.push(Self::convert_out(part, name)),
                 Part::Count => {
                     let position = glued.parts.iter().position(|(n, _)| n == name).unwrap_or(0);

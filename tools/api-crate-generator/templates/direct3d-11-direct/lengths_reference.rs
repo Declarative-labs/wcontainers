@@ -445,7 +445,8 @@ pub(crate) fn region(left: u32, top: u32, front: u32, right: u32, bottom: u32, b
 pub(crate) fn pitches(row: u64, rows: u64) -> Vec<(u32, u32)> {
     let row = u32::try_from(row).unwrap_or(u32::MAX);
     let rows = u32::try_from(rows).unwrap_or(u32::MAX);
-    let padded = row.next_multiple_of(256);
+    // A row of u32::MAX bytes has no padded pitch: it stays the widest.
+    let padded = row.checked_next_multiple_of(256).unwrap_or(u32::MAX);
     vec![
         (row, row.saturating_mul(rows)),
         (padded, padded.saturating_mul(rows)),
@@ -472,11 +473,11 @@ pub(crate) fn boxes((width, height, depth): (u32, u32, u32)) -> Vec<Option<direc
         Some(region(0, height, 0, width, height, depth)),
         Some(region(0, 0, depth, width, height, depth)),
         Some(region(width, 0, 0, 0, height, depth)),
-        // Past each edge.
-        Some(region(0, 0, 0, width + 1, height, depth)),
-        Some(region(0, 0, 0, width, height + 1, depth)),
-        Some(region(0, 0, 0, width, height, depth + 1)),
     ];
+    // Past each edge, where a side has one more texel to name (a side of u32::MAX has none).
+    boxes.extend(width.checked_add(1).map(|past| Some(region(0, 0, 0, past, height, depth))));
+    boxes.extend(height.checked_add(1).map(|past| Some(region(0, 0, 0, width, past, depth))));
+    boxes.extend(depth.checked_add(1).map(|past| Some(region(0, 0, 0, width, height, past))));
     if width >= 8 && height >= 8 {
         // Aligned to 4 x 4 blocks, and a box of one texel in the middle of a block.
         boxes.push(Some(region(4, 4, 0, 8, 8, depth)));

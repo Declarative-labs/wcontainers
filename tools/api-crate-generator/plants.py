@@ -137,7 +137,9 @@ def call_plants(path, text):
             arguments = body[open_at + 1:close]
             for index, (s, e) in enumerate(split_arguments(arguments)):
                 argument = arguments[s:e].strip()
-                if argument.startswith("self.object.raw()"):
+                # The object itself, and a constant the glue passes in place of the caller's value (a pin's one value):
+                # no value of the caller's flows there to drop.
+                if argument.startswith("self.object.raw()") or re.fullmatch(r"0|false|null\(\)|null_mut\(\)", argument):
                     continue
                 pointer = any(word in argument for word in ("as_ptr", "as_mut_ptr", "null", "cast::<", "raw()", "into_raw", "address"))
                 new = "core::ptr::null_mut()" if pointer else "Default::default()"

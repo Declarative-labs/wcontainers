@@ -989,23 +989,13 @@ pub const UINT64_JUDGED: &[(&str, &str, Uint64)] = &[
 /// directly, by design, each with the reason (src/glue_hostile.rs `every_answer_and_argument_equals_the_reference`): any
 /// other difference fails the comparison.
 pub const SUITE_DIFFERENT: &[(&str, &str)] = &[
-    ("IDXGIInfoQueue::SetBreakOnCategory", "bEnable true is refused: a break into the debugger would stop the process"),
-    ("IDXGIInfoQueue::SetBreakOnSeverity", "bEnable true is refused: a break into the debugger would stop the process"),
-    ("IDXGIInfoQueue::SetBreakOnID", "bEnable true is refused: a break into the debugger would stop the process"),
-    ("ID3D11InfoQueue::SetBreakOnCategory", "bEnable true is refused: a break into the debugger would stop the process"),
-    ("ID3D11InfoQueue::SetBreakOnSeverity", "bEnable true is refused: a break into the debugger would stop the process"),
-    ("ID3D11InfoQueue::SetBreakOnID", "bEnable true is refused: a break into the debugger would stop the process"),
-    ("ID3D11Device::SetExceptionMode", "RaiseFlags other than 0 are refused: a raised exception would stop the process"),
     ("ID3D11VideoContext3::DecoderBeginFrame1", "the suite passes one histogram offset and no histogram buffer: two arrays of one count must have one length"),
     ("ID3D11Device::GetImmediateContext", "the serving glue answers the immediate context it holds, never asking the implementation again"),
     ("ID3D11Device1::GetImmediateContext1", "the serving glue answers the immediate context it holds, never asking the implementation again"),
     ("ID3D11Device2::GetImmediateContext2", "the serving glue answers the immediate context it holds, never asking the implementation again"),
     ("ID3D11Device3::GetImmediateContext3", "the serving glue answers the immediate context it holds, never asking the implementation again"),
-    ("ID3D11Device1::CreateDeviceContextState", "a row clears D3D11_1_CREATE_DEVICE_CONTEXT_STATE_SINGLETHREADED (bit 0) from the known flags"),
     ("ID3D11DeviceChild::GetDevice", "the serving glue answers the device it made the object with (every object the suite's creations made, and the immediate context), never asking the implementation; the method takes no argument"),
     ("ID3D11ClassInstance::GetClassLinkage", "the serving glue answers the class linkage it made the class instance with, never asking the implementation; the method takes no argument"),
-    ("D3D11CreateDevice", "the calling glue turns on the device's multithread protection (SetMultithreadProtected(TRUE)) before handing the device out"),
-    ("D3D11CreateDeviceAndSwapChain", "the calling glue turns on the device's multithread protection (SetMultithreadProtected(TRUE)) before handing the device out"),
 ];
 
 /// Arguments the conformance suite passes in place of its known values (method, argument, Rust expression in the
@@ -1037,6 +1027,24 @@ pub const SUITE_ARGUMENTS: &[(&str, &str, &str)] = &[
     ("ID3D11DeviceContext1::UpdateSubresource1", "src_data", "&[9_u8]"),
     // D3D11_COPY_DISCARD (0x2).
     ("ID3D11DeviceContext1::UpdateSubresource1", "copy_flags", "2_u32"),
+    // DXGI_SWAP_CHAIN_DESC within its documented ranges (checked_swap_chain): two 64 x 32 buffers of R8G8B8A8_UNORM at
+    // 60 Hz, one sample, for render target output (DXGI_USAGE_RENDER_TARGET_OUTPUT, 0x20), flipped in sequence
+    // (DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, 3), allowed to switch mode (DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH, 0x2).
+    ("D3D11CreateDeviceAndSwapChain", "swap_chain_desc", "Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 64_u32, height: 32_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 60_u32, denominator: 1_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(1), scaling: directx_graphics_infrastructure::enumerations::ModeScaling(1) }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 2_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::Usage(32), buffer_count: 2_u32, output_window: component_object_model::structures::Hwnd(29), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::SwapEffect(3), flags: 2_u32 })"),
+    // The swap chain's first buffer: within the two its description made.
+    ("IDXGISwapChain::GetBuffer", "buffer", "0_u32"),
+    // A break is never turned on (its row refuses TRUE), an exception never raised (its row refuses any flag): the one
+    // value each row passes.
+    ("IDXGIInfoQueue::SetBreakOnCategory", "b_enable", "false"),
+    ("IDXGIInfoQueue::SetBreakOnSeverity", "b_enable", "false"),
+    ("IDXGIInfoQueue::SetBreakOnID", "b_enable", "false"),
+    ("ID3D11InfoQueue::SetBreakOnCategory", "b_enable", "false"),
+    ("ID3D11InfoQueue::SetBreakOnSeverity", "b_enable", "false"),
+    ("ID3D11InfoQueue::SetBreakOnID", "b_enable", "false"),
+    ("ID3D11Device::SetExceptionMode", "raise_flags", "0_u32"),
+    // Bit 1, which the row passes (it clears only D3D11_1_CREATE_DEVICE_CONTEXT_STATE_SINGLETHREADED, bit 0): what
+    // reaches the implementation is then the bit given.
+    ("ID3D11Device1::CreateDeviceContextState", "flags", "2_u32"),
     // Vertex input slot 1 of 32, one buffer.
     ("ID3D11DeviceContext::IASetVertexBuffers", "start_slot", "1_u32"),
     // One render target in slot 0, then one unordered access view in slot 1 of 8.
@@ -1052,6 +1060,8 @@ pub const SUITE_ARGUMENTS: &[(&str, &str, &str)] = &[
 /// directly (method, the line the recorder logs, the reason): taken out before the conformance suite compares what the
 /// implementation received, and nothing else of the method's is.
 pub const SUITE_EXTRA_CALLS: &[(&str, &str, &str)] = &[
+    ("D3D11CreateDevice", "ID3D11Multithread::SetMultithreadProtected(b_mt_protect=true)", "the calling glue turns on the device's multithread protection before handing the device out"),
+    ("D3D11CreateDeviceAndSwapChain", "ID3D11Multithread::SetMultithreadProtected(b_mt_protect=true)", "the calling glue turns on the device's multithread protection before handing the device out"),
     ("ID3D11DeviceContext::Map", "ID3D11Buffer::GetDesc()", "the calling glue asks the buffer's description for the length a program may view of what the system mapped"),
     ("ID3D11DeviceContext::UpdateSubresource", "ID3D11Buffer::GetDesc()", "the calling glue asks the buffer's description for the length the upload's rule gives"),
     ("ID3D11DeviceContext1::UpdateSubresource1", "ID3D11Buffer::GetDesc()", "the calling glue asks the buffer's description for the length the upload's rule gives"),
