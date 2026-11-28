@@ -94,8 +94,8 @@ pub const BOUND: u32 = 256;
 /// them is not correct.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Omit {
-    /// The stop check at jumps back, at piece entries and after calls (not the one after a system call, which is
-    /// how the kernel stops a thread).
+    /// The stop check at jumps back, at piece entries and at returns (not the one after a system call, which is how
+    /// the kernel stops a thread).
     pub stop: bool,
     /// The page permission check, and with it `Guest::data_address`, which it makes.
     pub permissions: bool,

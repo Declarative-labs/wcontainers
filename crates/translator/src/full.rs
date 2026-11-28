@@ -3176,12 +3176,6 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         for (local, bit) in passed_in_only::<G>() {
             Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
         }
-        // The callee and what it called looked at their entries, but what they ran after that may reach the limit, so
-        // the caller looks before it carries on.
-        if !self.omit.stop {
-            let live = self.plan.live_after[&offset];
-            self.stop_check(Pc::Offset(next), AfterStop::Reload(live));
-        }
     }
 
     fn ret(&mut self, target: u32) {
@@ -3190,6 +3184,10 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         self.write_back_registers();
         let block = self.fixed(G_THREAD_BLOCK);
         crate::code::save_passed_in_only::<G>(&mut self.sink(), block);
+        // A return looks before the caller carries on, with every register and the flags still at hand to save.
+        if !self.omit.stop {
+            self.stop_check(Pc::Local(target), AfterStop::Reload(Registers::NONE));
+        }
         // The flags go back only when the caller asks for them.
         let flags = self.at.flags;
         let wanted = |e: &mut Self| {

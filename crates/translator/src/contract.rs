@@ -29,8 +29,8 @@
 //!
 //! **Where a thread looks at its stop flag.** Translated code looks (tests the flag, or with the progress count kept
 //! whether the count has reached its limit, and calls [`HOOK_STOP`] if so) at the entry of every piece, at every jump
-//! back inside a piece, right after every call returns to it, after every system call, and after an instruction that
-//! raises the flag; the thread module's bottom loop and the dispatcher run no guest instruction. So between two looks
+//! back inside a piece, at every return (with `pc` where it returns to), after every system call, and after an
+//! instruction that raises the flag; the thread module's bottom loop and the dispatcher run no guest instruction. So between two looks
 //! a thread runs instructions of one piece only, along a path with no jump back, each at most once: at most 1 at
 //! look-ahead none (and `Bounded(1)`), at most N at `Bounded(N)`, and at full at most the instructions of the
 //! translation's largest piece, which a translation of B bytes of code holds at most B / `Guest::ALIGN` of. A thread

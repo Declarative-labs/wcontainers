@@ -1,7 +1,7 @@
 //! Where a run looks for an interrupt: no path through translated code runs on without a look.
 //!
 //! The translator's contract ("Where a thread looks at its stop flag") puts a look at every piece's entry, at every jump
-//! back, right after every call returns and after every system call, so between two looks a thread runs the
+//! back, at every return and after every system call, so between two looks a thread runs the
 //! instructions of one piece at most, each at most once. With the progress count kept, as this executor keeps it, the
 //! interrupter sets the count's limit to zero and a slice sets it to the slice's end, and both are seen at the same
 //! looks. So a slice of a few events stops a run at the first look after them, which these tests state exactly; and an
