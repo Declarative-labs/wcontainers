@@ -16,23 +16,53 @@ use wcontainers_executor::{
 use wcontainers_volatile_bytes::VolatileBytes;
 use wcontainers_wasmtime::{Errno, Wasmtime};
 
-/// How many host pages each test's files and memories hold.
+/// Tuning number: how many host pages each test's files and memories hold.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const PAGES: usize = 4;
-/// The guard after each test's memories, in host pages.
+/// Tuning number: the guard after each test's memories, in host pages.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const GUARD_PAGES: usize = 2;
-/// A value the tests write and read back.
-const WORD: u64 = 0x0123_4567_89ab_cdef;
+/// A value the tests write and read back: every byte different, so that a byte out of place shows.
+const WORD: u64 = u64::from_le_bytes(*b"the_word");
 /// The name of each test's memory files, which only debugging shows.
-const FILE_NAME: &str = "wcontainers-wasmtime-conformance";
+const FILE_NAME: &str = env!("CARGO_PKG_NAME");
 /// The import the test module takes its memory from, and the names of its two functions.
 const MODULE: &str = "env";
 const MEMORY: &str = "memory";
 const LOAD: &str = "load";
 const STORE: &str = "store";
-/// The bytes of a WebAssembly page (WebAssembly Core Specification, memory instances).
+/// The bytes of a WebAssembly page.
+///
+/// <https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances>
 const WASM_PAGE_BYTES: u64 = 1 << 16;
+/// The reservation of the store test's engine: one WebAssembly page.
+const STORE_RESERVATION_BYTES: u64 = WASM_PAGE_BYTES;
+/// The WebAssembly pages of the store test's memory: all its reservation holds.
+const WASM_PAGES: usize = (STORE_RESERVATION_BYTES / WASM_PAGE_BYTES) as usize;
+/// A byte, by which the mappings the tests refuse are not whole host pages.
+const MISALIGNMENT: u64 = size_of::<u8>() as u64;
+/// The test module's one memory, the first.
+const MEMORY_INDEX: u32 = u32::MIN;
+/// The test module's types and functions: the load first, then the store.
+const LOAD_TYPE: u32 = u32::MIN;
+const STORE_TYPE: u32 = LOAD_TYPE + 1;
+const LOAD_FUNCTION: u32 = LOAD_TYPE;
+const STORE_FUNCTION: u32 = STORE_TYPE;
+/// The parameters of the test module's functions: the address, then the value stored.
+const ADDRESS_PARAMETER: u32 = u32::MIN;
+const VALUE_PARAMETER: u32 = ADDRESS_PARAMETER + 1;
 /// The guard after the store test's memory, which its engine is configured with: one WebAssembly page.
 const STORE_GUARD_BYTES: u64 = WASM_PAGE_BYTES;
+/// The growth test's memory: its pages at first and the most it grows to, all its host memory holds.
+const FIRST_PAGES: u64 = 1;
+const GROWN_PAGES: u64 = FIRST_PAGES + 1;
+/// The growth test module's two functions and their types: `memory.grow`, then `memory.size`.
+const GROW: &str = "grow";
+const SIZE: &str = "size";
+const GROW_TYPE: u32 = u32::MIN;
+const SIZE_TYPE: u32 = GROW_TYPE + 1;
 
 fn page() -> usize {
     rustix::param::page_size()
@@ -51,7 +81,7 @@ fn read_word<W: Wasmtime>(wasmtime: &W, memory: &W::HostMemory, at: u64) -> u64 
     let bytes = wasmtime
         .host_memory_bytes(memory, at..at + size_of::<u64>() as u64)
         .expect("offsets inside the memory");
-    let mut word = [0; size_of::<u64>()];
+    let mut word = [u8::MIN; size_of::<u64>()];
     assert_eq!(bytes.read(&mut word), word.len(), "the bytes read");
     u64::from_le_bytes(word)
 }
@@ -78,7 +108,7 @@ pub fn host_memory_shows_its_file<W: Wasmtime>(wasmtime: W) {
         .expect("a host memory");
     assert_eq!(read_word(&wasmtime, &memory, at), WORD, "the file's bytes");
     write_word(&wasmtime, &memory, at, !WORD);
-    let mut word = [0; size_of::<u64>()];
+    let mut word = [u8::MIN; size_of::<u64>()];
     rustix::io::pread(&file, &mut word, at).expect("a read of the file");
     assert_eq!(
         u64::from_le_bytes(word),
@@ -91,6 +121,21 @@ pub fn host_memory_shows_its_file<W: Wasmtime>(wasmtime: W) {
             .is_none(),
         "bytes past the length were lent"
     );
+    let whole = wasmtime
+        .host_memory_bytes(&memory, 0..length as u64)
+        .expect("the whole length");
+    assert_eq!(whole.len(), length as u64, "the whole length's bytes");
+    let mut last = [u8::MIN; size_of::<u64>()];
+    assert_eq!(
+        whole.read_at(at, &mut last),
+        last.len(),
+        "a read at an offset"
+    );
+    assert_eq!(u64::from_le_bytes(last), !WORD, "the bytes at the offset");
+    let none = wasmtime
+        .host_memory_bytes(&memory, at..at)
+        .expect("no bytes inside the length");
+    assert_eq!(none.len(), u64::MIN, "no bytes");
 }
 
 /// Checks that a file mapped into two memories shows each one's writes in the other.
@@ -106,7 +151,7 @@ pub fn map_file_shares_pages_between_memories<W: Wasmtime>(wasmtime: W) {
         .expect("a host memory");
     let page = page() as u64;
     assert_eq!(
-        wasmtime.map_file(&second, 2 * page..3 * page, first_file.as_fd(), page),
+        wasmtime.map_file(&second, 2 * page..2 * page + page, first_file.as_fd(), page),
         Ok(())
     );
     write_word(&wasmtime, &first, page, WORD);
@@ -163,9 +208,9 @@ pub fn mappings_that_could_fault_are_refused<W: Wasmtime>(wasmtime: W) {
     let page = page() as u64;
     let length = length as u64;
     for (addresses, offset) in [
-        (length - page..length + page, 0),
-        (1..page, 0),
-        (0..page, 1),
+        (length - page..length + page, u64::MIN),
+        (MISALIGNMENT..page, u64::MIN),
+        (u64::MIN..page, MISALIGNMENT),
         (0..page, length),
     ] {
         assert_eq!(
@@ -182,11 +227,11 @@ pub fn store_memory_is_the_host_memory<W: Wasmtime>(wasmtime: W) {
     config
         .wasm_memory64(true)
         .memory_may_move(false)
-        .memory_reservation(WASM_PAGE_BYTES)
+        .memory_reservation(STORE_RESERVATION_BYTES)
         .memory_guard_size(STORE_GUARD_BYTES);
     wasmtime.with_host_memory(&mut config);
     let engine = Engine::new(&config).expect("an engine");
-    let wasm_pages = 1;
+    let wasm_pages = WASM_PAGES;
     let length = usize::try_from(WASM_PAGE_BYTES).expect("a page fits") * wasm_pages;
     let file = sealed_file(length);
     let memory = wasmtime
@@ -220,6 +265,92 @@ pub fn store_memory_is_the_host_memory<W: Wasmtime>(wasmtime: W) {
         !WORD,
         "the word a guest stored"
     );
+}
+
+/// Checks that a store's memory over a host memory grows by WebAssembly's `memory.grow` inside the host memory alone.
+///
+/// <https://webassembly.github.io/spec/core/exec/instructions.html#xref-syntax-instructions-syntax-instr-memory-mathsf-memory-grow>
+pub fn store_memory_grows_inside_its_host_memory<W: Wasmtime>(wasmtime: W) {
+    let mut config = Config::new();
+    config
+        .wasm_memory64(true)
+        .memory_may_move(false)
+        .memory_reservation(GROWN_PAGES * WASM_PAGE_BYTES)
+        .memory_guard_size(STORE_GUARD_BYTES);
+    wasmtime.with_host_memory(&mut config);
+    let engine = Engine::new(&config).expect("an engine");
+    let length = usize::try_from(GROWN_PAGES * WASM_PAGE_BYTES).expect("a length fits");
+    let file = sealed_file(length);
+    let memory = wasmtime
+        .new_host_memory(file.as_fd(), length, STORE_GUARD_BYTES as usize)
+        .expect("a host memory");
+    let mut store = Store::new(&engine, ());
+    let ty = MemoryType::new64(FIRST_PAGES, Some(GROWN_PAGES));
+    let store_memory = wasmtime
+        .new_memory(&mut store, ty, &memory)
+        .expect("a store memory");
+    let module = wasmtime::Module::new(&engine, growing_module_bytes()).expect("a module");
+    let instance = Instance::new(&mut store, &module, &[store_memory.into()]).expect("an instance");
+    let grow: TypedFunc<u64, u64> = instance.get_typed_func(&mut store, GROW).expect("grow");
+    let size: TypedFunc<(), u64> = instance.get_typed_func(&mut store, SIZE).expect("size");
+    assert_eq!(size.call(&mut store, ()).expect("a size"), FIRST_PAGES);
+    assert_eq!(
+        grow.call(&mut store, GROWN_PAGES - FIRST_PAGES)
+            .expect("a growth"),
+        FIRST_PAGES,
+        "memory.grow gives the size before"
+    );
+    assert_eq!(size.call(&mut store, ()).expect("a size"), GROWN_PAGES);
+    assert_eq!(
+        grow.call(&mut store, FIRST_PAGES).expect("a growth"),
+        u64::MAX,
+        "memory.grow past the maximum gives -1"
+    );
+    assert_eq!(size.call(&mut store, ()).expect("a size"), GROWN_PAGES);
+}
+
+/// Returns a module importing a 64-bit memory of [`FIRST_PAGES`] to [`GROWN_PAGES`] pages that exports its
+/// `memory.grow` and its `memory.size`.
+fn growing_module_bytes() -> Vec<u8> {
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64], [ValType::I64]);
+    types.ty().function([], [ValType::I64]);
+    let mut imports = ImportSection::new();
+    imports.import(
+        MODULE,
+        MEMORY,
+        EntityType::Memory(wasm_encoder::MemoryType {
+            minimum: FIRST_PAGES,
+            maximum: Some(GROWN_PAGES),
+            memory64: true,
+            shared: false,
+            page_size_log2: None,
+        }),
+    );
+    let mut functions = FunctionSection::new();
+    functions.function(GROW_TYPE);
+    functions.function(SIZE_TYPE);
+    let mut exports = ExportSection::new();
+    exports.export(GROW, ExportKind::Func, GROW_TYPE);
+    exports.export(SIZE, ExportKind::Func, SIZE_TYPE);
+    let mut code = CodeSection::new();
+    let mut grow = Function::new([]);
+    grow.instructions()
+        .local_get(ADDRESS_PARAMETER)
+        .memory_grow(MEMORY_INDEX)
+        .end();
+    code.function(&grow);
+    let mut size = Function::new([]);
+    size.instructions().memory_size(MEMORY_INDEX).end();
+    code.function(&size);
+    let mut module = wasm_encoder::Module::new();
+    module
+        .section(&types)
+        .section(&imports)
+        .section(&functions)
+        .section(&exports)
+        .section(&code);
+    module.finish()
 }
 
 /// Checks that the handler is lent inside the call alone, and not twice at once.
@@ -274,9 +405,9 @@ impl TrapHandler for Counting {
 /// Returns a module importing a 64-bit memory of the pages that exports a load and a store of a word at an address.
 fn module_bytes(pages: u64) -> Vec<u8> {
     let word = MemArg {
-        offset: 0,
+        offset: u64::MIN,
         align: size_of::<u64>().trailing_zeros(),
-        target: MemArgTarget::Memory(0),
+        target: MemArgTarget::Memory(MEMORY_INDEX),
         ordering: None,
     };
     let mut types = TypeSection::new();
@@ -295,20 +426,23 @@ fn module_bytes(pages: u64) -> Vec<u8> {
         }),
     );
     let mut functions = FunctionSection::new();
-    functions.function(0);
-    functions.function(1);
+    functions.function(LOAD_TYPE);
+    functions.function(STORE_TYPE);
     let mut exports = ExportSection::new();
-    exports.export(LOAD, ExportKind::Func, 0);
-    exports.export(STORE, ExportKind::Func, 1);
+    exports.export(LOAD, ExportKind::Func, LOAD_FUNCTION);
+    exports.export(STORE, ExportKind::Func, STORE_FUNCTION);
     let mut code = CodeSection::new();
     let mut load = Function::new([]);
-    load.instructions().local_get(0).i64_load(word).end();
+    load.instructions()
+        .local_get(ADDRESS_PARAMETER)
+        .i64_load(word)
+        .end();
     code.function(&load);
     let mut store = Function::new([]);
     store
         .instructions()
-        .local_get(0)
-        .local_get(1)
+        .local_get(ADDRESS_PARAMETER)
+        .local_get(VALUE_PARAMETER)
         .i64_store(word)
         .end();
     code.function(&store);
@@ -344,6 +478,11 @@ macro_rules! tests {
         #[test]
         fn store_memory_is_the_host_memory() {
             $crate::store_memory_is_the_host_memory($wasmtime);
+        }
+
+        #[test]
+        fn store_memory_grows_inside_its_host_memory() {
+            $crate::store_memory_grows_inside_its_host_memory($wasmtime);
         }
 
         #[test]

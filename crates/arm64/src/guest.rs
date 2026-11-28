@@ -551,6 +551,10 @@ impl Guest for Arm64 {
         Offer::ALL.get(usize::try_from(key).ok()?).copied()
     }
 
+    fn address_windows(offer: Offer) -> bool {
+        offer.addresses == Addresses::Windows
+    }
+
     fn memory_fault(_address: u64, _code: &[u8], _block: &B) -> MemoryFault {
         MemoryFault::Page
     }

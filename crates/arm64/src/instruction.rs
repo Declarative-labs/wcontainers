@@ -495,18 +495,39 @@ pub const COUNTER_FREQUENCY: u64 = 1_000_000_000;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Offer {
     pub kept_registers: KeptRegisters,
+    pub addresses: Addresses,
 }
 
 impl Offer {
     /// Every offer, in the order of their keys.
-    pub const ALL: [Offer; 2] = [
+    pub const ALL: [Offer; 4] = [
         Offer {
             kept_registers: KeptRegisters::AnsweredInPlace,
+            addresses: Addresses::FourGib,
         },
         Offer {
             kept_registers: KeptRegisters::Trapped,
+            addresses: Addresses::FourGib,
+        },
+        Offer {
+            kept_registers: KeptRegisters::AnsweredInPlace,
+            addresses: Addresses::Windows,
+        },
+        Offer {
+            kept_registers: KeptRegisters::Trapped,
+            addresses: Addresses::Windows,
         },
     ];
+}
+
+/// The addresses a program's data accesses reach.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Addresses {
+    /// The 4 GiB from zero, each address its own place in the guest memory.
+    #[default]
+    FourGib,
+    /// The 2^48 bytes of a 48-bit virtual address, through the space's window table (the translator's contract).
+    Windows,
 }
 
 /// What EL0 gets from the system registers EL1 may keep from it: the counter registers, as

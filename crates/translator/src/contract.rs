@@ -67,6 +67,26 @@ pub const PERMISSIONS: &str = "permissions";
 /// or above `pages * PAGE_SIZE` fault.
 pub const PERMISSION_PAGES: &str = "permission_pages";
 
+// **Address windows.** A guest whose offer has them (`Guest::address_windows`) has 2^48 bytes of addresses,
+// cut into windows of [`WINDOW_BYTES`]. The window table, [`WINDOW_TABLE_BYTES`] that end where the permission
+// table starts, gives as an i64 where in the guest memory each window's bytes are, then the place given an address
+// above every window. Window 0 must be at 0, so that an address below [`WINDOW_BYTES`] is its own place in the
+// guest memory; the permission table byte of a place is that of its page, and the byte after the last of a window
+// says what the window's next addresses allow. An access checked on its own address, and found in window 0's pages
+// of the permission table, uses the address as it is; any other goes through the table, and a window the guest
+// does not have must give a place whose pages are at or past `permission_pages`. An access that runs past the end
+// of a window reaches the guest memory just past the window's place, which must then show the next window's first
+// page.
+
+/// The guest addresses one window holds: those a 32-bit offset reaches.
+pub const WINDOW_BYTES: u64 = 1 << u32::BITS;
+/// The windows of a guest with address windows: 2^48 bytes of addresses in windows of [`WINDOW_BYTES`].
+pub const WINDOWS: u64 = (1 << VIRTUAL_ADDRESS_BITS) / WINDOW_BYTES;
+/// The bits of a guest virtual address with address windows.
+pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
+/// The bytes of the window table: one i64 for each window and one for the addresses above them all.
+pub const WINDOW_TABLE_BYTES: u64 = (WINDOWS + 1) * size_of::<u64>() as u64;
+
 /// The lookup table, exported by the thread module. Slot 0 is always empty, so an address with no piece finds
 /// none. Slot [`EXACT_SLOT`] holds a piece for no address. The runner grows the table for the pieces it adds.
 pub const LOOKUP: &str = "lookup";
@@ -76,6 +96,8 @@ pub type SlotEntry = i32;
 pub const SLOT_BYTES: usize = size_of::<SlotEntry>();
 /// The log2 of [`SLOT_BYTES`].
 pub const SLOT_SHIFT: u32 = SLOT_BYTES.trailing_zeros();
+/// The lookup table slot that is always empty, which the array of slots gives an address with no piece.
+pub const EMPTY_SLOT: i32 = 0;
 /// The lookup table slot where [`HOOK_LOAD_CODE`] puts the piece of one instruction a thread must carry on in
 /// exactly.
 pub const EXACT_SLOT: i32 = 1;
@@ -106,6 +128,8 @@ pub const HOOK_SYSCALL: &str = "syscall";
 /// to run. Return 0 to carry on, or the unwind payload to unwind with: [`UNWIND_LEAVE`] to leave,
 /// [`UNWIND_GO_TO_EXACT`] to run the instruction at `pc` alone.
 pub const HOOK_STOP: &str = "stop";
+/// What [`HOOK_STOP`] returns to carry on.
+pub const STOP_CARRY_ON: i32 = 0;
 /// Hook `(address: i64, access: i32) -> i32`: an access the page permissions do not allow. Access is 0 for a
 /// read and 1 for a write. Registers are saved and `pc` is the instruction. Returns the unwind payload:
 /// [`UNWIND_LEAVE`] to leave, or [`UNWIND_GO_TO_EXACT`] once the fault is settled, to run the instruction
@@ -117,6 +141,10 @@ pub const HOOK_MEMORY_FAULT: &str = "memory_fault";
 /// address. Return 1 once the piece is in place, or 0 to leave. Registers are saved and `pc` is the
 /// address.
 pub const HOOK_LOAD_CODE: &str = "load_code";
+/// What [`HOOK_LOAD_CODE`] returns once the piece is in place.
+pub const LOAD_CODE_PLACED: i32 = 1;
+/// What [`HOOK_LOAD_CODE`] returns to leave.
+pub const LOAD_CODE_LEAVE: i32 = 0;
 /// Hook `(reason: i32, detail: i64)`: a slow path was taken; see [`Reason`].
 pub const HOOK_WARN: &str = "warn";
 /// Hook `(kind: i32, detail: i64)`: the instruction at `pc` (or the one before it, as the guest's trap

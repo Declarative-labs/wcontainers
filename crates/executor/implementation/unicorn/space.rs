@@ -334,9 +334,12 @@ impl VolatileBytes for UnicornBytes<'_> {
         self.addresses.end - self.addresses.start
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        let count = to_count(self.len()).min(into.len());
-        let start = self.addresses.start;
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let count = copied_count(self.len(), offset, into.len());
+        if count == usize::MIN {
+            return count;
+        }
+        let start = self.addresses.start + offset;
         let read = self.space.with_memory(move |memory| {
             let mut read = vec![u8::MIN; count];
             memory
@@ -348,9 +351,12 @@ impl VolatileBytes for UnicornBytes<'_> {
         count
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        let count = to_count(self.len()).min(bytes.len());
-        let start = self.addresses.start;
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let count = copied_count(self.len(), offset, bytes.len());
+        if count == usize::MIN {
+            return count;
+        }
+        let start = self.addresses.start + offset;
         let written = bytes[..count].to_vec();
         self.space.with_memory(move |memory| {
             memory
@@ -373,6 +379,12 @@ impl VolatileBytes for UnicornBytes<'_> {
         let count = source.read(&mut buffer)?;
         Ok(self.write(&buffer[..count]))
     }
+}
+
+/// Returns how many bytes a copy at the offset moves: the shorter of the buffer and what lies from the offset to the end
+/// (`wcontainers_volatile_bytes::copied`).
+fn copied_count(length: u64, offset: u64, buffer: usize) -> usize {
+    to_count(length.saturating_sub(offset)).min(buffer)
 }
 
 /// Returns the length as a count of host bytes, at most the most the host can count.

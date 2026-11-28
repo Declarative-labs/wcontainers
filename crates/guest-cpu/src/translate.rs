@@ -148,6 +148,11 @@ pub trait Guest: Personality {
     fn offer_from_key(key: u64) -> Option<Self::Offer> {
         (key == Self::offer_key(Self::Offer::default())).then(Self::Offer::default)
     }
+    /// Whether a program of the offer has address windows: 2^48 bytes of addresses, each 4 GiB of them shown from
+    /// where the space's window table says (the translator's contract).
+    fn address_windows(_offer: Self::Offer) -> bool {
+        false
+    }
 
     // --- what a memory fault is on this CPU ---
     /// The memory fault hook reported `address` (the first byte not allowed) for the instruction at the

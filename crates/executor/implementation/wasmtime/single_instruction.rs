@@ -16,6 +16,7 @@ use wcontainers_processor_architecture_arm64::{
 use wcontainers_volatile_bytes::VolatileBytes;
 use wcontainers_wasmtime::Wasmtime;
 
+use crate::space::SLOTS_COVER;
 use crate::thread::{Ending, Mode};
 use crate::{WasmtimeError, WasmtimeExecutor, WasmtimeMemory, WasmtimePageTable};
 
@@ -65,16 +66,27 @@ pub(crate) struct Scratch {
     steps: u32,
 }
 
-/// The single instructions run on one scratch space before it is made anew, which bounds what its store accumulates:
-/// an instance and lookup table slots for each instruction.
+/// The single instructions run on one scratch space before it is made anew, which bounds what its store accumulates.
+///
+/// The store gains an instance and lookup table slots for each instruction.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const SCRATCH_STEPS: u32 = 1 << 10;
+
+/// Returns whether a scratch space that ran `steps` instructions and gave `windows_given` windows runs the next one.
+///
+/// A space holds only so many windows, so one a state gave windows past window 0 is made anew.
+fn reusable(steps: u32, windows_given: u64) -> bool {
+    steps < SCRATCH_STEPS && windows_given == 1
+}
 
 impl BehaviorSource for WasmtimeExecutor {
     type Architecture = Arm64<User>;
     type Error = WasmtimeError;
 
-    /// Runs the instruction at the program counter on a scratch space holding the memory, and reports the bytes it
-    /// changed on the pages the memory lets it write.
+    /// Runs the instruction at the program counter on a scratch space holding the memory.
+    ///
+    /// It reports the bytes the instruction changed on the pages the memory lets it write.
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
@@ -82,7 +94,9 @@ impl BehaviorSource for WasmtimeExecutor {
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), WasmtimeError> {
         let mut scratch = match self.scratch.take() {
-            Some(scratch) if scratch.steps < SCRATCH_STEPS => scratch,
+            Some(scratch) if reusable(scratch.steps, scratch.memory.space.windows_given()) => {
+                scratch
+            }
             old => {
                 if let Some(old) = old {
                     self.forget(&old.memory.space);
@@ -91,7 +105,7 @@ impl BehaviorSource for WasmtimeExecutor {
                 Scratch {
                     memory,
                     table,
-                    steps: 0,
+                    steps: u32::MIN,
                 }
             }
         };
@@ -117,6 +131,10 @@ impl WasmtimeExecutor {
         memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), WasmtimeError> {
+        // Code runs only from addresses the array of slots covers.
+        if processor.program_counter >= SLOTS_COVER {
+            return Err(WasmtimeError::AddressOutsideSpace);
+        }
         let space = &scratch.memory;
         let mut assigned = Vec::new();
         let mut written = BTreeSet::new();
@@ -156,7 +174,7 @@ impl WasmtimeExecutor {
             }
         }
         let read_page = |page: u64| {
-            let mut bytes = vec![0; PAGE_SIZE as usize];
+            let mut bytes = vec![u8::MIN; PAGE_SIZE as usize];
             if let Ok(view) = space.borrow(page * PAGE_SIZE..(page + 1) * PAGE_SIZE) {
                 view.read(&mut bytes);
             }
@@ -169,7 +187,7 @@ impl WasmtimeExecutor {
         let start = processor.program_counter;
         let mode = Mode::Step {
             start,
-            stops: 0,
+            stopped: false,
             loaded: false,
         };
         let shared = self.shared.clone();
@@ -201,5 +219,19 @@ impl WasmtimeExecutor {
         }
         space.space.drop_every_load();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SCRATCH_STEPS, reusable};
+
+    #[test]
+    fn a_scratch_space_is_made_anew_after_its_steps_or_once_it_gave_a_window_past_window_0() {
+        assert!(reusable(u32::MIN, 1));
+        assert!(reusable(SCRATCH_STEPS - 1, 1));
+        assert!(!reusable(SCRATCH_STEPS, 1));
+        assert!(!reusable(u32::MIN, 2));
+        assert!(!reusable(SCRATCH_STEPS - 1, 8));
     }
 }

@@ -1,12 +1,13 @@
-//! What every executor of the process shares: the engine, the thread module, the probe's answer and the compiled
-//! translations, kept by the code they were made from.
+//! What every executor of the process shares: the engine, the thread module, the probe's answer and the translations.
+//!
+//! The compiled translations are kept by the code they were made from.
 
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use wasmtime::{Config, Engine, Instance, Module, Store};
-use wcontainers_arm64::{Arm64, KeptRegisters, Offer};
+use wcontainers_arm64::{Addresses, Arm64, KeptRegisters, Offer};
 use wcontainers_guest_cpu::Guest;
 use wcontainers_translator::contract;
 use wcontainers_translator::{LookAhead, Optimise, ProgressCount, translate};
@@ -25,15 +26,21 @@ pub(crate) struct Shared {
     translations: Mutex<HashMap<TranslationKey, Arc<Translated>>>,
 }
 
-/// What every program on this executor is told: every access to a register EL1 keeps from EL0 traps, and the kernel
-/// answers it as Linux does, the counter from its own clock, which replay needs.
+/// What every program on this executor is told: registers EL1 keeps trap, and data reaches 2^48 bytes of addresses.
+///
+/// The kernel answers each trapped access as Linux does, the counter from its own clock, which replay needs; data
+/// reaches the addresses through the space's windows.
 pub(crate) const OFFER: Offer = Offer {
     kept_registers: KeptRegisters::Trapped,
+    addresses: Addresses::Windows,
 };
 
-/// Tuning number: the translations kept for their code at most; all are let go when one more is made, as each compiled
-/// module holds mappings of its own and a process may map only so many (a single instruction's translation is one
-/// module, and the agreement test makes millions).
+/// Tuning number: the most translations kept for their code; all are let go when one more is made.
+///
+/// Each compiled module holds mappings of its own and a process may map only so many (a single instruction's
+/// translation is one module, and the agreement test makes millions).
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const KEPT_TRANSLATIONS: usize = 1 << 16;
 
 /// The translator's progress count, which bounds a run by the slice of its configuration.
@@ -48,8 +55,9 @@ struct TranslationKey {
     look_ahead: LookAhead,
 }
 
-/// A translation as wasmtime compiled it: its modules with each one's pieces, as code offsets in slot order, and the
-/// code offsets it read.
+/// A translation as wasmtime compiled it: its modules with their pieces, and the code offsets it read.
+///
+/// Each module's pieces are code offsets in slot order.
 pub(crate) struct Translated {
     pub(crate) modules: Vec<(Module, Vec<u64>)>,
     pub(crate) read: Vec<Range<u64>>,
@@ -100,8 +108,9 @@ impl Shared {
         }
     }
 
-    /// Returns the translation of the code from the start offset, compiled, from those kept or made now; none when the
-    /// translator refuses the code.
+    /// Returns the compiled translation of the code from the start offset, kept or made now.
+    ///
+    /// None when the translator refuses the code.
     pub(crate) fn translate(
         &self,
         code: &[u8],

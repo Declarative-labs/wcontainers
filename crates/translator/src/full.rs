@@ -48,6 +48,12 @@ pub(crate) fn plan<'a, G: Guest>(
     omit: Omit,
     optimise: Optimise,
 ) -> Planned<'a, G> {
+    // The module's exact permission function is given an address's place in the guest memory, which an address as
+    // the program computed it is only in window 0: with address windows every exact test is in place.
+    assert!(
+        !(G::address_windows(code.offer) && optimise == Optimise::Size),
+        "a translation with address windows is optimised for speed"
+    );
     let mut finder = Finder {
         code,
         decoded: Decodes::default(),
@@ -2436,8 +2442,17 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 .i64_add()
                 .local_set(at);
             let mut s = self.sink();
-            permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, page);
-            permission_exact::<G>(&mut s, at, piece, PAGE_READ | PAGE_WRITE, fault_at, exact);
+            // A frame is read and written.
+            let frame = page_bit(Access::Modify);
+            permission_fast(&mut s, table, at, frame, page);
+            permission_exact::<G>(
+                &mut s,
+                (at, Placed::AsComputed),
+                piece,
+                frame,
+                fault_at,
+                exact,
+            );
             let offset = self.at.offset;
             self.leave_to(offset);
             self.sink().end().end();
@@ -2469,6 +2484,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         Table {
             at: self.fixed(G_PERMISSIONS),
             pages: self.fixed(G_PERMISSION_PAGES),
+            windows: G::address_windows(self.code.offer),
         }
     }
 
@@ -2918,7 +2934,10 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         // A kept run's check is rare, so it reads the table's place from the module's globals rather than
         // keeping it alive through the loop.
         let table = if self.plan.kept.contains_key(&offset) {
-            Table::GLOBALS
+            Table {
+                windows: G::address_windows(self.code.offer),
+                ..Table::GLOBALS
+            }
         } else {
             self.table()
         };
@@ -2950,7 +2969,17 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 s.local_get(address).local_set(tagged);
                 G::data_address(&mut s, address);
                 s.local_set(address);
-                permission_exact::<G>(&mut s, address, bytes, this, fault_at, exact);
+                if table.windows {
+                    place_in_window(&mut s, table, address, page);
+                }
+                permission_exact::<G>(
+                    &mut s,
+                    (address, Placed::InMemory),
+                    bytes,
+                    this,
+                    fault_at,
+                    exact,
+                );
                 self.sites[Reason::MemoryFault as usize] += 1;
                 self.save(Pc::Offset(offset), true);
                 let mut s = self.sink();
@@ -2975,7 +3004,14 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                     .local_set(start);
                 let mut s = self.sink();
                 permission_fast(&mut s, table, start, this, page);
-                permission_exact::<G>(&mut s, start, len, this, fault_at, exact);
+                permission_exact::<G>(
+                    &mut s,
+                    (start, Placed::AsComputed),
+                    len,
+                    this,
+                    fault_at,
+                    exact,
+                );
                 self.leave_to(offset);
                 self.sink().end().end();
             }
@@ -2987,6 +3023,11 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         let allowed = self.temporary(ValType::I32);
         let table = self.table();
         let mut s = self.sink();
+        // Only guests without address windows (x86-64, the test guest) check a range.
+        assert!(
+            !table.windows,
+            "a range is checked only without address windows"
+        );
         G::data_address(&mut s, address);
         s.local_set(address);
         permission_range(

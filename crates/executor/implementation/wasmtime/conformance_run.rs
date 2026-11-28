@@ -15,8 +15,9 @@ use wcontainers_processor_architecture_arm64::{
     Arm64, DataAccess, InstructionFetch, PagePermission, Processor, User, ZERO_PROCESSOR,
 };
 
-/// Returns for every instruction the first known behavior that each state the executor executes meets, or its first
-/// known behavior where none does: the translator's set, measured.
+/// Returns the translator's set, measured: for each instruction its first known behavior every executed state meets.
+///
+/// An instruction where none does gets its first known behavior.
 ///
 /// The instructions are shared out among as many executors as the agreement test runs.
 fn list_translator_behaviors() -> MeasuredInstructionSet<Arm64<User>> {
@@ -54,8 +55,9 @@ fn list_translator_behaviors() -> MeasuredInstructionSet<Arm64<User>> {
     MeasuredInstructionSet::from_measurements(&measurements)
 }
 
-/// Returns the first known behavior of the instruction every state the executor executes meets, or its first known
-/// behavior where none does; none where it has no known behavior.
+/// Returns the first known behavior of the instruction that every state the executor executes meets.
+///
+/// Where none does it is the first known behavior, and where the instruction has none there is none.
 fn find_shown_behavior(
     executor: &mut WasmtimeExecutor,
     generator: &CriticalValueCut,
@@ -79,12 +81,12 @@ fn find_shown_behavior(
     Some(shown.unwrap_or(first))
 }
 
-/// The lowest address past a space's 4 GiB of addresses.
+/// An address past those whose code the array of slots covers, though in the space: code runs only below 4 GiB.
 const PAST_THE_SPACE: u64 = 1 << u32::BITS;
 /// BRK #0, the word the state the executor refuses runs.
 const BREAKPOINT_WORD: u32 = 0xD420_0000;
 
-/// Lists the states the executor refuses: one whose instruction lies past the addresses a space has.
+/// Lists the states the executor refuses: one whose instruction lies past the addresses code may run from.
 fn list_unexecutable_states() -> Vec<ExecutionState<'static, Arm64<User>>> {
     let at = PAST_THE_SPACE + LOWEST_ADDRESS;
     vec![ExecutionState {

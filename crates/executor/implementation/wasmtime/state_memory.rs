@@ -1,5 +1,6 @@
-//! The state memory every thread of a space shares with the executor, reached only through WebAssembly's own loads and
-//! stores, the way the translator's test runner reaches it.
+//! The state memory every thread of a space shares with the executor, reached only through WebAssembly's own accesses.
+//!
+//! The executor reaches it the way the translator's test runner does.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use wasm_encoder::{
@@ -181,7 +182,7 @@ impl StateMemory {
 
 /// Returns `at` as an offset in the state memory, a 32-bit memory.
 fn address(at: usize) -> u32 {
-    u32::try_from(at).expect("an offset inside a 32-bit memory")
+    u32::try_from(at).expect("an offset inside the state memory")
 }
 
 /// Returns the module compiled for an engine, once for each engine.
@@ -257,7 +258,11 @@ fn module_bytes() -> Vec<u8> {
         .local_get(FIRST_VALUE_PARAMETER)
         .memory_fill(STATE_INDEX)
         .end();
-    functions.push((vec![ValType::I32; 3], Vec::new(), f));
+    functions.push((
+        vec![ValType::I32, ValType::I32, ValType::I32],
+        Vec::new(),
+        f,
+    ));
     let mut f = Function::new([]);
     f.instructions()
         .local_get(OFFSET_PARAMETER)

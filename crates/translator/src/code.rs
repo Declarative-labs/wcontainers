@@ -897,33 +897,90 @@ impl Fixed {
     }
 }
 
-/// Where the permission table is: its place in the state memory and its length in pages.
+/// Where the permission table is: its place in the state memory, its length in pages, and whether the guest has
+/// address windows (see the contract), so that an address as the program computed it is found only in window 0.
 #[derive(Clone, Copy)]
 pub(crate) struct Table {
     pub(crate) at: Fixed,
     pub(crate) pages: Fixed,
+    pub(crate) windows: bool,
 }
+
+/// The pages of window 0, the only ones an address as the program computed it may be found in with address windows.
+pub(crate) const WINDOW_PAGES: i64 = (WINDOW_BYTES / wcontainers_abi::PAGE_SIZE) as i64;
 
 impl Table {
     pub(crate) const GLOBALS: Table = Table {
         at: Fixed::Global(G_PERMISSIONS),
         pages: Fixed::Global(G_PERMISSION_PAGES),
+        windows: false,
     };
+
+    /// Push the pages from the first an address of the kind may be found in.
+    pub(crate) fn push_pages(self, s: &mut InstructionSink<'_>, address: Placed) {
+        match (address, self.windows) {
+            (Placed::AsComputed, true) => {
+                s.i64_const(WINDOW_PAGES);
+            }
+            _ => self.pages.push(s),
+        }
+    }
+}
+
+/// What an address a check is given is: as the program computed it, or its place in the guest memory.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Placed {
+    AsComputed,
+    InMemory,
 }
 
 /// Push the permission table byte of the page of the address in i64 local `at`, leaving the page number in
-/// i64 local `page`. Pages past the table read the byte after it, which allows nothing.
-fn permission_byte(s: &mut InstructionSink<'_>, table: Table, at: u32, page: u32) {
+/// i64 local `page`. Pages past those an address of the kind may be found in read the byte after the table,
+/// which allows nothing.
+fn permission_byte(
+    s: &mut InstructionSink<'_>,
+    table: Table,
+    (at, address): (u32, Placed),
+    page: u32,
+) {
     s.local_get(at)
         .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shr_u()
         .local_tee(page);
     table.pages.push(s);
     s.local_get(page);
-    table.pages.push(s);
+    table.push_pages(s, address);
     s.i64_lt_u().select().i32_wrap_i64();
     table.at.push(s);
     s.i32_add().i32_load8_u(memarg(MEMORY_STATE, 0, 0));
+}
+
+/// Make the address in i64 local `at`, which data accesses use, its place in the guest memory: the window table's
+/// place of its window plus its low 32 bits. i64 local `window` is a temporary.
+pub(crate) fn place_in_window(s: &mut InstructionSink<'_>, table: Table, at: u32, window: u32) {
+    let windows = WINDOWS as i64;
+    s.local_get(at)
+        .i64_const(i64::from(u32::BITS))
+        .i64_shr_u()
+        .local_tee(window)
+        .i64_const(windows)
+        .local_get(window)
+        .i64_const(windows)
+        .i64_lt_u()
+        .select()
+        .i32_wrap_i64()
+        .i32_const(size_of::<u64>().trailing_zeros() as i32)
+        .i32_shl();
+    table.at.push(s);
+    s.i32_add()
+        .i32_const(-(WINDOW_TABLE_BYTES as i32))
+        .i32_add()
+        .i64_load(memarg(MEMORY_STATE, 0, natural_align::<u64>()))
+        .local_get(at)
+        .i64_const(i64::from(u32::MAX))
+        .i64_and()
+        .i64_add()
+        .local_set(at);
 }
 
 /// The permission table bits of the page an access needs.
@@ -955,7 +1012,7 @@ pub(crate) fn push_fault(
         Access::Read => s.i32_const(0),
         Access::Write => s.i32_const(1),
         Access::Modify => {
-            permission_byte(s, table, fault_at, page);
+            permission_byte(s, table, (fault_at, Placed::InMemory), page);
             s.i32_const(PAGE_READ.into())
                 .i32_and()
                 .i32_const(0)
@@ -1105,7 +1162,8 @@ pub(crate) fn permission_range(
 
 /// Open an `if` entered unless the page of the address in i64 local `at`, and the page after it, allow an
 /// access as `this` (permission table bits for one page) says. This is the fast test: it is also entered
-/// for an access that would be allowed but sits on a page before one that does not allow it.
+/// for an access that would be allowed but sits on a page before one that does not allow it, and with address
+/// windows for an address as the program computed it outside window 0.
 pub(crate) fn permission_fast(
     s: &mut InstructionSink<'_>,
     table: Table,
@@ -1117,7 +1175,7 @@ pub(crate) fn permission_fast(
     let both = this | (this << NEXT_PAGE_SHIFT);
     debug_assert_eq!(PAGE_READ << NEXT_PAGE_SHIFT, NEXT_PAGE_READ);
     debug_assert_eq!(PAGE_WRITE << NEXT_PAGE_SHIFT, NEXT_PAGE_WRITE);
-    permission_byte(s, table, at, page);
+    permission_byte(s, table, (at, Placed::AsComputed), page);
     s.i32_const(both.into())
         .i32_and()
         .i32_const(both.into())
@@ -1138,7 +1196,7 @@ pub(crate) enum Exact {
 /// caller writes the slow path and ends the `if`.
 pub(crate) fn permission_exact<G: Guest>(
     s: &mut InstructionSink<'_>,
-    at: u32,
+    (at, address): (u32, Placed),
     len: u32,
     this: u8,
     fault_at: u32,
@@ -1156,7 +1214,7 @@ pub(crate) fn permission_exact<G: Guest>(
         return;
     };
     let next = this << NEXT_PAGE_SHIFT;
-    permission_byte(s, table, at, page);
+    permission_byte(s, table, (at, address), page);
     // Bits wanted and missing: this page's, and the next page's if the access runs onto it.
     s.local_tee(allowed)
         .i32_const(-1)
@@ -1199,7 +1257,7 @@ fn permission_checker() -> wasm_encoder::Function {
     const ALLOWED: u32 = 4;
     let mut f = wasm_encoder::Function::new([(1, ValType::I64), (1, ValType::I32)]);
     let mut s = f.instructions();
-    permission_byte(&mut s, Table::GLOBALS, AT, PAGE);
+    permission_byte(&mut s, Table::GLOBALS, (AT, Placed::InMemory), PAGE);
     // Bits wanted and missing: this page's, and the next page's (two above) if the access runs onto it.
     debug_assert_eq!(PAGE_READ << NEXT_PAGE_SHIFT, NEXT_PAGE_READ);
     s.local_tee(ALLOWED)
@@ -1265,7 +1323,7 @@ pub(crate) fn keep_pages(
         .local_set(low);
     // The table bytes of the page and the seven after it, when they are all in the table.
     s.local_get(page).i64_const(PAGES_PER_LOAD).i64_add();
-    table.pages.push(s);
+    table.push_pages(s, Placed::AsComputed);
     s.i64_le_u().if_(BlockType::Result(ValType::I64));
     let every = i64::from(this) * EVERY_BYTE;
     s.i64_const(every);
@@ -1289,6 +1347,16 @@ pub(crate) fn keep_pages(
         .i64_const(i64::from(longest) - 1)
         .i64_sub()
         .local_set(room);
+    // With address windows only a run of window 0 is one whose addresses as computed are their places.
+    if table.windows {
+        s.local_get(room)
+            .i64_const(0)
+            .local_get(page)
+            .i64_const(WINDOW_PAGES)
+            .i64_lt_u()
+            .select()
+            .local_set(room);
+    }
 }
 
 // Type indices of a piece, the translator's own hooks, the dispatcher and the unwind tag; the guest's hooks
@@ -2021,12 +2089,24 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         self.sites[Reason::MemoryFault as usize] += 1;
         let pc = self.offset;
         let progress = self.progress();
+        let windows = G::address_windows(self.offer);
         let mut s = self.sink();
         s.local_get(address).local_set(tagged);
         G::data_address(&mut s, address);
         s.local_set(address);
+        if windows {
+            place_in_window(&mut s, Table::GLOBALS, address, page);
+        }
+        // The address is its place in the guest memory now, which the table finds whatever the window.
         permission_fast(&mut s, Table::GLOBALS, address, this, page);
-        permission_exact::<G>(&mut s, address, bytes, this, fault_at, Exact::Called);
+        permission_exact::<G>(
+            &mut s,
+            (address, Placed::InMemory),
+            bytes,
+            this,
+            fault_at,
+            Exact::Called,
+        );
         save::<G>(&mut s, progress, |s| {
             s.i64_const(pc as i64);
         });
@@ -2047,7 +2127,10 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
     fn check_range(&mut self, address: u32, length: u32, access: Access) -> u32 {
         let (page, last) = (self.local(ValType::I64), self.local(ValType::I64));
         let allowed = self.local(ValType::I32);
+        let windows = G::address_windows(self.offer);
         let mut s = self.sink();
+        // Only guests without address windows (x86-64, the test guest) check a range.
+        assert!(!windows, "a range is checked only without address windows");
         G::data_address(&mut s, address);
         s.local_set(address);
         permission_range(

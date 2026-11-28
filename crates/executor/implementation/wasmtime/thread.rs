@@ -1,5 +1,6 @@
-//! One thread's store on one space: its guest memory, its thread instance and lookup table, and the hooks the
-//! translated code calls, which ask the trap handler of the run in progress from inside the run.
+//! One thread's store on one space: its guest memory, its thread instance, its lookup table and its hooks.
+//!
+//! The hooks the translated code calls ask the trap handler of the run in progress from inside the run.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -38,17 +39,25 @@ use zerocopy::{FromBytes, IntoBytes};
 
 use crate::space::{GUEST_WASM_PAGES, PERMISSIONS_AT, SLOTS_AT, SLOTS_COVER, Space};
 
-/// The pages of code before a run-time start's page that its translation sees, to reach the loops it is in.
+/// Tuning number: the pages of code before a run-time start's page that its translation sees, to reach its loops.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const PAGES_BEHIND: u64 = 1;
-/// The pages of code from a run-time start's page on that its translation sees.
+/// Tuning number: the pages of code from a run-time start's page on that its translation sees.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const PAGES_AHEAD: u64 = 4;
-/// The most arguments one of the guest's own hooks takes.
+/// Tuning number: room for the arguments of the guest's own hooks, which a test checks every hook fits.
+///
+/// <https://github.com/Declarative-labs/wcontainers/blob/executor-wasmtime/docs/status-executor-wasmtime.md#tuning-numbers>
 const CPU_HOOK_ARGUMENTS: usize = 8;
 /// The import that gives a code module the guest's own hook at an index of `Arm64::HOOKS`.
 type CpuHookIndex = usize;
 /// The bit of an MRS or MSR word that is set in an MRS, [L](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-).
 const SYSTEM_MOVE_READ_BIT: u32 = 21;
 /// The op0 field of a system instruction's word: 2 or 3 in an MRS or MSR (register), 0 in an MSR (immediate).
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register->
 const SYSTEM_OP0: Field = Field::new(19, 2);
 
 /// How a thread runs.
@@ -56,11 +65,13 @@ const SYSTEM_OP0: Field = Field::new(19, 2);
 pub(crate) enum Mode {
     /// Until the handler ends it, at the look-ahead given for code reached at run time.
     Execute(LookAhead),
-    /// Exactly the one instruction at `start`: its piece is loaded once, and the thread stops at the second stop check
-    /// or wherever control goes after it.
+    /// Exactly the one instruction at `start`, whose piece is loaded once.
+    ///
+    /// The thread stops at the second stop check, the first having set `stopped`, or wherever control goes after the
+    /// instruction.
     Step {
         start: u64,
-        stops: u32,
+        stopped: bool,
         loaded: bool,
     },
 }
@@ -146,8 +157,8 @@ impl ThreadStore {
             hooks: Vec::new(),
             thread: None,
             table: None,
-            synced: 0,
-            narrowed_seen: 0,
+            synced: usize::MIN,
+            narrowed_seen: u64::MIN,
             exact: HashMap::new(),
             mode: Mode::Execute(LookAhead::AT_RUN_TIME),
             ending: None,
@@ -174,7 +185,7 @@ impl ThreadStore {
         let data = store.data_mut();
         data.memory = Some(memory);
         data.hooks = hooks;
-        let thread = instantiate(&mut store, &shared.thread_module, 0, 0);
+        let thread = instantiate(&mut store, &shared.thread_module, u64::MIN, u32::MIN);
         let Some(Extern::Table(table)) = thread.get_export(&mut store, contract::LOOKUP) else {
             panic!("the thread module exports its lookup table");
         };
@@ -192,8 +203,9 @@ impl ThreadStore {
         }
     }
 
-    /// Readies the thread to run from the processor in the mode, its interrupts going to the state given, and the run
-    /// bounded by slices of the progress events given.
+    /// Readies the thread to run from the processor in the mode, with its interrupts and slices as given.
+    ///
+    /// Its interrupts go to the state given, and the run is bounded by slices of the progress events given.
     pub(crate) fn prepare(
         &mut self,
         space: &Arc<Space>,
@@ -260,12 +272,17 @@ impl ThreadStore {
     ) -> Processor<()> {
         let data = self.store.data();
         let space = space_of(data);
-        let mut state = vec![0; thread_state_size::<Arm64>()];
+        let mut state = vec![u8::MIN; thread_state_size::<Arm64>()];
         space.state.read(
             usize::try_from(data.block).expect("a block offset"),
             &mut state,
         );
-        to_processor(&state, start, exception)
+        let mut processor = to_processor(&state, start, exception);
+        // The translated code keeps the place in the guest memory of the address an exclusive load reached.
+        if let ExclusiveMonitor::Exclusive { address } = &mut processor.exclusive_monitor {
+            *address = space.address_of_place(*address);
+        }
+        processor
     }
 
     /// Lets go of the space and of the interrupter after a run.
@@ -280,8 +297,9 @@ impl ThreadStore {
     }
 }
 
-/// Returns the thread's state bytes for the processor: its registers, the progress limit given with a count of zero,
-/// the float status kept exact from the start and an open exclusive monitor.
+/// Returns the thread's state bytes for the processor: its registers, the progress limit and the start of a run.
+///
+/// The progress count is zero, the float status is kept exact from the start and the exclusive monitor is open.
 fn thread_state(processor: &Processor<()>, limit: u64) -> Vec<u8> {
     let block = RegisterBlock {
         x: processor.general_purpose_registers,
@@ -297,7 +315,7 @@ fn thread_state(processor: &Processor<()>, limit: u64) -> Vec<u8> {
             .expect("the low half of FPCR"),
         tpidr_el0: processor.software_thread_id,
     };
-    let mut state = vec![0; thread_state_size::<Arm64>()];
+    let mut state = vec![u8::MIN; thread_state_size::<Arm64>()];
     state[..size_of::<RegisterBlock>()].copy_from_slice(block.as_bytes());
     state[FLOAT_TRACKING..FLOAT_TRACKING + size_of::<u32>()]
         .copy_from_slice(&u32::from(true).to_le_bytes());
@@ -306,8 +324,9 @@ fn thread_state(processor: &Processor<()>, limit: u64) -> Vec<u8> {
     state
 }
 
-/// Returns the processor of the thread's state bytes, with the exception, and the start's SVE predicates and PSTATE
-/// controls, which the translated code does not change.
+/// Returns the processor of the thread's state bytes, with the exception and what the code does not change.
+///
+/// The start gives the SVE predicates and PSTATE controls, which the translated code does not change.
 fn to_processor(
     state: &[u8],
     start: &Processor<()>,
@@ -373,8 +392,9 @@ fn leave_guest(data: &mut ThreadData) {
     }
 }
 
-/// Goes back into guest code after a hook: true when a narrowing since the thread last entered means it must leave and
-/// run again from its registers, in which case it stays out.
+/// Goes back into guest code after a hook, or stays out and returns true when a narrowing makes it run again.
+///
+/// A narrowing since the thread last entered means it must leave and run again from its registers.
 fn resume(caller: &mut Caller<'_, ThreadData>) -> bool {
     let seen = caller.data().narrowed_seen;
     enter_guest(caller);
@@ -440,8 +460,9 @@ fn grow_table(store: &mut impl AsContextMut<Data = ThreadData>, slots: u32) {
     }
 }
 
-/// Instantiates a module of the translator with its imports: the space's memories, the thread's constants and hooks,
-/// and the thread module's exports.
+/// Instantiates a module of the translator with its imports from the space, the thread and the thread module.
+///
+/// The imports are the space's memories, the thread's constants and hooks, and the thread module's exports.
 fn instantiate(
     store: &mut impl AsContextMut<Data = ThreadData>,
     module: &Module,
@@ -463,7 +484,7 @@ fn instantiate(
                 let value = match name {
                     contract::LOAD_ADDRESS => constant(Val::I64(load_address.cast_signed())),
                     contract::SLOT_BASE => constant(Val::I32(slot_base.cast_signed())),
-                    contract::TABLE_BASE => constant(Val::I64(0)),
+                    contract::TABLE_BASE => constant(Val::I64(i64::default())),
                     contract::SLOTS => constant(Val::I32(
                         i32::try_from(SLOTS_AT).expect("an offset in the state memory"),
                     )),
@@ -472,9 +493,9 @@ fn instantiate(
                     contract::PERMISSIONS => constant(Val::I32(
                         i32::try_from(PERMISSIONS_AT).expect("an offset in the state memory"),
                     )),
-                    contract::PERMISSION_PAGES => constant(Val::I64(
-                        (crate::space::GUEST_BYTES / PAGE_SIZE).cast_signed(),
-                    )),
+                    contract::PERMISSION_PAGES => {
+                        constant(Val::I64(crate::space::GUEST_PAGES.cast_signed()))
+                    }
                     _ => None,
                 };
                 let value = value.unwrap_or_else(|| panic!("no value for the import {name}"));
@@ -512,14 +533,15 @@ fn instantiate(
 
 /// Returns the thread's program counter as its block holds it.
 fn program_counter(data: &ThreadData) -> u64 {
-    let mut pc = [0; size_of::<u64>()];
+    let mut pc = [u8::MIN; size_of::<u64>()];
     let at = usize::try_from(data.block).expect("a block offset") + Arm64::PC_OFFSET;
     space_of(data).state.read(at, &mut pc);
     u64::from_le_bytes(pc)
 }
 
-/// Returns the fault status of an access to the address: a translation fault outside the 48 bits of addresses or on a
-/// page never given permissions, a permission fault otherwise.
+/// Returns the fault status of an access to the address: of translation where nothing is mapped, else of permission.
+///
+/// Nothing is mapped outside the 48 bits of addresses and on a page never given permissions.
 fn fault_status(space: &Space, address: u64) -> FaultStatus {
     if address >> VIRTUAL_ADDRESS_BITS != 0 {
         FaultStatus::TranslationFaultLevel0
@@ -543,7 +565,7 @@ fn ask<Returned>(
 }
 
 /// Answers the system call hook: the handler's answer goes to x0, or the run ends at the call.
-fn system_call(caller: &mut Caller<'_, ThreadData>, request: SystemCallRequest) -> i64 {
+fn answer_system_call(caller: &mut Caller<'_, ThreadData>, request: SystemCallRequest) -> i64 {
     leave_guest(caller.data_mut());
     let first = request.arguments[0].cast_signed();
     let returned = match caller.data().mode {
@@ -563,11 +585,12 @@ fn system_call(caller: &mut Caller<'_, ThreadData>, request: SystemCallRequest) 
             let data = caller.data();
             let space = space_of(data);
             let call = program_counter(data).wrapping_sub(INSTRUCTION_BYTES as u64);
-            let mut word = [0; INSTRUCTION_BYTES];
+            let mut word = [u8::MIN; INSTRUCTION_BYTES];
             let immediate = if space.read(call, &mut word) {
-                u16::try_from(IMM16.read(u32::from_le_bytes(word))).expect("a 16-bit immediate")
+                u16::try_from(IMM16.read(u32::from_le_bytes(word)))
+                    .expect("an immediate of the field's width")
             } else {
-                0
+                u16::MIN
             };
             space.raise_stop_flag(data.block);
             caller.data_mut().ending =
@@ -600,13 +623,13 @@ fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
     match caller.data().mode {
         Mode::Step {
             start,
-            stops,
+            stopped,
             loaded,
         } => {
-            if stops == 0 {
+            if !stopped {
                 caller.data_mut().mode = Mode::Step {
                     start,
-                    stops: 1,
+                    stopped: true,
                     loaded,
                 };
                 let data = caller.data();
@@ -614,7 +637,7 @@ fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
                 if resume(caller) {
                     return contract::UNWIND_LEAVE;
                 }
-                return 0;
+                return contract::STOP_CARRY_ON;
             }
             caller.data_mut().ending = Some(Ending::Stepped);
             contract::UNWIND_LEAVE
@@ -633,7 +656,7 @@ fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
             if resume(caller) {
                 contract::UNWIND_LEAVE
             } else {
-                0
+                contract::STOP_CARRY_ON
             }
         }
     }
@@ -700,7 +723,7 @@ fn memory_fault(caller: &mut Caller<'_, ThreadData>, computed: u64, write: bool)
 /// Returns whether the thread's instruction is DC CVAC or DC CIVAC, whose fault is a data abort of cache maintenance.
 fn is_cache_maintenance(data: &ThreadData) -> bool {
     let pc = program_counter(data);
-    let mut word = [0; INSTRUCTION_BYTES];
+    let mut word = [u8::MIN; INSTRUCTION_BYTES];
     pc.is_multiple_of(INSTRUCTION_BYTES as u64)
         && space_of(data).read(pc, &mut word)
         && matches!(
@@ -716,17 +739,17 @@ fn load_code(caller: &mut Caller<'_, ThreadData>, address: u64, exact: bool) -> 
     let look_ahead = match caller.data().mode {
         Mode::Step {
             start,
-            stops,
+            stopped,
             loaded,
         } => {
             // A step ends wherever control goes after its one instruction.
             if !exact && (address != start || loaded) {
                 caller.data_mut().ending = Some(Ending::Stepped);
-                return 0;
+                return contract::LOAD_CODE_LEAVE;
             }
             caller.data_mut().mode = Mode::Step {
                 start,
-                stops,
+                stopped,
                 loaded: true,
             };
             LookAhead::None
@@ -752,21 +775,25 @@ fn load_code(caller: &mut Caller<'_, ThreadData>, address: u64, exact: bool) -> 
                 status: fault_status(&space, address),
                 address,
             }));
-            return 0;
+            return contract::LOAD_CODE_LEAVE;
         }
     }
     if exact {
         place_exact(caller, &space, address);
     } else if !place_load(caller, &space, address, look_ahead) {
         caller.data_mut().ending = Some(Ending::Raised(Exception::UndefinedInstruction));
-        return 0;
+        return contract::LOAD_CODE_LEAVE;
     }
-    if resume(caller) { 0 } else { 1 }
+    if resume(caller) {
+        contract::LOAD_CODE_LEAVE
+    } else {
+        contract::LOAD_CODE_PLACED
+    }
 }
 
 /// Puts the piece of the one instruction at the address in the exact slot, from those made for its word before.
 fn place_exact(caller: &mut Caller<'_, ThreadData>, space: &Space, address: u64) {
-    let mut word = [0; INSTRUCTION_BYTES];
+    let mut word = [u8::MIN; INSTRUCTION_BYTES];
     let _ = space.read(address, &mut word);
     let key = (address, u32::from_le_bytes(word));
     let exact_slot = contract::EXACT_SLOT as u64;
@@ -779,7 +806,7 @@ fn place_exact(caller: &mut Caller<'_, ThreadData>, space: &Space, address: u64)
     }
     let translated = space
         .shared
-        .translate(&word, 0, LookAhead::None)
+        .translate(&word, u64::MIN, LookAhead::None)
         .expect("the translator takes one instruction");
     for (module, _) in &translated.modules {
         instantiate(caller, module, address, contract::EXACT_SLOT as u32);
@@ -790,8 +817,7 @@ fn place_exact(caller: &mut Caller<'_, ThreadData>, space: &Space, address: u64)
     caller.data_mut().exact.insert(key, piece);
 }
 
-/// Translates the code around the address from it and places the translation in every thread's lookup table; false
-/// when the translator refuses the code.
+/// Translates the code around the address and places it in every thread's lookup table; false when it is refused.
 fn place_load(
     caller: &mut Caller<'_, ThreadData>,
     space: &Arc<Space>,
@@ -803,13 +829,14 @@ fn place_load(
         address..address + INSTRUCTION_BYTES as u64
     } else {
         let run = space
-            .executable_run(address)
+            .find_executable_run(address)
             .expect("an address on a page that allows running code");
         let page = address - address % PAGE_SIZE;
         run.start.max(page.saturating_sub(PAGES_BEHIND * PAGE_SIZE))
             ..run.end.min(page + PAGES_AHEAD * PAGE_SIZE).min(SLOTS_COVER)
     };
-    let mut code = vec![0; usize::try_from(window.end - window.start).expect("a window of code")];
+    let mut code =
+        vec![u8::MIN; usize::try_from(window.end - window.start).expect("a window of code")];
     if !space.read(window.start, &mut code) {
         return false;
     }
@@ -836,7 +863,8 @@ fn trap(caller: &mut Caller<'_, ThreadData>, kind: i32, detail: i64) {
             u32::try_from(detail & i64::from(u32::MAX)).expect("an instruction word"),
         )),
         Some(TrapKind::Breakpoint) => Exception::Breakpoint {
-            comment: u16::try_from(detail & i64::from(u16::MAX)).expect("a 16-bit comment"),
+            comment: u16::try_from(detail & i64::from(u16::MAX))
+                .expect("a comment of the field's width"),
         },
         Some(TrapKind::Alignment) => alignment_fault(caller.data(), pc, detail.cast_unsigned()),
         _ => Exception::UndefinedInstruction,
@@ -852,12 +880,14 @@ fn trap(caller: &mut Caller<'_, ThreadData>, kind: i32, detail: i64) {
     });
 }
 
-/// Returns the exception of an alignment trap at `pc` whose detail is `address`: a data abort for an access that must
-/// be aligned and is not, at the address it computed; a fault of the program counter, which a branch left at
-/// `address`; or else a fault of the stack pointer, which an access through it found misaligned.
+/// Returns the exception of an alignment trap at `pc` whose detail is `address`.
+///
+/// It is a data abort for an access that must be aligned and is not, at the address it computed; a fault of the
+/// program counter, which a branch left at `address`; or else a fault of the stack pointer, which an access through it
+/// found misaligned.
 fn alignment_fault(data: &ThreadData, pc: u64, address: u64) -> Exception {
     use wcontainers_arm64::Instruction as I;
-    let mut word = [0; INSTRUCTION_BYTES];
+    let mut word = [u8::MIN; INSTRUCTION_BYTES];
     let read = pc.is_multiple_of(INSTRUCTION_BYTES as u64) && space_of(data).read(pc, &mut word);
     let access = match read.then(|| wcontainers_arm64::decode(u32::from_le_bytes(word))) {
         Some(I::StoreExclusive { rn, .. } | I::StoreRelease { rn, .. }) if rn != Reg::Sp => {
@@ -902,7 +932,7 @@ fn to_system_access(word: u32) -> SystemAccess {
 }
 
 /// Answers the guest's own code changed hook (ARM64 `ic ivau`): drops the code of the line holding the address.
-fn code_changed(caller: &mut Caller<'_, ThreadData>, address: u64, line: u64) {
+fn drop_changed_code(caller: &mut Caller<'_, ThreadData>, address: u64, line: u64) {
     leave_guest(caller.data_mut());
     let data = caller.data();
     let space = space_of(data);
@@ -915,14 +945,14 @@ fn code_changed(caller: &mut Caller<'_, ThreadData>, address: u64, line: u64) {
 }
 
 /// Answers the guest's own hook at the index with `Guest::run_hook` on the bytes of the thread's state it names.
-fn cpu_hook(
+fn run_cpu_hook(
     caller: &Caller<'_, ThreadData>,
     index: CpuHookIndex,
     values: &[Val],
     results: &mut [Val],
 ) {
     let hook = &Arm64::HOOKS[index];
-    let mut arguments = [0_i64; CPU_HOOK_ARGUMENTS];
+    let mut arguments = [i64::default(); CPU_HOOK_ARGUMENTS];
     for (argument, value) in arguments.iter_mut().zip(values) {
         *argument = match value {
             Val::I32(value) => i64::from(*value),
@@ -934,7 +964,7 @@ fn cpu_hook(
     let space = space_of(data);
     let range = hook.state.range();
     let at = usize::try_from(data.block).expect("a block offset") + range.start;
-    let mut bytes = vec![0; range.len()];
+    let mut bytes = vec![u8::MIN; range.len()];
     space.state.read(at, &mut bytes);
     let before = bytes.clone();
     let done = Arm64::run_hook(index, &arguments[..hook.params.len()], &mut bytes);
@@ -976,7 +1006,7 @@ fn make_hooks(store: &mut Store<ThreadData>) -> Vec<(&'static str, Func)> {
                         number: SystemCallNumber(number.cast_unsigned()),
                         arguments: [a0, a1, a2, a3, a4, a5].map(i64::cast_unsigned),
                     };
-                    system_call(&mut caller, request)
+                    answer_system_call(&mut caller, request)
                 },
             ),
         ),
@@ -1026,7 +1056,7 @@ fn make_hooks(store: &mut Store<ThreadData>) -> Vec<(&'static str, Func)> {
             HookBody::CodeChanged { line } => Func::wrap(
                 &mut *store,
                 move |mut caller: Caller<'_, ThreadData>, address: i64| {
-                    code_changed(&mut caller, address.cast_unsigned(), u64::from(line));
+                    drop_changed_code(&mut caller, address.cast_unsigned(), u64::from(line));
                 },
             ),
             HookBody::Cpu => {
@@ -1040,7 +1070,7 @@ fn make_hooks(store: &mut Store<ThreadData>) -> Vec<(&'static str, Func)> {
                     hook.results.iter().map(|&ty| val_type(ty)),
                 );
                 Func::new(&mut *store, ty, move |caller, values, results| {
-                    cpu_hook(&caller, index, values, results);
+                    run_cpu_hook(&caller, index, values, results);
                     Ok(())
                 })
             }
