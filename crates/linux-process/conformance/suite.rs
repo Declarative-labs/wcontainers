@@ -1049,9 +1049,11 @@ const LONGEST_PAUSE: u32 = 20_000;
 #[cfg(target_arch = "aarch64")]
 const STOP_STORM_SEARCH_START: usize = SEARCH_START * 19;
 
-/// Stops that land anywhere, in the run's own entry and exit instructions too, end a run only where its instructions
-/// may go on: a run stopped is run again from its frame until it exits, and then every register is what the
-/// instructions alone leave, however many stops came.
+/// Stops that land anywhere, in the run's own entry and exit instructions too, end a run only at an instruction of
+/// the mapping with the registers the instructions had there, or before it starts with the frame as it would start;
+/// and a run that exits leaves every register as the instructions alone leave it. A run stopped starts again from the
+/// first instruction, as the executor does (x23 is the first address at every start, so the instructions' own use of
+/// it does not go on from a stop).
 #[cfg(target_arch = "aarch64")]
 pub fn keeps_every_register_through_stops_that_land_anywhere<L: LinuxProcess + Sync>(linux: L)
 where
@@ -1080,7 +1082,20 @@ where
                 let start = frame.registers;
                 let end = loop {
                     match linux.run_instructions(&mut thread, code, &mut frame) {
-                        RunEnd::NotEntered | RunEnd::Stopped => stops += 1,
+                        RunEnd::NotEntered => stops += 1,
+                        RunEnd::Stopped => {
+                            stops += 1;
+                            let at = frame.registers;
+                            let inside =
+                                (pc..pc + rustix::param::page_size() as u64).contains(&at.pc);
+                            let kept = (0..wcontainers_linux_process::GENERAL_REGISTERS)
+                                .filter(|&r| ![EXIT_SCRATCH, WINDOW_BASE, FRAME, LINK].contains(&r))
+                                .all(|r| at.x[r] == start.x[r]);
+                            if !inside || !kept || at.sp != start.sp {
+                                wrong.push((run, RunEnd::Stopped, at.pc));
+                            }
+                            frame = frame_at(pc, 0, CODE_STACK);
+                        }
                         end => break end,
                     }
                 };

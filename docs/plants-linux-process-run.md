@@ -5,8 +5,10 @@ wcontainers-linux-process-direct` (the conformance suite and the earlier-handler
 from `naked_asm!(` to the first operand, every line that is an instruction (labels are not plants). Measured at
 0132e8f2c on Graviton4 (job nr-asm 20261127-211213, 4 copies of 3 jobs each, a test limit of 150 s).
 
-"caught (limit)" is a copy whose build and tests passed the 150 s limit at a machine load of about 300; it is not yet
-a verdict and is run again with no limit at a lower load.
+"caught (limit)" is a copy whose tests passed the 150 s limit; each such test binary was found still spinning more than
+three hours later (a hang, so caught). The exit's FPSR save (line 1293) is now caught by design: the every-register
+test sets every FPSR flag (after this plant run, not yet planted again). The saves and restores of d8 to d15 stay
+missed: a caller's values there are seen only by code built with optimization, and the tests are built without.
 
 | Line at 0132e8f2c | Instruction deleted | Verdict |
 |---|---|---|
