@@ -1136,7 +1136,8 @@ pub(crate) fn fdinfo_allowed(view: &View<'_>, entry: &Entry, caller: Tid) -> Res
 /// The state a thread stopped for its tracer shows (`TASK_TRACED` in `task_state_array`).
 const TRACING_STOP: (char, &str) = ('t', "tracing stop");
 
-/// The `TracerPid` of a thread no thread traces.
+/// The `TracerPid` of a thread no thread traces
+/// (<https://man7.org/linux/man-pages/man5/proc_pid_status.5.html#:~:text=TracerPid>).
 const NO_TRACER: Tid = 0;
 
 /// A thread's state (`get_task_state`): ended and not reaped (a process's first thread stays so

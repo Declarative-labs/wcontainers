@@ -9,10 +9,12 @@ use crate::linux::general::*;
 use crate::process::{Pid, Queued, Tid};
 use crate::{Context, Kernel};
 
-/// The signal a stopped thread goes on with when it is given none.
+/// The signal a stopped thread goes on with when it is given none
+/// (<https://man7.org/linux/man-pages/man2/ptrace.2.html#:~:text=If%20data%20is%20nonzero>).
 const NO_SIGNAL: u32 = 0;
 
-/// The CPU time a stop's SIGCHLD carries, 0 here as for a job control stop's.
+/// The CPU time a stop's SIGCHLD carries (`si_utime`), 0 here as for a job control stop's
+/// (<https://man7.org/linux/man-pages/man2/sigaction.2.html#:~:text=si%5Futime>).
 const STOP_TICKS: u64 = 0;
 
 /// A traced thread's link to its tracer (Linux's `ptrace` flags and `parent`).

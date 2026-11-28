@@ -16,13 +16,14 @@ use crate::trace::{Going, Stop, Trace};
 use crate::{Context, Errno, Kernel};
 
 /// The size of the word `PTRACE_PEEK*` and `PTRACE_POKE*` move (`unsigned long`).
-const WORD: u64 = size_of::<u64>() as u64;
+const TRACEE_WORD: u64 = size_of::<u64>() as u64;
 
 /// The size of a `siginfo` (`struct siginfo`).
 const SIGINFO: u64 = size_of::<siginfo>() as u64;
 
-/// What a request that succeeded and reads nothing back answers.
-const SUCCEEDED: u64 = 0;
+/// What a request that succeeded and reads nothing back answers
+/// (<https://man7.org/linux/man-pages/man2/ptrace.2.html#RETURN_VALUE>).
+const REQUEST_DONE: u64 = 0;
 
 pub(super) fn ptrace<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
@@ -65,7 +66,7 @@ pub(super) fn ptrace<S: crate::System, C: Executor + 'static>(
             let info = stop_of(kernel, target).info;
             guest(kernel, cx, tid)
                 .write(data, &info)
-                .map(|()| SUCCEEDED)
+                .map(|()| REQUEST_DONE)
         }
         Ok(PTRACE_SETSIGINFO) => {
             let bytes = guest(kernel, cx, tid).read(data, SIGINFO)?;
@@ -78,7 +79,7 @@ pub(super) fn ptrace<S: crate::System, C: Executor + 'static>(
             {
                 stop.info = info;
             }
-            Ok(SUCCEEDED)
+            Ok(REQUEST_DONE)
         }
         Ok(PTRACE_CONT) => resume(kernel, cx, tid, target, data, false),
         Ok(PTRACE_DETACH) => resume(kernel, cx, tid, target, data, true),
@@ -88,7 +89,7 @@ pub(super) fn ptrace<S: crate::System, C: Executor + 'static>(
             let uid = kernel.credentials(tid).uid;
             let info = crate::signal::sender_info(SIGKILL, SI_USER as i32, caller, uid);
             kernel.send_to_thread(cx, target, SIGKILL, info);
-            Ok(SUCCEEDED)
+            Ok(REQUEST_DONE)
         }
         _ => Err(Errno::EIO),
     }
@@ -102,7 +103,7 @@ fn trace_me(kernel: &mut Kernel, tid: Tid) -> Result<u64, Errno> {
     let tracer = kernel.process_of(tid).parent_thread;
     kernel.thread_mut(tid).trace = Some(Trace { tracer, stop: None });
     kernel.inspections.get_or_insert_default();
-    Ok(SUCCEEDED)
+    Ok(REQUEST_DONE)
 }
 
 /// Makes the caller trace `target` and sends it SIGSTOP from the kernel (`ptrace_attach`).
@@ -128,7 +129,7 @@ fn attach<S: crate::System, C: Executor + 'static>(
     });
     kernel.inspections.get_or_insert_default();
     kernel.send_to_thread(cx, target, SIGSTOP, crate::signal::kernel_info(SIGSTOP));
-    Ok(SUCCEEDED)
+    Ok(REQUEST_DONE)
 }
 
 /// Returns the stop of a thread [`ptrace`] found stopped.
@@ -153,11 +154,13 @@ fn peek<S: crate::System, C: Executor + 'static>(
 ) -> Result<u64, Errno> {
     let process = kernel.threads[&target].process;
     let word = super::process_guest(kernel, cx, process, tid, false)
-        .forced_read(crate::user::untagged(address), WORD);
-    if word.len() as u64 != WORD {
+        .forced_read(crate::user::untagged(address), TRACEE_WORD);
+    if word.len() as u64 != TRACEE_WORD {
         return Err(Errno::EIO);
     }
-    guest(kernel, cx, tid).put(data, &word).map(|()| SUCCEEDED)
+    guest(kernel, cx, tid)
+        .put(data, &word)
+        .map(|()| REQUEST_DONE)
 }
 
 /// Writes `data` as the word at `address` of the tracee's memory (`generic_ptrace_pokedata`).
@@ -174,10 +177,10 @@ fn poke<S: crate::System, C: Executor + 'static>(
     let process = kernel.threads[&target].process;
     let written = super::process_guest(kernel, cx, process, tid, false)
         .forced_write(crate::user::untagged(address), &data.to_le_bytes());
-    if written != WORD {
+    if written != TRACEE_WORD {
         return Err(Errno::EIO);
     }
-    Ok(SUCCEEDED)
+    Ok(REQUEST_DONE)
 }
 
 /// Lets the stopped tracee go on with signal `data` (`ptrace_resume`, `ptrace_detach`).
@@ -207,5 +210,5 @@ fn resume<S: crate::System, C: Executor + 'static>(
         tracer: tid,
     };
     kernel.resume_traced(cx, target, stop, &going);
-    Ok(SUCCEEDED)
+    Ok(REQUEST_DONE)
 }
