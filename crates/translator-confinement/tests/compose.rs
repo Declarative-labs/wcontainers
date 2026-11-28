@@ -328,13 +328,9 @@ impl Desc {
             Desc::StackMove { j, bb, cut } => {
                 format!("Desc::StackMove {{ j: {j}, bb: {bb}, cut: {cut} }}")
             }
-            Desc::StackStep {
-                j,
-                k,
-                off,
-                bb,
-                cut,
-            } => format!("Desc::StackStep {{ j: {j}, k: {k}, off: {off}, bb: {bb}, cut: {cut} }}"),
+            Desc::StackStep { j, k, off, bb, cut } => {
+                format!("Desc::StackStep {{ j: {j}, k: {k}, off: {off}, bb: {bb}, cut: {cut} }}")
+            }
             Desc::StackAccess {
                 j,
                 rt,
