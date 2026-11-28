@@ -4753,6 +4753,7 @@ dependencies = [
  "wcontainers-translator",
  "wcontainers-translator-test",
  "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
  "zerocopy",
 ]
 
@@ -4792,6 +4793,7 @@ dependencies = [
  "wcontainers-processor-architecture-arm64",
  "wcontainers-translator",
  "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
 ]
 
 [[package]]
@@ -5070,6 +5072,7 @@ dependencies = [
  "wcontainers-hypervisor-framework",
  "wcontainers-hypervisor-framework-conformance",
  "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
  "wcontainers-volatile-bytes-pointer",
 ]
 
@@ -5289,6 +5292,7 @@ dependencies = [
  "wcontainers-kvm",
  "wcontainers-kvm-conformance",
  "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
  "wcontainers-volatile-bytes-pointer",
 ]
 
