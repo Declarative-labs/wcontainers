@@ -1,0 +1,20 @@
+[package]
+name = "wcontainers-memory-shard-shared-bytes"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-memory-shard = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+
+[package.metadata.verus]
+verify = true
+
+[lints]
+workspace = true
