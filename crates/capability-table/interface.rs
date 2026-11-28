@@ -5,23 +5,19 @@ use vstd::prelude::*;
 
 verus! {
 
-pub trait CapabilityTable<Identifier, Capability> {
-    type Config;
-
-    type Error;
-
+pub trait CapabilityTable<Identifier, Capability, Config: CapabilityConfig<Capability>, Error> {
     spec fn state(&self) -> Map<Identifier, Capability>;
 
-    fn create(&mut self, identifier: Identifier, config: Self::Config) -> (created: Result<
+    fn create(&mut self, identifier: Identifier, config: Config) -> (created: Result<
         (),
-        CreateError<Self::Error>,
+        CreateError<Error>,
     >)
         ensures
             match created {
                 Ok(_) => !old(self).state().contains_key(identifier)
                     && final(self).state().contains_key(identifier) && final(self).state().remove(
                     identifier,
-                ) == old(self).state(),
+                ) == old(self).state() && config.describes(final(self).state().index(identifier)),
                 Err(CreateError::IdentifierTaken) => old(self).state().contains_key(identifier)
                     && final(self).state() == old(self).state(),
                 Err(CreateError::Failed(_)) => !old(self).state().contains_key(identifier)
@@ -47,7 +43,7 @@ pub trait CapabilityTable<Identifier, Capability> {
         &mut self,
         identifier: &Identifier,
         new_identifier: Identifier,
-    ) -> (duplicated: Result<(), DuplicateError<Self::Error>>)
+    ) -> (duplicated: Result<(), DuplicateError<Error>>)
         ensures
             match duplicated {
                 Ok(_) => old(self).state().contains_key(*identifier) && !old(
@@ -72,7 +68,7 @@ pub trait CapabilityTable<Identifier, Capability> {
         other: &Self,
         identifier: &Identifier,
         new_identifier: Identifier,
-    ) -> (duplicated: Result<(), DuplicateError<Self::Error>>)
+    ) -> (duplicated: Result<(), DuplicateError<Error>>)
         ensures
             match duplicated {
                 Ok(_) => other.state().contains_key(*identifier) && !old(self).state().contains_key(
@@ -92,6 +88,11 @@ pub trait CapabilityTable<Identifier, Capability> {
                 ).state().contains_key(new_identifier) && final(self).state() == old(self).state(),
             },
     ;
+}
+
+pub trait CapabilityConfig<Capability> {
+    /// Whether a capability is what this config asks for.
+    spec fn describes(self, capability: Capability) -> bool;
 }
 
 #[derive(Debug, Error)]

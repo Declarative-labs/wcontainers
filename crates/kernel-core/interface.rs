@@ -1,40 +1,42 @@
 #![no_std]
 
+pub mod execution;
+pub mod memory;
+pub mod processor_state;
+
 use vstd::prelude::*;
-use wcontainers_capability_table::CapabilityTable;
-use wcontainers_memory_shard::MemoryShard;
+
+use crate::execution::{Execution, Interrupter};
+use crate::memory::TaskMemory;
+use crate::processor_state::TaskProcessorState;
 
 verus! {
 
 /// All of a kernel except its userspace ABI.
-pub trait KernelCore {
+pub trait KernelCore: TaskMemory<Self::Task> + TaskProcessorState<Self::Task> {
     /// An individual thread of execution, with its own set of capabilities.
     type Task;
-
-    type Memory: MemoryShard;
-
-    type Capabilities: CapabilityTable<u64, Self::Memory>;
-
-    spec fn capabilities_of(task: Self::Task) -> Self::Capabilities;
-
-    fn capabilities(task: &Self::Task) -> (capabilities: &Self::Capabilities)
-        ensures
-            *capabilities == Self::capabilities_of(*task),
-    ;
-
-    fn capabilities_mut(task: &mut Self::Task) -> (capabilities: &mut Self::Capabilities)
-        ensures
-            *capabilities == Self::capabilities_of(*old(task)),
-            Self::capabilities_of(*final(task)) == *final(capabilities),
-    ;
 
     type CreateTaskError;
 
     fn create_task(&mut self) -> (created: Result<Self::Task, Self::CreateTaskError>)
         ensures
-            created matches Ok(task) ==> CapabilityTable::<u64, Self::Memory>::state(
-                &Self::capabilities_of(task),
-            ) == Map::<u64, Self::Memory>::empty(),
+            created matches Ok(task) ==> memory::holds_no_memory(
+                Self::memory_capabilities_of(task),
+            ),
+    ;
+
+    type Execution<'task>: Execution<'task, Self::Task, Self> where Self::Task: 'task;
+
+    type Interrupter: Interrupter;
+
+    fn prepare_execution(task: &mut Self::Task) -> (prepared: (
+        Self::Execution<'_>,
+        Self::Interrupter,
+    ))
+        ensures
+            *prepared.0.task() == *old(task),
+            *final(prepared.0.task()) == *final(task),
     ;
 }
 
