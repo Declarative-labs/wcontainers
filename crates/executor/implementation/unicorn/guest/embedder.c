@@ -36,6 +36,9 @@
 //   signals: takes signals of several kinds (queued, blocked then let through, sent by another
 //     thread during a read, a fault), one taken by sigwaitinfo and one ignored, and prints each
 //     its handlers saw, in order.
+//   ptrace: a child traces its own child, stopped, through pages of data both never touch: the
+//     stop's information into one, a word of the tracee's into another, information from a
+//     third, a word into the tracee's fifth page and back out into its own sixth; prints each.
 //   interrupted SENDER: a child reads an empty pipe into the buffer until a SIGUSR1 interrupts
 //     it; the parent sends it with sigqueue (SENDER parent) or leaves it to the embedder (none).
 //   sharing: maps shared memory in every way it can start and end (a file read-only, then
@@ -1002,6 +1005,41 @@ static int vm(void) {
     return 0;
 }
 
+// Pages of initialised data the program itself never touches, which ptrace's requests copy into
+// and out of in the tracer and in the tracee.
+static char traced_pages[REMOTE_ALIGNMENT] __attribute__((aligned(REMOTE_ALIGNMENT))) = "initialised";
+#define TRACED_PAGE(n) (traced_pages + (n) * 4096)
+
+static int traced(void) {
+    pid_t tracer = fork();
+    if (tracer == 0) {
+        pid_t tracee = fork();
+        if (tracee == 0) {
+            syscall(SYS_ptrace, 0 /* PTRACE_TRACEME */, 0, 0, 0);
+            raise(SIGSTOP);
+            _exit(0);
+        }
+        int status = 0;
+        waitpid(tracee, &status, 0);
+        long done = syscall(SYS_ptrace, 0x4202 /* PTRACE_GETSIGINFO */, tracee, 0, TRACED_PAGE(1));
+        printf("getsiginfo %ld signal %d\n", done, ((siginfo_t *)TRACED_PAGE(1))->si_signo);
+        done = syscall(SYS_ptrace, 2 /* PTRACE_PEEKDATA */, tracee, TRACED_PAGE(0), TRACED_PAGE(2));
+        printf("peekdata %ld %.8s\n", done, TRACED_PAGE(2));
+        done = syscall(SYS_ptrace, 0x4203 /* PTRACE_SETSIGINFO */, tracee, 0, TRACED_PAGE(3));
+        printf("setsiginfo %ld\n", done);
+        done = syscall(SYS_ptrace, 5 /* PTRACE_POKEDATA */, tracee, TRACED_PAGE(4), 0x2164656b6f70l);
+        printf("pokedata %ld\n", done);
+        done = syscall(SYS_ptrace, 2 /* PTRACE_PEEKDATA */, tracee, TRACED_PAGE(4), TRACED_PAGE(5));
+        printf("peekdata %ld %.8s\n", done, TRACED_PAGE(5));
+        kill(tracee, SIGKILL);
+        waitpid(tracee, &status, 0);
+        fflush(stdout);
+        _exit(0);
+    }
+    waitpid(tracer, NULL, 0);
+    return 0;
+}
+
 static int proc_strings(const char *file, const char *whose) {
     int parent = !strcmp(whose, "parent");
     pid_t reader = parent ? fork() : 0;
@@ -1292,6 +1330,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "proxy")) return proxy();
     if (!strcmp(mode, "exec") && argc > 4) return exec_program(argv[4]);
     if (!strcmp(mode, "vm")) return vm();
+    if (!strcmp(mode, "ptrace")) return traced();
     if (!strcmp(mode, "signals")) return signals();
     if (!strcmp(mode, "sharing")) return sharing();
     if (!strcmp(mode, "suspend")) return suspend_threads();

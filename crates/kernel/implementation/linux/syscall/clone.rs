@@ -521,9 +521,6 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
                 Which::Group(group_wanted) => kernel.processes[&process].group == group_wanted,
             },
         );
-    if children.is_empty() && !away && traced.is_empty() {
-        return Err(Errno::ECHILD);
-    }
     // A stop for the caller's process is reported whatever the options ask for, as a trap
     // (`wait_task_stopped` for ptrace).
     if let Some(&(stopped, Some(signal))) = traced.iter().find(|(_, stop)| stop.is_some()) {

@@ -17,8 +17,8 @@ use crate::linux::ioctl::*;
 use crate::linux::net::{mmsghdr, msghdr};
 use crate::linux::prctl::*;
 use crate::linux::ptrace::{
-    PTRACE_GETSIGINFO, PTRACE_PEEKDATA, PTRACE_PEEKTEXT, PTRACE_SETSIGINFO,
-    SECCOMP_GET_ACTION_AVAIL, SECCOMP_GET_NOTIF_SIZES, SECCOMP_SET_MODE_FILTER,
+    PTRACE_GETSIGINFO, PTRACE_PEEKDATA, PTRACE_PEEKTEXT, PTRACE_POKEDATA, PTRACE_POKETEXT,
+    PTRACE_SETSIGINFO, SECCOMP_GET_ACTION_AVAIL, SECCOMP_GET_NOTIF_SIZES, SECCOMP_SET_MODE_FILTER,
     seccomp_notif_sizes, sock_filter, sock_fprog,
 };
 use crate::linux::system::{new_utsname, sysinfo};
@@ -691,14 +691,26 @@ pub(crate) fn touch<S: crate::System, C: Executor + 'static>(
                 )
                 && sized(memory, a3, mount_id, write)
         }
-        // What a request copies in the caller's memory: a peeked word out, a signal's
-        // information out or in.
-        __NR_ptrace => match u32::try_from(a0) {
-            Ok(PTRACE_PEEKTEXT | PTRACE_PEEKDATA) => sized(memory, a3, size_of::<u64>(), write),
-            Ok(PTRACE_GETSIGINFO) => sized(memory, a3, size_of::<siginfo>(), write),
-            Ok(PTRACE_SETSIGINFO) => sized(memory, a3, size_of::<siginfo>(), read),
-            _ => true,
-        },
+        // What a request copies: a word of a stopped tracee's memory read out into the caller's or
+        // written, a signal's information out or in.
+        __NR_ptrace => {
+            let word = size_of::<u64>() as u64;
+            let tracee = memory.stopped_tracee(a1);
+            let mut reach = |access| {
+                tracee.is_none_or(|pid| {
+                    memory.touch_process(pid, crate::user::untagged(a2), word, access)
+                })
+            };
+            match u32::try_from(a0) {
+                Ok(PTRACE_PEEKTEXT | PTRACE_PEEKDATA) => {
+                    reach(read) && sized(memory, a3, size_of::<u64>(), write)
+                }
+                Ok(PTRACE_POKETEXT | PTRACE_POKEDATA) => reach(write),
+                Ok(PTRACE_GETSIGINFO) => sized(memory, a3, size_of::<siginfo>(), write),
+                Ok(PTRACE_SETSIGINFO) => sized(memory, a3, size_of::<siginfo>(), read),
+                _ => true,
+            }
+        }
         __NR_pidfd_send_signal => sized(memory, a2, size_of::<siginfo>(), read),
         __NR_rt_sigqueueinfo => sized(memory, a2, size_of::<siginfo>(), read),
         __NR_rt_tgsigqueueinfo => sized(memory, a3, size_of::<siginfo>(), read),

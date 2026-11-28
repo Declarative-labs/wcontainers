@@ -60,11 +60,12 @@ impl Kernel {
         tid: Tid,
         queued: &Queued,
     ) {
+        // Out of line and off the CPU; a turn it still has in the line of signalled threads is
+        // skipped while it is stopped.
         self.take_out_of_line(tid);
         if self.current == Some(tid) {
             self.current = None;
         }
-        self.signalled.retain(|other| *other != tid);
         let thread = self.thread_mut(tid);
         let Some(trace) = thread.trace.as_mut() else {
             return;

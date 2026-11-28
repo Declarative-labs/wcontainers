@@ -298,6 +298,61 @@ static void information_set(void) {
     print_pipe(pipe_fds[0]);
 }
 
+// An untraced child drops a signal it ignores, but keeps one it blocks (Linux's `sig_ignored`);
+// the traced child of `ending` stops even for one it ignores.
+static void untraced_ignored(void) {
+    printf("== untraced, ignored\n");
+    int ready[2], go[2];
+    pipe(ready);
+    pipe(go);
+    pid_t child = fork_flushed();
+    if (child == 0) {
+        signal(SIGUSR1, SIG_IGN);
+        signal(SIGUSR2, SIG_IGN);
+        sigset_t set;
+        sigemptyset(&set);
+        sigaddset(&set, SIGUSR2);
+        sigprocmask(SIG_BLOCK, &set, 0);
+        write(ready[1], "", 1);
+        char byte;
+        read(go[0], &byte, 1);
+        sigset_t pending;
+        sigpending(&pending);
+        dprintf(ready[1], "child: SIGUSR1 pending %d, SIGUSR2 pending %d\n",
+                sigismember(&pending, SIGUSR1), sigismember(&pending, SIGUSR2));
+        _exit(0);
+    }
+    char byte;
+    read(ready[0], &byte, 1);
+    kill(child, SIGUSR1);
+    kill(child, SIGUSR2);
+    write(go[1], "", 1);
+    wait_for("end", child, 0);
+    close(ready[1]);
+    print_pipe(ready[0]);
+    close(go[0]);
+    close(go[1]);
+    // An untraced child stops for SIGSTOP; this process, the container's first, has no handler
+    // for SIGTERM, which its child's kill therefore leaves it alive through.
+    child = fork_flushed();
+    if (child == 0) {
+        for (;;)
+            pause();
+    }
+    kill(child, SIGSTOP);
+    wait_for("untraced, SIGSTOP", child, WUNTRACED);
+    kill(child, SIGKILL);
+    wait_for("untraced, SIGKILL", child, 0);
+    printf("this process is the first: %d\n", getpid() == 1);
+    child = fork_flushed();
+    if (child == 0) {
+        kill(getppid(), SIGTERM);
+        _exit(0);
+    }
+    wait_for("its child sent it SIGTERM", child, 0);
+    printf("lived\n");
+}
+
 // A signal sent to a child stopped for its tracer waits: the stop stays the one it was, and the
 // child stops for the new signal once it goes on.
 static void signal_while_stopped(void) {
@@ -534,6 +589,11 @@ static void another_tracer(void) {
         pthread_t thread;
         pthread_create(&thread, 0, other_thread, 0);
         pthread_join(thread, 0);
+        siginfo_t info;
+        memset(&info, 0, sizeof info);
+        int kept = waitid(P_PGID, 0, &info, WEXITED | WSTOPPED | WNOWAIT);
+        dprintf(report_fd, "tracer: own group kept: %d is it %d code %d status %d\n", kept,
+                info.si_pid == grandchild, info.si_code, info.si_status);
         pid_t got = waitpid(-getpgrp(), &status, 0);
         dprintf(report_fd, "tracer: by group: is it %d, stopped %d\n", got == grandchild,
                 WIFSTOPPED(status) ? WSTOPSIG(status) : -1);
@@ -596,6 +656,7 @@ int main(void) {
     blocked_and_changed();
     information_set();
     signal_while_stopped();
+    untraced_ignored();
     ending();
     attaching();
     another_tracer();

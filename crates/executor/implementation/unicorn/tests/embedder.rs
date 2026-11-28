@@ -1264,6 +1264,13 @@ fn a_programs_own_memory_reached_by_the_process_vm_calls_meets_its_watches() {
     lazy_as_the_reference(&["vm"]);
 }
 
+/// Checks that ptrace's requests meet the watches of what they copy, in the tracer and in the
+/// tracee: lazy pages are filled before a request reads or writes them.
+#[test]
+fn memory_ptrace_copies_meets_the_watches_of_tracer_and_tracee() {
+    lazy_as_the_reference(&["ptrace"]);
+}
+
 /// A command line long enough to fill pages the program never touches itself.
 const LONG_ARGUMENT: u64 = 3 * PAGE_SIZE;
 

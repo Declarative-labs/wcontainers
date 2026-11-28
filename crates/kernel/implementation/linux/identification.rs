@@ -194,11 +194,11 @@ pub(crate) fn read(features: &Arm64Features, encoding: (u8, u8, u8, u8), op2: u8
     })
 }
 
-/// A register built from `(value, lowest bit)` fields.
+/// A register built from `(value, lowest bit)` fields, which never overlap, so each is added.
 fn fields(parts: &[(u64, u32)]) -> u64 {
     parts
         .iter()
-        .fold(0, |register, (value, at)| register | value << at)
+        .fold(0, |register, (value, at)| register + (value << at))
 }
 
 /// A one-bit feature as its four-bit field: 1 where present.
@@ -403,11 +403,12 @@ pub(crate) fn hardware_capabilities(features: &Arm64Features) -> (u64, u64) {
         (isar2.lut, HWCAP2_LUT),
         (isar3.faminmax, HWCAP2_FAMINMAX),
     ];
+    // Each capability has a bit of its own, so each present one is added.
     let word = |capabilities: &[(bool, u64)]| {
         capabilities
             .iter()
             .filter(|(has, _)| *has)
-            .fold(0, |word, (_, bit)| word | bit)
+            .fold(0, |word, (_, bit)| word + bit)
     };
     (word(&first), word(&second))
 }
@@ -569,12 +570,26 @@ mod tests {
         features.pfr1.ssbs = Some(Ssbs::Ssbs2);
         features.mmfr2.at = true;
         features.midr.implementer = Implementer::Arm;
+        features.isar2.mops = true;
+        features.isar2.cssc = Some(Cssc::Cmpbr);
+        features.isar3.faminmax = true;
+        features.isar3.fprcvt = true;
         let read = |crm, op2| read(&features, (3, 0, 0, crm), op2).expect("answered");
         assert_eq!(read(6, 0), 0x1000_0000_0031_0020, "ID_AA64ISAR0_EL1");
         assert_eq!(read(6, 1), 0x0030_0000, "ID_AA64ISAR1_EL1");
         assert_eq!(read(4, 0), 0x0001_0000_0011_0011, "ID_AA64PFR0_EL1");
         assert_eq!(read(4, 1), 0x20, "ID_AA64PFR1_EL1");
         assert_eq!(read(7, 2), 0x1_0000_0000, "ID_AA64MMFR2_EL1");
+        assert_eq!(
+            read(6, 2),
+            0x0020_0000_0001_0000,
+            "ID_AA64ISAR2_EL1: MOPS [19:16] 1, CSSC [55:52] 2 (CMPBR)"
+        );
+        assert_eq!(
+            read(6, 3),
+            0x1000_0010,
+            "ID_AA64ISAR3_EL1: FAMINMAX [7:4] 1, FPRCVT [31:28] 1"
+        );
         assert_eq!(read(0, 0), 0x410F_0000, "MIDR_EL1");
     }
 }
