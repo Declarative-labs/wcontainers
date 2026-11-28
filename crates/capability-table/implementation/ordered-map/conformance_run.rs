@@ -6,16 +6,16 @@ use wcontainers_capability_table::{CapabilityTable, CreateError, DuplicateError}
 use wcontainers_capability_table_ordered_map::{OrderedMapCapabilityTable, Page, PageError, Shared};
 use wcontainers_volatile_bytes::VolatileBytes;
 
-/// A table of pages, each made from its length.
+// A table of pages, each made from its length.
 type Pages = OrderedMapCapabilityTable<u64, u64, Page>;
 
-/// A slice of bytes the test lends a table for good, the volatile bytes of the interface crate's own implementation.
+// A slice of bytes the test lends a table for good, the volatile bytes of the interface crate's own implementation.
 type Slice = RefCell<&'static mut [u8]>;
 
-/// A table of slices of bytes, each made from the slice.
+// A table of slices of bytes, each made from the slice.
 type Slices = OrderedMapCapabilityTable<u64, &'static mut [u8], Slice>;
 
-/// A set of a task holding pages and slices, one table of the implementation for each.
+// A set of a task holding pages and slices, one table of the implementation for each.
 #[derive(Default)]
 struct PagesAndSlices {
     pages: Pages,
@@ -82,13 +82,13 @@ impl CapabilityTable<u64, Shared<Slice>> for PagesAndSlices {
     }
 }
 
-/// Returns a slice of as many bytes as the number, which the test never takes back.
-fn slice_of(number: u8) -> &'static mut [u8] {
+// Returns a slice of as many bytes as the number, which the test never takes back.
+fn slice(number: u8) -> &'static mut [u8] {
     vec![u8::MIN; usize::from(number)].leak()
 }
 
-/// Returns the number a page or slice was made for, its length.
-fn number_of<Bytes: VolatileBytes>(bytes: &Bytes) -> u8 {
+// Returns the number a page or slice was made for, its length.
+fn number<Bytes: VolatileBytes>(bytes: &Bytes) -> u8 {
     u8::try_from(bytes.len()).expect("every page and slice of the tests is as long as its number")
 }
 
@@ -98,14 +98,14 @@ wcontainers_capability_table_conformance::tests!(
         u64::from as fn(u8) -> u64,
         u64::from as fn(u8) -> u64,
         (|| u64::MAX) as fn() -> u64,
-        number_of::<Shared<Page>> as fn(&Shared<Page>) -> u8,
+        number::<Shared<Page>> as fn(&Shared<Page>) -> u8,
     ),
     (
         PagesAndSlices::default as fn() -> PagesAndSlices,
         u64::from as fn(u8) -> u64,
         u64::from as fn(u8) -> u64,
-        number_of::<Shared<Page>> as fn(&Shared<Page>) -> u8,
-        slice_of as fn(u8) -> &'static mut [u8],
-        number_of::<Shared<Slice>> as fn(&Shared<Slice>) -> u8,
+        number::<Shared<Page>> as fn(&Shared<Page>) -> u8,
+        slice as fn(u8) -> &'static mut [u8],
+        number::<Shared<Slice>> as fn(&Shared<Slice>) -> u8,
     )
 );

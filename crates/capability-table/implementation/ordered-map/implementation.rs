@@ -1,8 +1,7 @@
-//! A capability table kept in the standard library's ordered map, from each identifier to a shared reference to a thing.
+//! A capability table in the standard library's ordered map from each identifier to a shared reference to a thing.
 //!
-//! A thing is made from its config by `TryFrom` straight into the map, and a duplicate is a second reference to the
-//! same thing, so the map holds every capability itself: no number stands for a thing apart from its entry, and none
-//! can come to name a thing made later. Pages of bytes are the first kind of thing.
+//! A thing is made from its config by `TryFrom` straight into the map, and a duplicate is a second reference to it, so
+//! no number stands for a thing apart from its entries and none can come to name a thing made later.
 
 #![no_std]
 
@@ -32,64 +31,64 @@ pub struct OrderedMapCapabilityTable<Identifier: Ord, Config, Thing> {
     configs: PhantomData<Config>,
 }
 
-/// A capability to a thing, which only its table can duplicate, so that no capability outlives every entry holding it.
+/// A capability to a thing, which only its table can duplicate, so that none outlives every entry holding it.
 pub struct Shared<Thing> {
     thing: Rc<Thing>,
 }
 
-impl<Thing> Shared<Thing> {
-    /// Returns a second capability to the same thing.
-    fn duplicate(&self) -> (duplicate: Self)
-        ensures
-            duplicate == *self,
-    {
-        Shared { thing: Rc::clone(&self.thing) }
-    }
+// Returns a second capability to the same thing.
+fn duplicate<Thing>(capability: &Shared<Thing>) -> (duplicate: Shared<Thing>)
+    ensures
+        duplicate == *capability,
+{
+    Shared { thing: Rc::clone(&capability.thing) }
 }
 
 impl<Identifier: Ord, Config, Thing> OrderedMapCapabilityTable<Identifier, Config, Thing> {
-    /// The order laws under which the standard library's map is specified, which identifiers obey, and the map's own.
+    // The order laws under which the standard library's map is specified, which identifiers obey, and the map's own.
     #[verifier::type_invariant]
     spec fn ordered(self) -> bool {
         &&& vstd::laws_cmp::obeys_cmp::<Identifier>()
         &&& vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>()
         &&& vstd::std_specs::btree::btree_map_inv(&self.entries)
     }
+}
 
-    /// Returns the map, leaving an empty one in its place, so that it can change under no borrow of a field.
-    fn take_entries(&mut self) -> (entries: BTreeMap<Identifier, Shared<Thing>>)
-        ensures
-            entries@ == old(self).entries@,
-            vstd::laws_cmp::obeys_cmp::<Identifier>(),
-            vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>(),
-            vstd::std_specs::btree::btree_map_inv(&entries),
-    {
-        proof {
-            use_type_invariant(&*self);
-        }
-        let mut taken = OrderedMapCapabilityTable { entries: BTreeMap::new(), configs: PhantomData };
-        core::mem::swap(self, &mut taken);
-        proof {
-            use_type_invariant(&taken);
-        }
-        taken.entries
+// Returns the table's map, leaving an empty one in its place, so that the map can change under no borrow of a field.
+fn take<Identifier: Ord, Config, Thing>(table: &mut OrderedMapCapabilityTable<Identifier, Config, Thing>) -> (entries:
+    BTreeMap<Identifier, Shared<Thing>>)
+    ensures
+        entries@ == old(table).entries@,
+        vstd::laws_cmp::obeys_cmp::<Identifier>(),
+        vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>(),
+        vstd::std_specs::btree::btree_map_inv(&entries),
+{
+    proof {
+        use_type_invariant(&*table);
     }
+    let mut taken = OrderedMapCapabilityTable { entries: BTreeMap::new(), configs: PhantomData };
+    core::mem::swap(table, &mut taken);
+    proof {
+        use_type_invariant(&taken);
+    }
+    taken.entries
+}
 
-    /// Returns the table of a map whose keys obey the order laws.
-    fn from_entries(entries: BTreeMap<Identifier, Shared<Thing>>) -> (table: Self)
-        requires
-            vstd::laws_cmp::obeys_cmp::<Identifier>(),
-            vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>(),
-            vstd::std_specs::btree::btree_map_inv(&entries),
-        ensures
-            table.entries@ == entries@,
-    {
-        OrderedMapCapabilityTable { entries, configs: PhantomData }
-    }
+// Returns the table of a map whose keys obey the order laws.
+fn wrap<Identifier: Ord, Config, Thing>(entries: BTreeMap<Identifier, Shared<Thing>>) -> (table:
+    OrderedMapCapabilityTable<Identifier, Config, Thing>)
+    requires
+        vstd::laws_cmp::obeys_cmp::<Identifier>(),
+        vstd::laws_cmp::obeys_cmp_concrete_eq::<Identifier>(),
+        vstd::std_specs::btree::btree_map_inv(&entries),
+    ensures
+        table.entries@ == entries@,
+{
+    OrderedMapCapabilityTable { entries, configs: PhantomData }
 }
 
 impl<Config, Thing> Default for OrderedMapCapabilityTable<u64, Config, Thing> {
-    /// Returns a table holding nothing.
+    // Returns a table holding nothing; only u64 identifiers, whose order laws vstd proves, can make one.
     fn default() -> (table: Self) {
         OrderedMapCapabilityTable { entries: BTreeMap::new(), configs: PhantomData }
     }
@@ -120,12 +119,12 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
             Err(error) => return Err(CreateError::Failed(error)),
         };
         let ghost key = identifier;
-        let mut entries = self.take_entries();
+        let mut entries = take(self);
         let _ = entries.insert(identifier, Shared { thing: Rc::new(thing) });
         proof {
             assert(entries@.remove(key) =~= old(self).entries@);
         }
-        *self = Self::from_entries(entries);
+        *self = wrap(entries);
         Ok(())
     }
 
@@ -137,9 +136,9 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
     }
 
     fn drop(&mut self, identifier: &Identifier) {
-        let mut entries = self.take_entries();
+        let mut entries = take(self);
         let _ = entries.remove(identifier);
-        *self = Self::from_entries(entries);
+        *self = wrap(entries);
     }
 
     fn duplicate_within(&mut self, identifier: &Identifier, new_identifier: Identifier) -> (duplicated:
@@ -148,15 +147,15 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
             use_type_invariant(&*self);
         }
         let duplicate = match self.entries.get(identifier) {
-            Some(capability) => capability.duplicate(),
+            Some(capability) => duplicate(capability),
             None => return Err(DuplicateError::NothingHeld),
         };
         if self.entries.contains_key(&new_identifier) {
             return Err(DuplicateError::IdentifierTaken);
         }
-        let mut entries = self.take_entries();
+        let mut entries = take(self);
         let _ = entries.insert(new_identifier, duplicate);
-        *self = Self::from_entries(entries);
+        *self = wrap(entries);
         Ok(())
     }
 
@@ -171,15 +170,15 @@ impl<Identifier: Ord, Config, Thing: TryFrom<Config>> CapabilityTable<Identifier
             use_type_invariant(other);
         }
         let duplicate = match other.entries.get(identifier) {
-            Some(capability) => capability.duplicate(),
+            Some(capability) => duplicate(capability),
             None => return Err(DuplicateError::NothingHeld),
         };
         if self.entries.contains_key(&new_identifier) {
             return Err(DuplicateError::IdentifierTaken);
         }
-        let mut entries = self.take_entries();
+        let mut entries = take(self);
         let _ = entries.insert(new_identifier, duplicate);
-        *self = Self::from_entries(entries);
+        *self = wrap(entries);
         Ok(())
     }
 }
@@ -220,7 +219,7 @@ pub struct Page {
     bytes: Vec<InvCell<u8, AnyByte>>,
 }
 
-/// The rule every byte of a page meets, which any byte does.
+// The rule every byte of a page meets, which any byte does.
 struct AnyByte;
 
 impl Predicate<u8> for AnyByte {
@@ -237,50 +236,48 @@ pub enum PageError {
     TooLong,
 }
 
-impl Page {
-    /// Returns a page of the length, every byte zero, or `TooLong` past a WebAssembly page.
-    fn make(length: u64) -> (made: Result<Page, PageError>)
-        ensures
-            made matches Ok(page) ==> page.spec_len() == length,
-            made is Err <==> length > WEBASSEMBLY_PAGE_LENGTH,
-    {
-        if length > WEBASSEMBLY_PAGE_LENGTH {
-            return Err(PageError::TooLong);
-        }
-        let mut bytes: Vec<InvCell<u8, AnyByte>> = Vec::new();
-        let mut made: u64 = u64::MIN;
-        while made < length
-            invariant
-                made <= length,
-                length <= WEBASSEMBLY_PAGE_LENGTH,
-                bytes@.len() == made,
-            decreases length - made,
-        {
-            bytes.push(InvCell::new(u8::MIN, Ghost(AnyByte)));
-            made = made + 1;
-        }
-        Ok(Page { bytes })
+// Returns a page of the length, every byte zero, or `TooLong` past a WebAssembly page.
+fn make(length: u64) -> (made: Result<Page, PageError>)
+    ensures
+        made matches Ok(page) ==> page.spec_len() == length,
+        made is Err <==> length > WEBASSEMBLY_PAGE_LENGTH,
+{
+    if length > WEBASSEMBLY_PAGE_LENGTH {
+        return Err(PageError::TooLong);
     }
-
-    /// Returns how many bytes a copy at the offset moves for a buffer of the length, and where in the page it starts.
-    fn span(&self, offset: u64, buffer: usize) -> (span: (usize, usize))
-        ensures
-            span.1 == wcontainers_volatile_bytes::copied(self.spec_len(), offset, buffer as nat),
-            span.0 + span.1 <= self.bytes@.len(),
-            span.1 > 0 ==> span.0 == offset,
-            self.bytes@.len() <= usize::MAX,
+    let mut bytes: Vec<InvCell<u8, AnyByte>> = Vec::new();
+    let mut made: u64 = u64::MIN;
+    while made < length
+        invariant
+            made <= length,
+            length <= WEBASSEMBLY_PAGE_LENGTH,
+            bytes@.len() == made,
+        decreases length - made,
     {
-        let length = self.bytes.len();
-        if offset >= length as u64 {
-            return (usize::MIN, usize::MIN);
-        }
-        let start = offset as usize;
-        let rest = length - start;
-        if buffer <= rest {
-            (start, buffer)
-        } else {
-            (start, rest)
-        }
+        bytes.push(InvCell::new(u8::MIN, Ghost(AnyByte)));
+        made += 1;
+    }
+    Ok(Page { bytes })
+}
+
+// Returns where in the page a copy at the offset starts and how many bytes it moves for a buffer of the length.
+fn range(page: &Page, offset: u64, buffer: usize) -> (range: (usize, usize))
+    ensures
+        range.1 == wcontainers_volatile_bytes::copied(page.spec_len(), offset, buffer as nat),
+        range.0 + range.1 <= page.bytes@.len(),
+        range.1 > 0 ==> range.0 == offset,
+        page.bytes@.len() <= usize::MAX,
+{
+    let length = page.bytes.len();
+    if offset >= length as u64 {
+        return (usize::MIN, usize::MIN);
+    }
+    let start = offset as usize;
+    let rest = length - start;
+    if buffer <= rest {
+        (start, buffer)
+    } else {
+        (start, rest)
     }
 }
 
@@ -294,7 +291,7 @@ impl VolatileBytes for Page {
     }
 
     fn read_at(&self, offset: u64, into: &mut [u8]) -> (count: usize) {
-        let (start, count) = self.span(offset, into.len());
+        let (start, count) = range(self, offset, into.len());
         let mut index: usize = usize::MIN;
         while index < count
             invariant
@@ -307,13 +304,13 @@ impl VolatileBytes for Page {
             decreases count - index,
         {
             into[index] = self.bytes[start + index].get();
-            index = index + 1;
+            index += 1;
         }
         count
     }
 
     fn write_at(&self, offset: u64, bytes: &[u8]) -> (count: usize) {
-        let (start, count) = self.span(offset, bytes.len());
+        let (start, count) = range(self, offset, bytes.len());
         let mut index: usize = usize::MIN;
         while index < count
             invariant
@@ -325,7 +322,7 @@ impl VolatileBytes for Page {
             decreases count - index,
         {
             self.bytes[start + index].set(bytes[index]);
-            index = index + 1;
+            index += 1;
         }
         count
     }
@@ -340,7 +337,7 @@ impl VolatileBytes for Page {
             decreases self.bytes@.len() - index,
         {
             copy.push(self.bytes[index].get());
-            index = index + 1;
+            index += 1;
         }
         sink.write(copy.as_slice())
     }
@@ -365,7 +362,7 @@ impl VolatileBytes for Page {
                 decreases count - index,
             {
                 self.bytes[index].set(copy[index]);
-                index = index + 1;
+                index += 1;
             }
         }
         read
@@ -374,13 +371,12 @@ impl VolatileBytes for Page {
 
 } // verus!
 
-// Rust's `TryFrom` is how the table makes a thing from its config. Verus proves an impl of it only with the impl of its
-// specification trait `TryFromSpecImpl`, which vstd declares only when Verus compiles, so a crate that also builds
-// without Verus cannot write that impl; this impl is therefore one call of the proven `Page::make`.
+// TODO: prove it. Verus proves an impl of `TryFrom` only beside one of `TryFromSpecImpl`, which vstd declares only when
+// Verus compiles, so a crate that also builds without Verus cannot write it; this impl is one call of the proven `make`.
 impl TryFrom<u64> for Page {
     type Error = PageError;
 
     fn try_from(length: u64) -> Result<Page, PageError> {
-        Page::make(length)
+        make(length)
     }
 }
