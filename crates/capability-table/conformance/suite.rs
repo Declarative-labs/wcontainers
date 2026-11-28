@@ -34,7 +34,7 @@ type Value<T, Identifier, Capability, Config, Look> = (
 );
 
 // Returns what a lookup gives of the capability the config of the number makes, carrying the mark.
-fn held<T, Identifier, Capability, Config, Look>(
+fn predict_lookup<T, Identifier, Capability, Config, Look>(
     value: &Value<T, Identifier, Capability, Config, Look>,
     number: u8,
     mark: u8,
