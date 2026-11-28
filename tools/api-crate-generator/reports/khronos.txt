@@ -1,4 +1,5 @@
 VALUES egl: 176
+PLANTS egl-calls: 109 plants, FNV-1a 2882b4834bf00b37
 CRATE egl: methods 15 (+0 composed), inside 2, marks 39
   part AttributeList: 3
   part CountOf: 1
@@ -19,6 +20,7 @@ CRATE egl: methods 15 (+0 composed), inside 2, marks 39
   FORCED eglCreateContext EGL_CONTEXT_OPENGL_ROBUST_ACCESS=EGL_TRUE: OpenGL ES leaves a shader's or a draw's read outside a buffer undefined (it may end the program) unless the context has robust buffer access (EGL 1.5 §3.7.1.5); every context is made with it, and none is made where the implementation cannot (test robust_access_is_forced)
 VALUES opengl-es: 1116
   VALUE BY NAME GL_UNMASKED_RENDERER_WEBGL 0x9246: WebGL's WEBGL_debug_renderer_info value, which gl.xml declares and no OpenGL ES feature or extension requires: the browser route asks the renderer's name with it
+PLANTS opengl-es-calls: 590 plants, FNV-1a 824a877dc3bcd9c7
 CRATE opengl-es: methods 156 (+1 composed), inside 2, marks 322
   COMPOSED map_buffer_range_read of glMapBufferRange, glUnmapBuffer: glMapBufferRange returns memory lent until glUnmapBuffer; the method maps the range for reading only, copies it into the caller's bytes and unmaps, so nothing is lent past the call
   part ArrayBufferOffset: 2

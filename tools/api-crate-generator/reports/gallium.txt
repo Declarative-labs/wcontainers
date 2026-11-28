@@ -1,4 +1,5 @@
 GALLIUM INTERFACE: 97 methods, 47 structures, 21 kinds; left out 20 fields; values: 48 enumerations, 1098 values
+PLANTS gallium-caps: 799 plants, FNV-1a bc22aeaf5701b833
 GALLIUM GLUE: 47 flat structures (37 with a flattening function), 683 fields; counted kinds Resource Fence SamplerView StreamOutputTarget
 GALLIUM SERVED: 18 pointers of the slice (of 100 planned)
 GALLIUM RECORDING: 97 methods

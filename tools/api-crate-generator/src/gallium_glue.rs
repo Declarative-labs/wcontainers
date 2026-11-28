@@ -476,14 +476,18 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gal
     let (caps_c, caps_checks, _) = caps_filled(header)?;
     write(direct.join("caller.c"), &format!("{HEADER_C}{}", include_str!("../templates/gallium/caller.c").replace("/* FILLED */\n", &fills_c).replace("/* CAPS FILLED */\n", &caps_c)))?;
     write(direct.join("tests").join("served.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/served.rs").replace("// FILLED\n", &fills_rust).replace("// CAPS CHECKS\n", &caps_checks)))?;
-    write(direct.join("caps-plants.txt"), &caps_plants(&flat_c, &flat_rs, &serve_c, &serve_rust)?)?;
+    // The plant list goes beside the crates written, never into a crate: only source is kept in the repository.
+    let plants = crate_folder.ancestors().nth(2).ok_or("the crate's folder is under <out>/crates")?.join("plants");
+    std::fs::create_dir_all(&plants).map_err(|error| error.to_string())?;
+    let caps = caps_plants(&flat_c, &flat_rs, &serve_c, &serve_rust)?;
+    write(plants.join("gallium-caps.txt"), &caps)?;
     write(direct.join("build.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/build.rs")))?;
     write(direct.join("Cargo.toml"), include_str!("../templates/gallium/direct.toml"))?;
     write(direct.join("tests").join("layouts.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/layouts.rs")))?;
     std::fs::create_dir_all(direct.join("tests").join("clang_layouts")).map_err(|error| error.to_string())?;
     write(direct.join("tests").join("clang_layouts").join("mod.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/clang_layouts.rs")))?;
     let counted: Vec<&str> = COUNTED.to_vec();
-    Ok(format!("GALLIUM GLUE: {} flat structures ({} with a flattening function), {field_count} fields; counted kinds {}\n{served}", writer.done.len(), writer.done.iter().filter(|name| !name.contains('.')).count(), counted.join(" ")))
+    Ok(crate::plants::reported("gallium-caps", &caps) + &format!("GALLIUM GLUE: {} flat structures ({} with a flattening function), {field_count} fields; counted kinds {}\n{served}", writer.done.len(), writer.done.iter().filter(|name| !name.contains('.')).count(), counted.join(" ")))
 }
 
 /// The served states the hostile caller's first case makes, each filled field by field: (the C function, its
@@ -628,7 +632,7 @@ pub(crate) fn caps_filled(header: &Header) -> Result<(String, String, String), S
 }
 
 /// The head of the capabilities' plant list.
-const CAPS_PLANTS_HEAD: &str = "# Gallium's capabilities glue, its plant list (written by tools/api-crate-generator, src/gallium_glue.rs `caps_plants`):\n# one plant per field of each copy toward Mesa's screen (flat.c's wc_flat_*_to: the field dropped; flat.rs's `of`: its\n# value replaced by its default), one per argument of the capabilities' glue (serve.c's asks and copies, serve.rs's\n# functions) and one per place serve.c reads a stage's capability. Every plant must make tests/served.rs fail\n# (every_cap_reaches_mesas_screen holds every field of Mesa's screen to the values the implementation set, in two seeds,\n# and the two capabilities Mesa computes from the stages to Mesa's rule). Run from the repository's root, with\n# WCONTAINERS_MESA set:\n#   python3 -I tools/plants/run-plants.py crates/gallium/implementation/direct/caps-plants.txt --workers 10\ntest: cargo test -q --features hostile -p wcontainers-gallium-direct --test served\n";
+const CAPS_PLANTS_HEAD: &str = "# Gallium's capabilities glue, its plant list (written by tools/api-crate-generator, src/gallium_glue.rs `caps_plants`):\n# one plant per field of each copy toward Mesa's screen (flat.c's wc_flat_*_to: the field dropped; flat.rs's `of`: its\n# value replaced by its default), one per argument of the capabilities' glue (serve.c's asks and copies, serve.rs's\n# functions) and one per place serve.c reads a stage's capability. Every plant must make tests/served.rs fail\n# (every_cap_reaches_mesas_screen holds every field of Mesa's screen to the values the implementation set, in two seeds,\n# and the two capabilities Mesa computes from the stages to Mesa's rule). Run from the repository's root, with\n# WCONTAINERS_MESA set, by the plant runner (kept with the evidence, outside the repository): run-plants.py <this list>\ntest: cargo test -q --features hostile -p wcontainers-gallium-direct --test served\n";
 
 /// The capabilities' glue arguments and the places serve.c reads a stage's capability, each a plant: (file, name, the
 /// text, its replacement).
@@ -677,7 +681,7 @@ fn line_plant(out: &mut String, file: &str, name: &str, text: &str, lines: &[&st
     Ok(())
 }
 
-/// The capabilities' plant list (crates/gallium/implementation/direct/caps-plants.txt), from the files written.
+/// The capabilities' plant list (<out>/plants/gallium-caps.txt), from the files written.
 fn caps_plants(flat_c: &str, flat_rs: &str, serve_c: &str, serve_rs: &str) -> Result<String, String> {
     let mut out = String::from(CAPS_PLANTS_HEAD);
     let c_lines: Vec<&str> = flat_c.lines().collect();

@@ -21,6 +21,7 @@ mod layout;
 mod mapping;
 mod metadata;
 mod names;
+mod plants;
 mod runtime;
 mod trust;
 mod undo;

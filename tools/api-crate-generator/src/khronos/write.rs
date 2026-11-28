@@ -929,7 +929,7 @@ fn write_suite(set: &Set, classified: &Classified, egl: Option<(&Set, &Classifie
     text
 }
 
-// ----- The arguments test (tests/arguments.rs) and the calling glue's plant list. -----
+// ----- The arguments test (tests/arguments.rs) and the calling glues' plant lists. -----
 
 /// A value of its own for argument `at` of method `index` (each of a method's distinct, none zero, all below the room
 /// every byte range is given), in Rust and as the stand-in logs it.
@@ -941,6 +941,50 @@ fn own_value(scalar: &Scalar, index: usize, at: usize) -> (String, String) {
         // The set's plain values are 32 and 64 bits wide (no byte or short is a value parameter of its commands).
         _ => (number.to_string(), number.to_string()),
     }
+}
+
+/// Element `element` of the values argument `at` of method `index` is given: one of its own (a flag both ways, no
+/// number zero), in Rust and as the stand-in logs it (a float as its bits).
+fn element_value(scalar: &Scalar, index: usize, at: usize, element: usize) -> Result<(String, String), String> {
+    let number = 1 + 37 * index + 7 * at + element;
+    Ok(match scalar.rust {
+        "bool" => {
+            let (text, shown) = if element.is_multiple_of(2) { ("true", "1") } else { ("false", "0") };
+            (text.to_string(), shown.to_string())
+        }
+        "u8" => {
+            let byte = number % 251 + 1;
+            (format!("{byte}_u8"), byte.to_string())
+        }
+        "f32" => {
+            let value = f32::from(u16::try_from(number).map_err(|_| format!("element {number} past a float's exact range"))?) + 0.5;
+            (format!("{value}_f32"), format!("0x{:x}", value.to_bits()))
+        }
+        "i32" | "u32" | "i64" | "u64" => (format!("{number}_{}", scalar.rust), number.to_string()),
+        other => return Err(format!("no element value of {other}")),
+    })
+}
+
+/// The values given for argument `at` of method `index`: `given` of their own, then zeros up to `logged_count` (the
+/// values the stand-in reads), as a Rust vector and as the stand-in logs them.
+fn given_values(elem: &Scalar, index: usize, at: usize, given: usize, logged_count: usize) -> Result<(String, String), String> {
+    let mut rust = Vec::new();
+    let mut log = Vec::new();
+    for element in 0..logged_count {
+        let (text, shown) = element_value(elem, index, at, element)?;
+        if element < given {
+            rust.push(text);
+            log.push(shown);
+        } else {
+            log.push(zero_logged(elem).to_string());
+        }
+    }
+    Ok((format!("vec![{}]", rust.join(", ")), format!("[{}]", log.join(","))))
+}
+
+/// The stand-in's zero of an element as it logs it.
+fn zero_logged(elem: &Scalar) -> &'static str {
+    if elem.rust == "f32" { "0x0" } else { "0" }
 }
 
 /// The values a pixel transfer's parameters take so that the transfer is one the glue sizes: 2 by 2 (by 1) of RGBA
@@ -981,109 +1025,331 @@ fn slice_length(method: &Method, at: usize) -> usize {
         .unwrap_or(2)
 }
 
-/// One method's call with arguments of its own, and the line the stand-in must log for it.
-fn argument_call(set: &Set, method: &Method, index: usize) -> (String, String) {
+/// The most values a guarded out parameter is given here: more than one, so that every value copied back is checked.
+const GUARDED_GIVEN: usize = 4;
+
+/// The line the stand-in must log for a call, as a Rust expression: its words, and the parts known only when the test
+/// runs (a byte range's hash).
+struct Logged {
+    text: String,
+    runtime: Vec<String>,
+}
+
+impl Logged {
+    fn word(&mut self, word: &str) {
+        self.text.push(' ');
+        self.text.push_str(&word.replace('{', "{{").replace('}', "}}"));
+    }
+
+    fn at_runtime(&mut self, expression: String) {
+        self.text.push_str(" {}");
+        self.runtime.push(expression);
+    }
+
+    fn expression(&self) -> String {
+        if self.runtime.is_empty() {
+            format!("{:?}", self.text.replace("{{", "{").replace("}}", "}"))
+        } else {
+            format!("&format!({:?}, {})", self.text, self.runtime.join(", "))
+        }
+    }
+}
+
+/// What the method gives back, checked against what the stand-in logged it wrote and returned: the statements after
+/// the call, binding `answer`.
+fn given_back_checks(method: &Method, outs_checked: &[String]) -> String {
+    let command = &method.command.name;
+    let (base, _) = return_parts(method);
+    let singles: Vec<usize> = method.parts.iter().enumerate().filter(|(_, part)| matches!(part, Part::SingleOut(_))).map(|(at, _)| at).collect();
+    let mut names = Vec::new();
+    let mut checks = Vec::new();
+    if base.is_some() {
+        names.push("returned".to_string());
+        checks.push(match &method.ret {
+            Return::Text => format!("calls.returned_text({command:?}, returned.as_deref());"),
+            Return::Handle(_) => format!("calls.returned_handle({command:?}, returned.is_some());"),
+            _ => format!("calls.returned({command:?}, &returned);"),
+        });
+    }
+    for at in &singles {
+        names.push(format!("out_{at}"));
+        checks.push(format!("calls.wrote({command:?}, {at}, &[out_{at}]);"));
+    }
+    checks.extend(outs_checked.iter().cloned());
+    let bind = match names.len() {
+        0 => String::new(),
+        1 => format!("let {} = answer;", names[0]),
+        _ => format!("let ({}) = answer;", names.join(", ")),
+    };
+    let inner = [bind].into_iter().chain(checks).filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n        ");
+    if method.extensions.is_empty() {
+        inner
+    } else {
+        let failed = format!("calls.failed(\"{command} answered None with its extensions named\");");
+        if names.is_empty() {
+            format!("if answer.is_none() {{ {failed} }}\n        {inner}")
+        } else {
+            format!("if let Some(answer) = answer {{\n        {inner}\n        }} else {{\n            {failed}\n        }}")
+        }
+    }
+}
+
+/// One method's call with arguments of its own, the line the stand-in must log for it checked, then everything it
+/// gives back checked against what the stand-in wrote and returned.
+fn argument_call(set: &Set, method: &Method, index: usize) -> Result<String, String> {
+    let command = &method.command.name;
     let mut prepared = Vec::new();
     let mut arguments = Vec::new();
-    let mut logged = vec![method.command.name.clone()];
+    let mut outs_checked = Vec::new();
+    let mut logged = Logged { text: command.clone(), runtime: Vec::new() };
+    let texts = [format!("first text of {index}"), format!("the second text of {index}")];
     for (at, (part, param)) in method.parts.iter().zip(&method.command.params).enumerate() {
         let name = param_name(param);
-        let (argument, log) = match part {
+        let values = |elem: &Scalar, given: usize, logged_count: usize| given_values(elem, index, at, given, logged_count);
+        let argument = match part {
             Part::Value(scalar) => {
                 let (text, log) = pixel_value(method, at).unwrap_or_else(|| own_value(scalar, index, at));
-                (Some(text), log)
+                logged.word(&log);
+                Some(text)
             }
             Part::Handle { .. } => {
                 prepared.push(format!("let {name} = fence(gl);"));
-                (Some(format!("&{name}")), "p".to_string())
+                logged.word(FENCE_MADE);
+                Some(format!("&{name}"))
             }
-            Part::CountOf { slice, multiplier } => (None, (slice_length(method, *slice) / multiplier).to_string()),
+            Part::CountOf { slice, multiplier } => {
+                logged.word(&(slice_length(method, *slice) / multiplier).to_string());
+                None
+            }
             Part::SliceIn { elem } => {
-                prepared.push(format!("let {name} = vec![{}; {}];", zero(elem), slice_length(method, at)));
-                (Some(format!("&{name}")), "p".to_string())
+                let length = slice_length(method, at);
+                let (given, log) = values(elem, length, length)?;
+                prepared.push(format!("let {name} = {given};"));
+                logged.word(&log);
+                Some(format!("&{name}"))
             }
-            Part::BoundedIn { elem, .. } => {
-                prepared.push(format!("let {name} = vec![{}; 1];", zero(elem)));
-                (Some(format!("&{name}")), "p".to_string())
+            Part::BoundedIn { elem, most } => {
+                let (given, log) = values(elem, 2.min(*most), *most)?;
+                prepared.push(format!("let {name} = {given};"));
+                logged.word(&log);
+                Some(format!("&{name}"))
             }
             Part::SliceOut { elem } => {
                 prepared.push(format!("let mut {name} = vec![{}; {}];", zero(elem), slice_length(method, at)));
-                (Some(format!("&mut {name}")), "p".to_string())
+                logged.word("p");
+                outs_checked.push(format!("calls.wrote({command:?}, {at}, &{name});"));
+                Some(format!("&mut {name}"))
             }
-            Part::GuardedOut { elem, .. } => {
-                prepared.push(format!("let mut {name} = vec![{}; 1];", zero(elem)));
-                (Some(format!("&mut {name}")), "p".to_string())
+            Part::GuardedOut { elem, guard, .. } => {
+                prepared.push(format!("let mut {name} = vec![{}; {}];", zero(elem), GUARDED_GIVEN.min(*guard)));
+                logged.word("p");
+                outs_checked.push(format!("calls.wrote({command:?}, {at}, &{name});"));
+                Some(format!("&mut {name}"))
             }
-            Part::TextIn => (Some("c\"name\"".to_string()), "p".to_string()),
-            // Two texts: their count is 2, as every slice's here.
-            Part::TextsIn { lengths: Some(_) } => (Some("&[b\"void main() {}\".as_slice(), b\"void main() {}\".as_slice()]".to_string()), "p".to_string()),
-            Part::TextsIn { lengths: None } => (Some("&[c\"name\", c\"name\"]".to_string()), "p".to_string()),
+            Part::TextIn => {
+                logged.word(&format!("'{}'", texts[0]));
+                Some(format!("c{:?}", texts[0]))
+            }
+            Part::TextsIn { lengths: Some(_) } => {
+                logged.word(&format!("['{}','{}']", texts[0], texts[1]));
+                Some(format!("&[b{:?}.as_slice(), b{:?}.as_slice()]", texts[0], texts[1]))
+            }
+            Part::TextsIn { lengths: None } => {
+                logged.word(&format!("['{}','{}']", texts[0], texts[1]));
+                Some(format!("&[c{:?}, c{:?}]", texts[0], texts[1]))
+            }
+            Part::LengthsOf { .. } => {
+                logged.word(&format!("[{},{}]", texts[0].len(), texts[1].len()));
+                None
+            }
             Part::BytesIn => {
-                prepared.push(format!("let {name} = vec![0_u8; {}];", slice_length(method, at)));
-                (Some(format!("&{name}")), "p".to_string())
+                let (given, _) = values(&U8, slice_length(method, at), slice_length(method, at))?;
+                prepared.push(format!("let {name}: Vec<u8> = {given};"));
+                logged.at_runtime(format!("bytes(&{name})"));
+                Some(format!("&{name}"))
             }
             Part::PixelUnpack { .. } => {
-                prepared.push(format!("let {name} = vec![0_u8; ROOM];"));
-                (Some(format!("PixelUnpack::Bytes(&{name})")), "p".to_string())
+                prepared.push(format!("let {name} = patterned(ROOM, {});", index * 16 + at));
+                logged.at_runtime(format!("bytes(&{name}[..PIXELS])"));
+                Some(format!("PixelUnpack::Bytes(&{name})"))
             }
             Part::PixelPack { .. } => {
                 prepared.push(format!("let mut {name} = vec![0_u8; ROOM];"));
-                (Some(format!("PixelPack::Bytes(&mut {name})")), "p".to_string())
+                logged.word("p");
+                outs_checked.push(format!("calls.wrote_bytes({command:?}, {at}, &{name});"));
+                Some(format!("PixelPack::Bytes(&mut {name})"))
             }
             Part::CompressedUnpack => {
-                prepared.push(format!("let {name} = vec![0_u8; 8];"));
-                (Some(format!("CompressedPixelUnpack::Bytes(&{name})")), "p".to_string())
+                prepared.push(format!("let {name} = patterned(COMPRESSED, {});", index * 16 + at));
+                logged.at_runtime(format!("bytes(&{name})"));
+                Some(format!("CompressedPixelUnpack::Bytes(&{name})"))
             }
-            Part::SizeOf { .. } => (None, "8".to_string()),
-            Part::ArrayBufferOffset | Part::ElementBufferOffset => (Some("16".to_string()), "16".to_string()),
-            Part::OptionalBytes { .. } => {
-                prepared.push(format!("let {name} = vec![0_u8; ROOM];"));
-                (Some(format!("Some({name}.as_slice())")), "p".to_string())
+            Part::SizeOf { .. } => {
+                logged.word(&COMPRESSED.to_string());
+                None
             }
-            Part::SingleOut(_) | Part::LengthsOf { .. } | Part::WrittenOf => (None, "p".to_string()),
-            Part::NullOnly => (None, "null".to_string()),
-            Part::AttributeList | Part::HandlesOut { .. } => (Some("compile_error!(\"EGL form\")".to_string()), String::new()),
+            Part::ArrayBufferOffset | Part::ElementBufferOffset => {
+                logged.word("16");
+                Some("16".to_string())
+            }
+            Part::OptionalBytes { size } => {
+                let size_param = &method.command.params[*size];
+                let scalar = super::classify_scalar(&size_param.ptype).ok_or_else(|| format!("{command}: the size is no number"))?;
+                let (size_value, _) = own_value(&scalar, index, *size);
+                prepared.push(format!("let {name} = patterned(ROOM, {});", index * 16 + at));
+                logged.at_runtime(format!("bytes(&{name}[..{size_value}])"));
+                Some(format!("Some({name}.as_slice())"))
+            }
+            Part::SingleOut(_) => {
+                logged.word("p");
+                None
+            }
+            Part::AttributeList | Part::HandlesOut { .. } | Part::WrittenOf | Part::NullOnly => return Err(format!("{command}: an EGL form at parameter {at}")),
         };
         arguments.extend(argument);
-        logged.push(log);
     }
-    let bind = if return_type(method).is_some() { "let _ = " } else { "" };
-    let call = format!("{bind}gl.{}({});", method_name(set, &method.command.name), arguments.join(", "));
-    // glGetError answers the glue's own refusal first, if one is pending: called twice, the second reaches the library.
-    let call = if method.command.name == "glGetError" { format!("{call}\n        {call}") } else { call };
+    let call = format!("gl.{}({})", method_name(set, command), arguments.join(", "));
     let mut text = String::from("    {\n");
     for line in &prepared {
         let _ = writeln!(text, "        {line}");
     }
-    let _ = writeln!(text, "        {call}");
-    let expected = logged.join(" ");
-    let _ = writeln!(text, "        calls.expect({:?}, {expected:?});\n    }}", method.command.name);
-    (text, expected)
+    // glGetError answers the glue's own refusal first, if one is pending: called twice, the second reaches the library.
+    if command == "glGetError" {
+        let _ = writeln!(text, "        let _ = {call};");
+    }
+    let has_answer = return_type(method).is_some();
+    let _ = writeln!(text, "        {}{call};", if has_answer { "let answer = " } else { "" });
+    let _ = writeln!(text, "        calls.expect({command:?}, {});", logged.expression());
+    if command == "glDeleteSync" {
+        // The fence is no longer the glue's: a second delete is refused before the library.
+        let _ = writeln!(text, "        {call};\n        calls.not_reached({command:?});");
+    }
+    let checks = given_back_checks(method, &outs_checked);
+    if !checks.is_empty() {
+        let _ = writeln!(text, "        {checks}");
+    }
+    text.push_str("    }\n");
+    Ok(text)
 }
 
-/// tests/arguments.rs's `every_method`: each method called once with arguments of its own, its line checked.
-fn write_arguments(set: &Set, classified: &Classified) -> String {
-    let mut text = String::from("\n/// Each method called once with arguments of its own, the line the library logged for it checked.\nfn every_method(gl: &OpenGlEsContext, calls: &mut Calls) {\n");
+/// The byte scalar, for byte ranges given as values.
+const U8: Scalar = Scalar { rust: "u8", c: "u8" };
+/// The bytes a compressed transfer is given (tests/arguments.rs's COMPRESSED).
+const COMPRESSED: usize = 8;
+/// A fence argument in a line the stand-in must log: replaced by the test with the handle the last glFenceSync made.
+const FENCE_MADE: &str = "FENCE";
+
+/// tests/arguments.rs's `every_method`: each method called once with arguments of its own, its line and what it gives
+/// back checked.
+fn write_arguments(set: &Set, classified: &Classified) -> Result<String, String> {
+    let mut text = String::from(
+        "\n/// Each method called once with arguments of its own: the line the library logged for it checked, and what it gave\n/// back.\nfn every_method(gl: &OpenGlEsContext, calls: &mut Calls) {\n",
+    );
     for (index, method) in classified.methods.iter().enumerate() {
-        text.push_str(&argument_call(set, method, index).0);
+        text.push_str(&argument_call(set, method, index)?);
     }
     text.push_str("}\n");
-    text
+    Ok(text)
 }
 
-/// The head of the calling glue's plant list.
-const CALLS_PLANTS_HEAD: &str = "# The OpenGL ES calling glue's plant list (written by tools/api-crate-generator, src/khronos/write.rs `write_plants`): one\n# plant per argument of each method's call of its entry point (calls.rs), the argument replaced by zero or a null\n# address. Every plant must make tests/arguments.rs fail (every argument reaches the stand-in library as the method was\n# given it). Run from the repository's root, inside its `nix develop`:\n#   python3 -I tools/plants/run-plants.py crates/opengl-es/implementation/direct/plants.txt --workers 10\ntest: cargo test -q --release -p wcontainers-opengl-es-direct --test arguments\n";
+/// The head of a calling glue's plant list.
+fn plants_head(api: &str, file: &str) -> String {
+    format!(
+        "# {api}'s calling glue, its plant list (written by tools/api-crate-generator, src/khronos/write.rs `write_plants`):\n# for each method's call of its entry point ({file}), one plant per argument replaced by zero or a null address, one\n# per pointer argument pointing at other memory of the same type (what it points at changed), one per statement after\n# the call (each copy back dropped, a copy of several values made a copy of one) and one per value given back (the\n# whole answer its default, each of a tuple's parts its default, a library's refusal read as success, a negative\n# number made zero). Every plant must make the opengl-es direct crate's tests/arguments.rs fail: every argument\n# reaches the stand-in library as the method was given it, and everything the library wrote and returned reaches\n# the caller. Run from the repository's root, inside its `nix develop`, with the plant runner kept with the evidence\n# (outside the repository): run-plants.py <this list>\ntest: cargo test -q --release -p wcontainers-opengl-es-direct --test arguments\n"
+    )
+}
 
-/// The calling glue's plant list, from calls.rs as written: for each method's call of its entry point, one plant per
-/// argument, the text changed being the call's line with as many lines before it as make it occur once.
+/// What points at other memory of the type a pointer argument of `c_type` points at, as the plants' content change:
+/// none for a plain value.
+fn other_memory(part: &Part, c_type: &str, argument: &str) -> Option<String> {
+    Some(match (part, c_type) {
+        // A handle passed on: the library's next.
+        (Part::Handle { .. }, _) => format!("{argument}.wrapping_byte_add(1)"),
+        (Part::NullOnly, _) => "core::ptr::without_provenance_mut(1)".to_string(),
+        (Part::AttributeList, _) => "[constants::NONE; 2].as_ptr()".to_string(),
+        (Part::HandlesOut { .. }, _) => "[core::ptr::null_mut::<c_void>(); 4096].as_mut_ptr()".to_string(),
+        (_, "*const c_void") => "[0x5A_u8; 65536].as_ptr().cast()".to_string(),
+        (_, "*mut c_void") => "[0_u8; 65536].as_mut_ptr().cast()".to_string(),
+        (_, "*const u8") => "c\"other\".as_ptr().cast()".to_string(),
+        // Texts as long as any given here, zero-ended.
+        (_, "*const *const u8") => "[c\"................................................................\".as_ptr().cast::<u8>(); 64].as_ptr()".to_string(),
+        (_, ty) => match (ty.strip_prefix("*const "), ty.strip_prefix("*mut ")) {
+            (Some(elem), _) => format!("[{elem}::default(); 4096].as_ptr()"),
+            (_, Some(elem)) => format!("[{elem}::default(); 4096].as_mut_ptr()"),
+            _ => return None,
+        },
+    })
+}
+
+/// The changes of a statement after the call: dropped, and a copy of several values made a copy of one.
+fn after_changes(line: &str) -> Vec<(&'static str, String)> {
+    let mut changes = vec![("dropped", String::new())];
+    if let Some(at) = line.find(".zip(") {
+        let close = line[at..].find(") ").map(|end| at + end + 1);
+        if let Some(close) = close {
+            changes.push(("copying one value", format!("{}.take(1){}", &line[..close], &line[close..])));
+        }
+    }
+    changes
+}
+
+/// The changes of the value given back: its default, each part of what it carries its default, a refusal read as
+/// success, a negative number made zero.
+fn answer_changes(line: &str, signed: bool) -> Vec<(String, String)> {
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let answer = line.trim();
+    let mut changes = vec![("its default".to_string(), format!("{indent}Default::default()"))];
+    // What the answer carries: a `then_some`'s value, a `Some`'s, or the answer itself.
+    let (prefix, payload) = match (answer.find(".then_some("), answer.strip_prefix("Some(")) {
+        (Some(at), _) => answer.split_at(at + ".then_some(".len()),
+        (None, Some(_)) => answer.split_at("Some(".len()),
+        (None, None) => ("", answer),
+    };
+    let payload = if prefix.is_empty() { payload } else { payload.strip_suffix(')').unwrap_or(payload) };
+    let close = if prefix.is_empty() { "" } else { ")" };
+    let parts = match payload.strip_prefix('(').and_then(|inner| inner.strip_suffix(')')) {
+        Some(inner) if !payload.contains("then") && !payload.contains("is_null") => split_arguments(inner),
+        _ => Vec::new(),
+    };
+    for place in 0..parts.len() {
+        let mut changed = parts.clone();
+        changed[place] = "Default::default()".to_string();
+        changes.push((format!("part {place} its default"), format!("{indent}{prefix}({}){close}", changed.join(", "))));
+    }
+    if parts.is_empty() && !prefix.is_empty() && payload != "()" {
+        changes.push(("what it carries its default".to_string(), format!("{indent}{prefix}Default::default(){close}")));
+    }
+    for (refused, success) in [("result != 0", "result == 0"), ("(!result.is_null())", "(result.is_null())")] {
+        if answer.contains(refused) {
+            changes.push(("a refusal read as success".to_string(), format!("{indent}{}", answer.replace(refused, success))));
+        }
+    }
+    if signed && answer == "result" {
+        changes.push(("a negative number made zero".to_string(), format!("{indent}result.max(0)")));
+    }
+    changes
+}
+
+/// One plant: its name, and the text before and after (from the method's opening line, so that it occurs once).
+fn plant(out: &mut String, file: &str, name: &str, lines: &[&str], start: usize, at: usize, new_line: &str) {
+    let before: String = lines[start..at].iter().map(|line| format!("{line}\n")).collect();
+    let new = if new_line.is_empty() { before.trim_end_matches('\n').to_string() } else { format!("{before}{new_line}") };
+    let _ = writeln!(out, "\nplant: {name}\nfile: {file}\nold:\n{before}{}\nnew:\n{new}\nend", lines[at]);
+}
+
+/// A calling glue's plant list, from calls.rs as written: for each method's call of its entry point, its arguments,
+/// the statements after it and the value it gives back, each changed (`plants_head`).
 fn write_plants(set: &Set, classified: &Classified, calls: &str) -> Result<String, String> {
-    let mut out = String::from(CALLS_PLANTS_HEAD);
+    let file = format!("crates/{}/implementation/direct/calls.rs", set.folder);
+    let mut out = plants_head(if set.api == "egl" { "EGL" } else { "OpenGL ES" }, "calls.rs");
     let lines: Vec<&str> = calls.lines().collect();
     for method in &classified.methods {
-        let field = method_name(set, &method.command.name);
+        let command = &method.command.name;
+        let field = method_name(set, command);
         let opening = format!("    {} {{", signature(set, method, false));
         let start = lines.iter().position(|line| *line == opening).ok_or_else(|| format!("calls.rs: no method {field}"))?;
-        let at = (start..lines.len()).find(|at| lines[*at].contains("unsafe { entry(")).ok_or_else(|| format!("calls.rs: {field} calls no entry"))?;
+        let end = (start..lines.len()).find(|at| lines[*at] == "    }").ok_or_else(|| format!("calls.rs: {field} has no end"))?;
+        let at = (start..end).find(|at| lines[*at].contains("unsafe { entry(")).ok_or_else(|| format!("calls.rs: {field} calls no entry"))?;
         let line = lines[at];
         let open = line.find("entry(").map(|found| found + "entry(".len()).ok_or("calls.rs: no call")?;
         let close = line.rfind(") }").ok_or("calls.rs: no call's end")?;
@@ -1091,11 +1357,6 @@ fn write_plants(set: &Set, classified: &Classified, calls: &str) -> Result<Strin
         if arguments.len() != method.parts.len() {
             return Err(format!("calls.rs: {field} passes {} arguments for {} parameters", arguments.len(), method.parts.len()));
         }
-        let mut first = at;
-        while calls.matches(&lines[first..=at].join("\n")).count() != 1 {
-            first = first.checked_sub(1).ok_or_else(|| format!("calls.rs: {field}: no text before its call makes it occur once"))?;
-        }
-        let before: String = lines[first..at].iter().map(|line| format!("{line}\n")).collect();
         for (place, ((argument, part), param)) in arguments.iter().zip(&method.parts).zip(&method.command.params).enumerate() {
             let ty = c_param_type(part, param);
             let wrong = if ty.starts_with("*const") {
@@ -1107,14 +1368,32 @@ fn write_plants(set: &Set, classified: &Classified, calls: &str) -> Result<Strin
             } else {
                 "0"
             };
-            let mut changed = arguments.clone();
-            changed[place] = wrong.to_string();
-            let new_line = format!("{}{}{}", &line[..open], changed.join(", "), &line[close..]);
-            let _ = writeln!(
-                out,
-                "\nplant: calls.rs {} argument {place} ({argument}) as {wrong}\nfile: crates/opengl-es/implementation/direct/calls.rs\nold:\n{before}{line}\nnew:\n{before}{new_line}\nend",
-                method.command.name
-            );
+            // (An argument that is already the wrong value, EGL_DEFAULT_DISPLAY's null, has only its other change.)
+            let mut changes = if argument == wrong { Vec::new() } else { vec![(format!("as {wrong}"), wrong.to_string())] };
+            if let Some(other) = other_memory(part, &ty, argument) {
+                changes.push(("pointing at other memory".to_string(), other));
+            }
+            for (what, replacement) in changes {
+                let mut changed = arguments.clone();
+                changed[place] = replacement;
+                let new_line = format!("{}{}{}", &line[..open], changed.join(", "), &line[close..]);
+                plant(&mut out, &file, &format!("calls.rs {command} argument {place} ({argument}) {what}"), &lines, start, at, &new_line);
+            }
+        }
+        let signed = matches!(&method.ret, Return::Value(scalar) if scalar.rust.starts_with('i'));
+        for after in at + 1..end {
+            let text = lines[after];
+            let statement = text.trim_end().ends_with(';') || text.trim_end().ends_with('}');
+            if !statement {
+                for (what, new_line) in answer_changes(text, signed) {
+                    plant(&mut out, &file, &format!("calls.rs {command} answer {what}"), &lines, start, after, &new_line);
+                }
+            } else if !text.trim_start().starts_with("let ") {
+                // (A binding is used by what follows: dropped, nothing would compile.)
+                for (what, new_line) in after_changes(text) {
+                    plant(&mut out, &file, &format!("calls.rs {command} after the call, line {} {what}", after - at), &lines, start, after, &new_line);
+                }
+            }
         }
     }
     Ok(out)
@@ -1167,18 +1446,24 @@ pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], egl:
         write(direct.join("implementation.rs"), &format!("{}{runtime}", header(set)))?;
         let calls = write_calls(set, classified, registry)?;
         write(direct.join("calls.rs"), &calls)?;
+        // The calling glue's plant list goes beside the crates written, never into a crate: only source is kept in the
+        // repository.
+        let plants = out.join("plants");
+        std::fs::create_dir_all(&plants).map_err(|e| format!("{}: {e}", plants.display()))?;
+        let listed = write_plants(set, classified, &calls)?;
+        write(plants.join(format!("{}-calls.txt", set.folder)), &listed)?;
+        report.push_str(&crate::plants::reported(&format!("{}-calls", set.folder), &listed));
         write(direct.join("Cargo.toml"), direct_manifest)?;
         if set.api == "gles2" {
             // The stand-in library fuzz-khronos.sh fuzzes the glue over (it reads and writes the most each command may).
             let fake = direct.join("fake");
             std::fs::create_dir_all(&fake).map_err(|e| e.to_string())?;
-            write(fake.join("fake_egl.c"), &write_fake(set, classified, templates.fake))?;
+            write(fake.join("fake_egl.c"), &write_fake(set, classified, templates.fake)?)?;
             let tests = direct.join("tests");
             std::fs::create_dir_all(&tests).map_err(|e| e.to_string())?;
             write(tests.join("conformance.rs"), &format!("{}{}", header(set), templates.gl_direct_test))?;
             write(tests.join("kept.rs"), &format!("{}{}", header(set), templates.gl_direct_kept))?;
-            write(tests.join("arguments.rs"), &format!("{}{}", header(set), templates.gl_direct_arguments.replace("// METHODS\n", &write_arguments(set, classified))))?;
-            write(direct.join("plants.txt"), &write_plants(set, classified, &calls)?)?;
+            write(tests.join("arguments.rs"), &format!("{}{}", header(set), templates.gl_direct_arguments.replace("// METHODS\n", &write_arguments(set, classified)?)))?;
             write(conformance.join("suite.rs"), &write_suite(set, classified, egl, templates.gl_suite))?;
             write(conformance.join("Cargo.toml"), templates.gl_suite_manifest)?;
         } else {
@@ -1266,41 +1551,81 @@ fn count_of(method: &Method, slice: usize) -> Option<(usize, usize)> {
     })
 }
 
-fn fake_method(method: &Method) -> String {
+/// The stand-in's letter for the kind of value a pointer reaches (template's `fake_values`).
+fn log_kind(elem: &Scalar) -> Result<char, String> {
+    Ok(match elem.c {
+        "i32" => 'i',
+        "u32" => 'u',
+        "f32" => 'f',
+        "i64" | "isize" => 'I',
+        "u64" => 'U',
+        "u8" => 'b',
+        other => return Err(format!("the stand-in logs no values of {other}")),
+    })
+}
+
+/// One generated command of the stand-in: the call's line logged (each argument as tests/arguments.rs expects it,
+/// what each pointer reaches), the most its parameters reach read or written, each value written logged, a value
+/// returned (of its own in a logged run) and logged.
+fn fake_method(method: &Method) -> Result<String, String> {
     let name = &method.command.name;
     let types: Vec<String> = method.parts.iter().zip(&method.command.params).map(|(part, param)| c_of(&c_param_type(part, param))).collect();
     let params: Vec<String> = types.iter().enumerate().map(|(at, ty)| format!("{ty} p{at}")).collect();
     let ret = c_return_type(&method.ret, &method.command).map_or("void".to_string(), |r| c_of(&r));
     let mut body = String::new();
-    // The call's line in the log: each argument as tests/arguments.rs expects it (`logged`).
+    let counted = |at: usize| count_of(method, at).map_or("0".to_string(), |(count, by)| format!("(p{count} > 0 ? (size_t)p{count} * {by} : 0)"));
+    let transfer = |width: &usize, height: &usize, depth: &Option<usize>, format: &usize, type_: &usize, pack: u8| {
+        format!("fake_transfer(p{width}, p{height}, {}, p{format}, p{type_}, {pack})", depth.map_or("0".to_string(), |d| format!("p{d}")))
+    };
+    // The call's line in the log.
     let mut format = name.clone();
     let mut logged_values = Vec::new();
     // (The commands taking an offset into a bound buffer are the template's own, which log it as a number.)
-    for (at, ty) in types.iter().enumerate() {
-        let (spec, value) = if ty.contains('*') {
-            ("%s", format!("FAKE_ADDRESS(p{at})"))
-        } else if ty == "float" {
-            ("%.9g", format!("(double)p{at}"))
-        } else if ty == "uint64_t" {
-            ("%llu", format!("(unsigned long long)p{at}"))
-        } else {
-            ("%lld", format!("(long long)p{at}"))
+    for (at, (part, ty)) in method.parts.iter().zip(&types).enumerate() {
+        let (spec, value) = match part {
+            Part::Handle { .. } => ("%s", format!("fake_handle_name(p{at})")),
+            Part::SliceIn { elem } => ("%s", format!("fake_values(p{at}, {}, '{}')", counted(at), log_kind(elem)?)),
+            Part::BoundedIn { elem, most } => ("%s", format!("fake_values(p{at}, {most}, '{}')", log_kind(elem)?)),
+            Part::TextIn => ("%s", format!("fake_text(p{at})")),
+            Part::TextsIn { lengths } => {
+                let count = count_of(method, at).map_or("0".to_string(), |(count, _)| format!("p{count}"));
+                ("%s", format!("fake_texts(p{at}, {count}, {})", lengths.map_or("NULL".to_string(), |l| format!("p{l}"))))
+            }
+            Part::LengthsOf { texts } => {
+                let count = count_of(method, *texts).map_or("0".to_string(), |(count, _)| format!("(p{count} > 0 ? (size_t)p{count} : 0)"));
+                ("%s", format!("fake_values(p{at}, {count}, 'i')"))
+            }
+            Part::BytesIn => ("%s", format!("fake_bytes(p{at}, {})", counted(at))),
+            Part::PixelUnpack { width, height, depth, format, type_ } => ("%s", format!("fake_unpack_bound() ? \"offset\" : fake_bytes(p{at}, {})", transfer(width, height, depth, format, type_, 0))),
+            Part::CompressedUnpack => ("%s", format!("fake_unpack_bound() ? \"offset\" : fake_bytes(p{at}, {})", counted(at))),
+            Part::OptionalBytes { size } => ("%s", format!("fake_bytes(p{at}, p{size} > 0 ? (size_t)p{size} : 0)")),
+            _ if ty.contains('*') => ("%s", format!("FAKE_ADDRESS(p{at})")),
+            _ if ty == "float" => ("%.9g", format!("(double)p{at}")),
+            _ if ty == "uint64_t" => ("%llu", format!("(unsigned long long)p{at}")),
+            _ => ("%lld", format!("(long long)p{at}")),
         };
         format.push(' ');
         format.push_str(spec);
         logged_values.push(value);
     }
     let _ = writeln!(body, "    fake_log(\"{format}\"{});", logged_values.iter().map(|value| format!(", {value}")).collect::<String>());
+    let mut wrote = Vec::new();
     for (at, part) in method.parts.iter().enumerate() {
         let size = |elem: &Scalar| format!("sizeof({})", c_of(elem.c));
-        let counted = |bytes_each: String| {
+        let counted_bytes = |bytes_each: String| {
             count_of(method, at).map(|(count, by)| format!("if (p{count} > 0) fake_{{}}(\"{name}\", p{at}, (size_t)p{count} * {by} * {bytes_each});"))
         };
         let line = match part {
-            Part::SliceIn { elem } => counted(size(elem)).map(|l| l.replace("fake_{}", "fake_read")),
-            Part::BytesIn => counted("1".to_string()).map(|l| l.replace("fake_{}", "fake_read")),
-            Part::SliceOut { elem } => counted(size(elem)).map(|l| l.replace("fake_{}", "fake_write")),
-            Part::SingleOut(elem) => Some(format!("fake_write(\"{name}\", p{at}, {});", size(elem))),
+            Part::SliceIn { elem } => counted_bytes(size(elem)).map(|l| l.replace("fake_{}", "fake_read")),
+            Part::BytesIn => counted_bytes("1".to_string()).map(|l| l.replace("fake_{}", "fake_read")),
+            Part::SliceOut { elem } => {
+                wrote.push(format!("fake_log(\"  wrote {at} %s\", fake_values(p{at}, {}, '{}'));", counted(at), log_kind(elem)?));
+                counted_bytes(size(elem)).map(|l| l.replace("fake_{}", "fake_write"))
+            }
+            Part::SingleOut(elem) => {
+                wrote.push(format!("fake_log(\"  wrote {at} %s\", fake_values(p{at}, 1, '{}'));", log_kind(elem)?));
+                Some(format!("fake_write(\"{name}\", p{at}, {});", size(elem)))
+            }
             Part::TextIn => Some(format!("fake_read_text(\"{name}\", p{at});")),
             Part::TextsIn { lengths } => count_of(method, at).map(|(count, _)| {
                 let each = match lengths {
@@ -1311,14 +1636,18 @@ fn fake_method(method: &Method) -> String {
                 };
                 format!("for (int32_t k = 0; k < p{count}; k++) {{ fake_read(\"{name}\", &p{at}[k], sizeof *p{at}); {each} }}")
             }),
-            Part::GuardedOut { elem, guard, .. } => Some(format!("fake_write(\"{name}\", p{at}, {guard} * {});", size(elem))),
+            Part::GuardedOut { elem, guard, .. } => {
+                wrote.push(format!("fake_log(\"  wrote {at} %s\", fake_values(p{at}, {guard}, '{}'));", log_kind(elem)?));
+                Some(format!("fake_write(\"{name}\", p{at}, {guard} * {});", size(elem)))
+            }
             Part::BoundedIn { elem, most } => Some(format!("fake_read(\"{name}\", p{at}, {most} * {});", size(elem))),
-            Part::PixelUnpack { width, height, depth, format, type_ } => Some(format!(
-                "if (!fake_unpack_bound()) fake_read(\"{name}\", p{at}, fake_transfer(p{width}, p{height}, {}, p{format}, p{type_}, 0));",
-                depth.map_or("0".to_string(), |d| format!("p{d}"))
-            )),
+            Part::PixelUnpack { width, height, depth, format, type_ } => {
+                Some(format!("if (!fake_unpack_bound()) fake_read(\"{name}\", p{at}, {});", transfer(width, height, depth, format, type_, 0)))
+            }
             Part::PixelPack { width, height, format, type_ } => {
-                Some(format!("if (!fake_pack_bound()) fake_write(\"{name}\", p{at}, fake_transfer(p{width}, p{height}, 0, p{format}, p{type_}, 1));"))
+                let bytes = transfer(width, height, &None, format, type_, 1);
+                wrote.push(format!("if (!fake_pack_bound()) fake_log(\"  wrote {at} %s\", fake_bytes(p{at}, {bytes}));"));
+                Some(format!("if (!fake_pack_bound()) fake_write(\"{name}\", p{at}, {bytes});"))
             }
             Part::CompressedUnpack => count_of(method, at).map(|(size, _)| format!("if (!fake_unpack_bound() && p{size} > 0) fake_read(\"{name}\", p{at}, (size_t)p{size});")),
             Part::OptionalBytes { size } => Some(format!("if (p{at} && p{size} > 0) fake_read(\"{name}\", p{at}, (size_t)p{size});")),
@@ -1328,19 +1657,22 @@ fn fake_method(method: &Method) -> String {
             let _ = writeln!(body, "    {line}");
         }
     }
+    for line in &wrote {
+        let _ = writeln!(body, "    {line}");
+    }
     let _ = writeln!(body, "    (void)fake_value();");
     for at in 0..types.len() {
         let _ = writeln!(body, "    (void)p{at};");
     }
     if ret != "void" {
-        let value = if ret.contains('*') { "fake_handle()".to_string() } else { format!("({ret})fake_value()") };
-        let _ = writeln!(body, "    return {value};");
+        // (Every command returning an address is the template's own.)
+        let _ = writeln!(body, "    {ret} value = fake.logging ? ({ret})fake_returned() : ({ret})fake_value();\n    fake_log(\"  returned %lld\", (long long)value);\n    return value;");
     }
-    format!("static {ret} fake_{name}({}) {{\n{body}}}\n", if params.is_empty() { "void".to_string() } else { params.join(", ") })
+    Ok(format!("static {ret} fake_{name}({}) {{\n{body}}}\n", if params.is_empty() { "void".to_string() } else { params.join(", ") }))
 }
 
 /// The fake's OpenGL ES part: each command not written by hand, and the table eglGetProcAddress answers from.
-fn write_fake(set: &Set, classified: &Classified, template: &str) -> String {
+fn write_fake(set: &Set, classified: &Classified, template: &str) -> Result<String, String> {
     // Every extension the set names and each command names, so that each extension's command is reached.
     let all: BTreeSet<&str> = set.extensions.iter().copied().chain(classified.methods.iter().flat_map(|method| method.extensions.iter().map(String::as_str))).collect();
     let names: Vec<String> = all.iter().map(|extension| format!("\"{extension}\"")).collect();
@@ -1355,7 +1687,7 @@ fn write_fake(set: &Set, classified: &Classified, template: &str) -> String {
     for method in &classified.methods {
         let name = &method.command.name;
         if !FAKE_BY_HAND.contains(&name.as_str()) {
-            text.push_str(&fake_method(method));
+            text.push_str(&fake_method(method)?);
             text.push('\n');
         }
         table.push(name.clone());
@@ -1371,7 +1703,7 @@ fn write_fake(set: &Set, classified: &Classified, template: &str) -> String {
         "void *fake_gl_lookup(const char *name) {{\n    static const struct {{\n        const char *name;\n        void *address;\n    }} table[] = {{\n{}\n    }};\n    for (size_t at = 0; at < sizeof table / sizeof table[0]; at++)\n        if (strcmp(table[at].name, name) == 0) return table[at].address;\n    return NULL;\n}}",
         entries.join("\n")
     );
-    text
+    Ok(text)
 }
 
 #[cfg(test)]
