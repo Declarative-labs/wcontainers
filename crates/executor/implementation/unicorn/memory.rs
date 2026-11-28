@@ -1252,6 +1252,11 @@ impl<U: Unicorn<Guest>> Memory<U> {
         }
         self.save_registers(registers)
             .expect("reading registers from unicorn");
+        // A fetch that faults leaves the program counter at the address fetched, where unicorn leaves it at the
+        // instruction before when that one branched there in the same run.
+        if let Some((address, Access::Execute)) = stopped.fault {
+            registers.pc = address;
+        }
         self.count_guest_writes();
         (
             self.to_exit(result, &stopped, registers),
@@ -1863,6 +1868,28 @@ mod tests {
                 start,
             ]
         );
+    }
+
+    /// A branch to an address the guest may not run faults on the fetch there, with the program counter at that
+    /// address, as an instruction abort leaves it; one to an address that is no multiple of 4 is an alignment fault.
+    #[test]
+    fn a_branch_to_code_the_guest_may_not_run_stops_at_its_target() {
+        /// [BR](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BR--Branch-to-register-) X0.
+        const BRANCH_TO_X0: u32 = 0xD61F_0000;
+        let mut memory = with_code::<Direct>(&[BRANCH_TO_X0]);
+        let target = 8 * PAGE_SIZE;
+        let (exit, registers) = run(&mut memory, CODE, target, 0, SLICE);
+        assert_eq!(
+            exit,
+            Exit::MemoryFault {
+                address: target,
+                access: Access::Execute,
+            }
+        );
+        assert_eq!(registers.pc, target);
+        let (exit, registers) = run(&mut memory, CODE, target + 1, 0, SLICE);
+        assert_eq!(exit, Exit::AlignmentFault { address: target + 1 });
+        assert_eq!(registers.pc, target + 1);
     }
 
     #[test]
