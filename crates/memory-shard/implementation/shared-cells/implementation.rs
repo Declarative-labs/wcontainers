@@ -16,7 +16,9 @@ use vstd::prelude::*;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_capability_table::{CapabilityTable, CreateError, DuplicateError};
-use wcontainers_kernel_core::memory::{MemoryCapabilityTable, MemoryError, SetPermissionsError, SplitError};
+use wcontainers_memory_capability_table::{
+    MemoryCapabilityTable, MemoryError, SetPermissionsError, SplitError,
+};
 use wcontainers_memory_shard::{BorrowError, MemoryPermissions, MemoryShard, MemoryShardConfig};
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -36,6 +38,8 @@ pub struct SharedCellsBytes<'shard> {
 /// The memory a task holds, as shards under their starting addresses, no two of which overlap.
 pub struct SharedCellsMemoryCapabilityTable {
     entries: Entries,
+    // How many allocations this table has made, which numbers the next one.
+    allocations: Ghost<int>,
 }
 
 // The rule every byte meets, which any byte does.
@@ -50,11 +54,12 @@ impl Predicate<u8> for AnyByte {
 // The cells of the memory one create made, which every shard cut from it or duplicated from it shares.
 type Cells = Vec<InvCell<u8, AnyByte>>;
 
-// A run of cells, inside the cells it names.
+// A run of cells, inside the cells it names, and the number of the allocation that made them.
 struct Run {
     cells: Rc<Cells>,
     start: usize,
     length: u64,
+    allocation: Ghost<int>,
 }
 
 impl Run {
@@ -153,11 +158,12 @@ spec fn holds(list: Seq<Entry>, held: Map<u64, SharedCellsMemoryShard>) -> bool 
         held.contains_key(address) ==> address + length_of(held.index(address)) <= u64::MAX
 }
 
-// Proves that the shards of any table never overlap, the fact a task's memory gives its callers.
-proof fn lemma_shards_are_disjoint(table: SharedCellsMemoryCapabilityTable)
+/// Proves that the shards of any table never overlap, the fact `TaskMemory::lemma_shards_are_disjoint` gives its callers.
+pub proof fn lemma_shards_are_disjoint(table: SharedCellsMemoryCapabilityTable)
     ensures
-        disjoint(state_of(table)),
+        wcontainers_kernel_core::memory::shards_are_disjoint::<SharedCellsMemoryShard, SharedCellsMemoryCapabilityTable>(table),
 {
+    assert(disjoint(state_of(table)));
 }
 
 // Proves that a new entry apart from every other keeps a list standing for its map.
@@ -441,7 +447,7 @@ fn is_apart(first: u64, first_length: u64, second: u64, second_length: u64) -> (
 }
 
 // Returns why a shard of the length cannot be held at the address beside the shards of the list, if it cannot.
-fn refusal(list: &[Entry], address: u64, length: u64) -> (refused: Option<MemoryError>)
+fn find_refusal(list: &[Entry], address: u64, length: u64) -> (refused: Option<MemoryError>)
     ensures
         refused is None ==> address + length <= u64::MAX && forall|index: int|
             #![trigger list@[index]]
@@ -479,11 +485,12 @@ fn refusal(list: &[Entry], address: u64, length: u64) -> (refused: Option<Memory
     None
 }
 
-// Returns a run of new cells, every byte zero, of the length the config asks for, or nothing when no memory is left.
-fn make(config: MemoryShardConfig) -> (made: Option<SharedCellsMemoryShard>)
+// Returns a run of new cells, every byte zero, of the length the config asks for, as the numbered allocation, or nothing
+// when no memory is left.
+fn make(config: MemoryShardConfig, allocation: Ghost<int>) -> (made: Option<SharedCellsMemoryShard>)
     ensures
-        made matches Some(shard) ==> length_of(shard) == config.length && permissions_of(shard)
-            == config.permissions,
+        made matches Some(shard) ==> wcontainers_capability_table::CapabilityConfig::describes(config, shard) && shard.spec_viewed_allocation()
+            == wcontainers_memory_shard::MemoryAllocationIdentity(allocation@) && shard.spec_view_start() == 0,
 {
     if config.length > usize::MAX as u64 {
         return None;
@@ -505,7 +512,7 @@ fn make(config: MemoryShardConfig) -> (made: Option<SharedCellsMemoryShard>)
     }
     Some(
         SharedCellsMemoryShard {
-            run: Run { cells: Rc::new(cells), start: usize::MIN, length: config.length },
+            run: Run { cells: Rc::new(cells), start: usize::MIN, length: config.length, allocation },
             permissions: config.permissions,
         },
     )
@@ -522,7 +529,12 @@ fn reprotect(shard: &SharedCellsMemoryShard, permissions: MemoryPermissions) -> 
         use_type_invariant(&shard.run);
     }
     SharedCellsMemoryShard {
-        run: Run { cells: Rc::clone(&shard.run.cells), start: shard.run.start, length: shard.run.length },
+        run: Run {
+            cells: Rc::clone(&shard.run.cells),
+            start: shard.run.start,
+            length: shard.run.length,
+            allocation: shard.run.allocation,
+        },
         permissions,
     }
 }
@@ -540,8 +552,8 @@ fn cut(shard: &SharedCellsMemoryShard, offset: u64) -> (cut: (SharedCellsMemoryS
     requires
         0 < offset < length_of(*shard),
     ensures
-        length_of(cut.0) == offset,
-        length_of(cut.1) == length_of(*shard) - offset,
+        wcontainers_memory_capability_table::views_bytes_of(cut.0, *shard, 0, offset as int),
+        wcontainers_memory_capability_table::views_bytes_of(cut.1, *shard, offset as int, length_of(*shard) - offset),
         permissions_of(cut.0) == permissions_of(*shard),
         permissions_of(cut.1) == permissions_of(*shard),
 {
@@ -550,11 +562,17 @@ fn cut(shard: &SharedCellsMemoryShard, offset: u64) -> (cut: (SharedCellsMemoryS
     }
     let cells: &Cells = &shard.run.cells;
     let _ = cells.len();
-    let first = Run { cells: Rc::clone(&shard.run.cells), start: shard.run.start, length: offset };
+    let first = Run {
+        cells: Rc::clone(&shard.run.cells),
+        start: shard.run.start,
+        length: offset,
+        allocation: shard.run.allocation,
+    };
     let second = Run {
         cells: Rc::clone(&shard.run.cells),
         start: shard.run.start + offset as usize,
         length: shard.run.length - offset,
+        allocation: shard.run.allocation,
     };
     (
         SharedCellsMemoryShard { run: first, permissions: shard.permissions },
@@ -649,88 +667,6 @@ fn replace(entries: &mut Entries, index: usize, shard: SharedCellsMemoryShard)
     *entries = Entries { list, held: Ghost(held.insert(address, placed)) };
 }
 
-
-// Creates a shard as `CapabilityTable::create` promises, its clause written over this crate's own view of the table.
-fn create_shard(
-    table: &mut SharedCellsMemoryCapabilityTable,
-    identifier: u64,
-    config: MemoryShardConfig,
-) -> (created: Result<(), CreateError<MemoryError>>)
-    ensures
-        match created {
-            Ok(_) => !state_of(*old(table)).contains_key(identifier) && state_of(
-                *final(table),
-            ).contains_key(identifier) && state_of(*final(table)).remove(identifier) == state_of(
-                *old(table),
-            ) && length_of(state_of(*final(table)).index(identifier)) == config.length
-                && permissions_of(state_of(*final(table)).index(identifier)) == config.permissions,
-            Err(CreateError::IdentifierTaken) => state_of(*old(table)).contains_key(identifier)
-                && state_of(*final(table)) == state_of(*old(table)),
-            Err(CreateError::Failed(_)) => !state_of(*old(table)).contains_key(identifier)
-                && state_of(*final(table)) == state_of(*old(table)),
-        },
-{
-    proof {
-        use_type_invariant(&table.entries);
-    }
-    if find(table.entries.list.as_slice(), identifier).is_some() {
-        return Err(CreateError::IdentifierTaken);
-    }
-    if let Some(refused) = refusal(table.entries.list.as_slice(), identifier, config.length) {
-        return Err(CreateError::Failed(refused));
-    }
-    let shard = match make(config) {
-        Some(shard) => shard,
-        None => return Err(CreateError::Failed(MemoryError::OutOfMemory)),
-    };
-    insert(&mut table.entries, Entry { address: identifier, shard });
-    proof {
-        use_type_invariant(&table.entries);
-        assert(state_of(*table).remove(identifier) =~= state_of(*old(table)));
-    }
-    Ok(())
-}
-
-// Returns the shard at the identifier as `CapabilityTable::get` promises.
-fn get_shard<'table>(table: &'table SharedCellsMemoryCapabilityTable, identifier: &u64) -> (capability:
-    Option<&'table SharedCellsMemoryShard>)
-    ensures
-        match capability {
-            Some(capability) => state_of(*table).contains_key(*identifier) && *capability == state_of(
-                *table,
-            ).index(*identifier),
-            None => !state_of(*table).contains_key(*identifier),
-        },
-{
-    proof {
-        use_type_invariant(&table.entries);
-    }
-    match find(table.entries.list.as_slice(), *identifier) {
-        Some(index) => Some(&table.entries.list[index].shard),
-        None => None,
-    }
-}
-
-// Drops the entry at the identifier as `CapabilityTable::drop` promises.
-fn drop_shard(table: &mut SharedCellsMemoryCapabilityTable, identifier: &u64)
-    ensures
-        state_of(*final(table)) == state_of(*old(table)).remove(*identifier),
-{
-    proof {
-        use_type_invariant(&table.entries);
-    }
-    if let Some(index) = find(table.entries.list.as_slice(), *identifier) {
-        remove(&mut table.entries, index);
-        proof {
-            use_type_invariant(&table.entries);
-        }
-    } else {
-        proof {
-            assert(state_of(*old(table)).remove(*identifier) =~= state_of(*old(table)));
-        }
-    }
-}
-
 // Holds a duplicate of a shard at the new identifier, as both duplicates promise once the shard is found.
 fn hold_duplicate(table: &mut SharedCellsMemoryCapabilityTable, shard: SharedCellsMemoryShard, new_identifier: u64) -> (held:
     Result<(), DuplicateError<MemoryError>>)
@@ -751,7 +687,7 @@ fn hold_duplicate(table: &mut SharedCellsMemoryCapabilityTable, shard: SharedCel
     if find(table.entries.list.as_slice(), new_identifier).is_some() {
         return Err(DuplicateError::IdentifierTaken);
     }
-    if let Some(refused) = refusal(table.entries.list.as_slice(), new_identifier, shard.run.length) {
+    if let Some(refused) = find_refusal(table.entries.list.as_slice(), new_identifier, shard.run.length) {
         return Err(DuplicateError::Failed(refused));
     }
     insert(&mut table.entries, Entry { address: new_identifier, shard });
@@ -761,191 +697,8 @@ fn hold_duplicate(table: &mut SharedCellsMemoryCapabilityTable, shard: SharedCel
     Ok(())
 }
 
-// Duplicates a shard of the table into it as `CapabilityTable::duplicate_within` promises.
-fn duplicate_shard_within(
-    table: &mut SharedCellsMemoryCapabilityTable,
-    identifier: &u64,
-    new_identifier: u64,
-) -> (duplicated: Result<(), DuplicateError<MemoryError>>)
-    ensures
-        match duplicated {
-            Ok(_) => state_of(*old(table)).contains_key(*identifier) && !state_of(
-                *old(table),
-            ).contains_key(new_identifier) && state_of(*final(table)) == state_of(
-                *old(table),
-            ).insert(new_identifier, state_of(*old(table)).index(*identifier)),
-            Err(DuplicateError::NothingHeld) => !state_of(*old(table)).contains_key(*identifier)
-                && state_of(*final(table)) == state_of(*old(table)),
-            Err(DuplicateError::IdentifierTaken) => state_of(*old(table)).contains_key(*identifier)
-                && state_of(*old(table)).contains_key(new_identifier) && state_of(*final(table))
-                == state_of(*old(table)),
-            Err(DuplicateError::Failed(_)) => state_of(*old(table)).contains_key(*identifier)
-                && !state_of(*old(table)).contains_key(new_identifier) && state_of(*final(table))
-                == state_of(*old(table)),
-        },
-{
-    let shard = match get_shard(table, identifier) {
-        Some(shard) => duplicate(shard),
-        None => return Err(DuplicateError::NothingHeld),
-    };
-    hold_duplicate(table, shard, new_identifier)
-}
-
-// Duplicates a shard of another table into this one as `CapabilityTable::duplicate_from` promises.
-fn duplicate_shard_from(
-    table: &mut SharedCellsMemoryCapabilityTable,
-    other: &SharedCellsMemoryCapabilityTable,
-    identifier: &u64,
-    new_identifier: u64,
-) -> (duplicated: Result<(), DuplicateError<MemoryError>>)
-    ensures
-        match duplicated {
-            Ok(_) => state_of(*other).contains_key(*identifier) && !state_of(
-                *old(table),
-            ).contains_key(new_identifier) && state_of(*final(table)) == state_of(
-                *old(table),
-            ).insert(new_identifier, state_of(*other).index(*identifier)),
-            Err(DuplicateError::NothingHeld) => !state_of(*other).contains_key(*identifier)
-                && state_of(*final(table)) == state_of(*old(table)),
-            Err(DuplicateError::IdentifierTaken) => state_of(*other).contains_key(*identifier)
-                && state_of(*old(table)).contains_key(new_identifier) && state_of(*final(table))
-                == state_of(*old(table)),
-            Err(DuplicateError::Failed(_)) => state_of(*other).contains_key(*identifier)
-                && !state_of(*old(table)).contains_key(new_identifier) && state_of(*final(table))
-                == state_of(*old(table)),
-        },
-{
-    let shard = match get_shard(other, identifier) {
-        Some(shard) => duplicate(shard),
-        None => return Err(DuplicateError::NothingHeld),
-    };
-    hold_duplicate(table, shard, new_identifier)
-}
-
-// Holds the shard at the address with new permissions as `MemoryCapabilityTable::set_permissions` promises.
-fn set_shard_permissions(
-    table: &mut SharedCellsMemoryCapabilityTable,
-    address: &u64,
-    permissions: MemoryPermissions,
-) -> (set: Result<(), SetPermissionsError>)
-    ensures
-        match set {
-            Ok(_) => {
-                &&& state_of(*old(table)).contains_key(*address)
-                &&& state_of(*final(table)).contains_key(*address)
-                &&& state_of(*final(table)).remove(*address) == state_of(*old(table)).remove(*address)
-                &&& length_of(state_of(*final(table)).index(*address)) == length_of(
-                    state_of(*old(table)).index(*address),
-                )
-                &&& permissions_of(state_of(*final(table)).index(*address)) == permissions
-            },
-            Err(SetPermissionsError::NothingHeld) => !state_of(*old(table)).contains_key(*address)
-                && state_of(*final(table)) == state_of(*old(table)),
-            Err(SetPermissionsError::Failed(_)) => state_of(*old(table)).contains_key(*address)
-                && state_of(*final(table)) == state_of(*old(table)),
-        },
-{
-    proof {
-        use_type_invariant(&table.entries);
-    }
-    let index = match find(table.entries.list.as_slice(), *address) {
-        Some(index) => index,
-        None => return Err(SetPermissionsError::NothingHeld),
-    };
-    let shard = reprotect(&table.entries.list[index].shard, permissions);
-    replace(&mut table.entries, index, shard);
-    proof {
-        use_type_invariant(&table.entries);
-        assert(state_of(*table).remove(*address) =~= state_of(*old(table)).remove(*address));
-    }
-    Ok(())
-}
-
-// Splits the shard at the address in two as `MemoryCapabilityTable::split` promises.
-fn split_shard(table: &mut SharedCellsMemoryCapabilityTable, address: &u64, offset: u64) -> (split:
-    Result<(), SplitError>)
-    ensures
-        match split {
-            Ok(_) => {
-                let shard = state_of(*old(table)).index(*address);
-                let second = (*address + offset) as u64;
-                &&& state_of(*old(table)).contains_key(*address)
-                &&& 0 < offset < length_of(shard)
-                &&& state_of(*final(table)).contains_key(*address)
-                &&& state_of(*final(table)).contains_key(second)
-                &&& state_of(*final(table)).remove(*address).remove(second) == state_of(
-                    *old(table),
-                ).remove(*address)
-                &&& length_of(state_of(*final(table)).index(*address)) == offset
-                &&& length_of(state_of(*final(table)).index(second)) == length_of(shard) - offset
-                &&& permissions_of(state_of(*final(table)).index(*address)) == permissions_of(shard)
-                &&& permissions_of(state_of(*final(table)).index(second)) == permissions_of(shard)
-            },
-            Err(SplitError::NothingHeld) => !state_of(*old(table)).contains_key(*address)
-                && state_of(*final(table)) == state_of(*old(table)),
-            Err(SplitError::OutsideShard) => state_of(*old(table)).contains_key(*address) && !(0
-                < offset < length_of(state_of(*old(table)).index(*address))) && state_of(*final(table))
-                == state_of(*old(table)),
-            Err(SplitError::Failed(_)) => state_of(*old(table)).contains_key(*address)
-                && state_of(*final(table)) == state_of(*old(table)),
-        },
-{
-    proof {
-        use_type_invariant(&table.entries);
-    }
-    let index = match find(table.entries.list.as_slice(), *address) {
-        Some(index) => index,
-        None => return Err(SplitError::NothingHeld),
-    };
-    if offset == u64::MIN || offset >= table.entries.list[index].shard.run.length {
-        return Err(SplitError::OutsideShard);
-    }
-    let (first, second) = cut(&table.entries.list[index].shard, offset);
-    let ghost list = table.entries.list@;
-    let ghost held = table.entries.held@;
-    proof {
-        lemma_room_after_cut(list, held, index as int, offset, first);
-    }
-    replace(&mut table.entries, index, first);
-    let second_address = *address + offset;
-    insert(&mut table.entries, Entry { address: second_address, shard: second });
-    proof {
-        use_type_invariant(&table.entries);
-        assert(state_of(*table).remove(*address).remove(second_address) =~= state_of(
-            *old(table),
-        ).remove(*address));
-    }
-    Ok(())
-}
-
-// Lends the bytes of a shard as `MemoryShard::borrow` promises.
-fn borrow_bytes(shard: &SharedCellsMemoryShard, offset: u64, length: u64) -> (borrowed: Result<
-    SharedCellsBytes<'_>,
-    BorrowError,
->)
-    ensures
-        match borrowed {
-            Ok(bytes) => offset + length <= length_of(*shard) && bytes.spec_len() == length,
-            Err(_) => offset + length > length_of(*shard),
-        },
-{
-    proof {
-        use_type_invariant(&shard.run);
-    }
-    if offset > shard.run.length || length > shard.run.length - offset {
-        return Err(BorrowError::OutsideShard);
-    }
-    let cells: &Cells = &shard.run.cells;
-    let _ = cells.len();
-    Ok(
-        SharedCellsBytes {
-            window: Window { cells, start: shard.run.start + offset as usize, length: length as usize },
-        },
-    )
-}
-
 // Returns where in the cells a copy at the offset starts and how many bytes it moves for a buffer of the length.
-fn range(window: &Window, offset: u64, buffer: usize) -> (range: (usize, usize))
+fn locate(window: &Window, offset: u64, buffer: usize) -> (range: (usize, usize))
     ensures
         range.1 == wcontainers_volatile_bytes::copied(window.length as nat, offset, buffer as nat),
         range.0 + range.1 <= window.cells@.len(),
@@ -965,10 +718,26 @@ fn range(window: &Window, offset: u64, buffer: usize) -> (range: (usize, usize))
     }
 }
 
+impl SharedCellsMemoryCapabilityTable {
+    /// Returns a table holding no memory.
+    pub fn new() -> (table: Self)
+        ensures
+            table.state() == Map::<u64, SharedCellsMemoryShard>::empty(),
+    {
+        SharedCellsMemoryCapabilityTable {
+            entries: Entries { list: Vec::new(), held: Ghost(Map::empty()) },
+            allocations: Ghost(0),
+        }
+    }
+}
+
 impl Default for SharedCellsMemoryCapabilityTable {
-    // Returns a table holding no memory.
-    fn default() -> (table: Self) {
-        SharedCellsMemoryCapabilityTable { entries: Entries { list: Vec::new(), held: Ghost(Map::empty()) } }
+    /// Returns a table holding no memory.
+    fn default() -> (table: Self)
+        ensures
+            table.state() == Map::<u64, SharedCellsMemoryShard>::empty(),
+    {
+        Self::new()
     }
 }
 
@@ -985,7 +754,7 @@ impl<'shard> VolatileBytes for SharedCellsBytes<'shard> {
         proof {
             use_type_invariant(&self.window);
         }
-        let (first, count) = range(&self.window, offset, into.len());
+        let (first, count) = locate(&self.window, offset, into.len());
         let mut index = usize::MIN;
         while index < count
             invariant
@@ -1006,7 +775,7 @@ impl<'shard> VolatileBytes for SharedCellsBytes<'shard> {
         proof {
             use_type_invariant(&self.window);
         }
-        let (first, count) = range(&self.window, offset, bytes.len());
+        let (first, count) = locate(&self.window, offset, bytes.len());
         let mut index = usize::MIN;
         while index < count
             invariant
@@ -1072,87 +841,172 @@ impl<'shard> VolatileBytes for SharedCellsBytes<'shard> {
     }
 }
 
-/// A shard as the trait names it; each method is one call of a proven function of this crate.
-#[allow(
-    reviewable::implementation_not_verified,
-    reason = "TODO: prove it: Verus 0.2026.11.22 refuses a generic associated type in an impl, and `ByteView<'shard>` is one"
-)]
-#[verifier::external]
 impl MemoryShard for SharedCellsMemoryShard {
-    type ByteView<'shard> = SharedCellsBytes<'shard> where Self: 'shard;
+    type ByteView<'shard> = SharedCellsBytes<'shard>;
 
-    spec fn spec_len(&self) -> u64 {
+    closed spec fn spec_len(&self) -> u64 {
         length_of(*self)
     }
 
-    fn len(&self) -> u64 {
+    fn len(&self) -> (length: u64) {
         self.run.length
     }
 
-    spec fn spec_permissions(&self) -> MemoryPermissions {
+    closed spec fn spec_viewed_allocation(&self) -> wcontainers_memory_shard::MemoryAllocationIdentity {
+        wcontainers_memory_shard::MemoryAllocationIdentity(self.run.allocation@)
+    }
+
+    closed spec fn spec_view_start(&self) -> nat {
+        self.run.start as nat
+    }
+
+    closed spec fn spec_permissions(&self) -> MemoryPermissions {
         permissions_of(*self)
     }
 
-    fn permissions(&self) -> MemoryPermissions {
+    fn permissions(&self) -> (permissions: MemoryPermissions) {
         self.permissions
     }
 
-    fn borrow(&self, offset: u64, length: u64) -> Result<SharedCellsBytes<'_>, BorrowError> {
-        borrow_bytes(self, offset, length)
+    fn borrow(&self, offset: u64, length: u64) -> (borrowed: Result<SharedCellsBytes<'_>, BorrowError>) {
+        proof {
+            use_type_invariant(&self.run);
+        }
+        if offset > self.run.length || length > self.run.length - offset {
+            return Err(BorrowError::OutsideShard);
+        }
+        let cells: &Cells = &self.run.cells;
+        let _ = cells.len();
+        Ok(
+            SharedCellsBytes {
+                window: Window { cells, start: self.run.start + offset as usize, length: length as usize },
+            },
+        )
     }
 }
 
-/// The table as the trait names it; each method is one call of a proven function of this crate.
-#[allow(
-    reviewable::implementation_not_verified,
-    reason = "TODO: prove it: its clauses read the shard's `spec_len`, which Verus cannot see while `impl MemoryShard` must be external"
-)]
-#[verifier::external]
 impl CapabilityTable<u64, SharedCellsMemoryShard, MemoryShardConfig, MemoryError> for SharedCellsMemoryCapabilityTable {
-    spec fn state(&self) -> Map<u64, SharedCellsMemoryShard> {
+    closed spec fn state(&self) -> Map<u64, SharedCellsMemoryShard> {
         state_of(*self)
     }
 
-    fn create(&mut self, identifier: u64, config: MemoryShardConfig) -> Result<(), CreateError<MemoryError>> {
-        create_shard(self, identifier, config)
+    fn create(&mut self, identifier: u64, config: MemoryShardConfig) -> (created: Result<(), CreateError<MemoryError>>) {
+        proof {
+            use_type_invariant(&self.entries);
+        }
+        if find(self.entries.list.as_slice(), identifier).is_some() {
+            return Err(CreateError::IdentifierTaken);
+        }
+        if let Some(refused) = find_refusal(self.entries.list.as_slice(), identifier, config.length) {
+            return Err(CreateError::Failed(refused));
+        }
+        let shard = match make(config, self.allocations) {
+            Some(shard) => shard,
+            None => return Err(CreateError::Failed(MemoryError::OutOfMemory)),
+        };
+        self.allocations = Ghost(self.allocations@ + 1);
+        insert(&mut self.entries, Entry { address: identifier, shard });
+        proof {
+            use_type_invariant(&self.entries);
+            assert(state_of(*self).remove(identifier) =~= state_of(*old(self)));
+        }
+        Ok(())
     }
 
-    fn get(&self, identifier: &u64) -> Option<&SharedCellsMemoryShard> {
-        get_shard(self, identifier)
+    fn get(&self, identifier: &u64) -> (capability: Option<&SharedCellsMemoryShard>) {
+        proof {
+            use_type_invariant(&self.entries);
+        }
+        match find(self.entries.list.as_slice(), *identifier) {
+            Some(index) => Some(&self.entries.list[index].shard),
+            None => None,
+        }
     }
 
     fn drop(&mut self, identifier: &u64) {
-        drop_shard(self, identifier)
+        proof {
+            use_type_invariant(&self.entries);
+        }
+        if let Some(index) = find(self.entries.list.as_slice(), *identifier) {
+            remove(&mut self.entries, index);
+            proof {
+                use_type_invariant(&self.entries);
+            }
+        } else {
+            proof {
+                assert(state_of(*old(self)).remove(*identifier) =~= state_of(*old(self)));
+            }
+        }
     }
 
-    fn duplicate_within(&mut self, identifier: &u64, new_identifier: u64) -> Result<(), DuplicateError<MemoryError>> {
-        duplicate_shard_within(self, identifier, new_identifier)
+    fn duplicate_within(&mut self, identifier: &u64, new_identifier: u64) -> (duplicated: Result<
+        (),
+        DuplicateError<MemoryError>,
+    >) {
+        let shard = match self.get(identifier) {
+            Some(shard) => duplicate(shard),
+            None => return Err(DuplicateError::NothingHeld),
+        };
+        hold_duplicate(self, shard, new_identifier)
     }
 
-    fn duplicate_from(
-        &mut self,
-        other: &Self,
-        identifier: &u64,
-        new_identifier: u64,
-    ) -> Result<(), DuplicateError<MemoryError>> {
-        duplicate_shard_from(self, other, identifier, new_identifier)
+    fn duplicate_from(&mut self, other: &Self, identifier: &u64, new_identifier: u64) -> (duplicated: Result<
+        (),
+        DuplicateError<MemoryError>,
+    >) {
+        let shard = match other.get(identifier) {
+            Some(shard) => duplicate(shard),
+            None => return Err(DuplicateError::NothingHeld),
+        };
+        hold_duplicate(self, shard, new_identifier)
     }
 }
 
-/// The table as kernel-core names it; each method is one call of a proven function of this crate.
-#[allow(
-    reviewable::implementation_not_verified,
-    reason = "TODO: prove it: its clauses read the shard's `spec_len`, which Verus cannot see while `impl MemoryShard` must be external"
-)]
-#[verifier::external]
 impl MemoryCapabilityTable<SharedCellsMemoryShard> for SharedCellsMemoryCapabilityTable {
-    fn set_permissions(&mut self, address: &u64, permissions: MemoryPermissions) -> Result<(), SetPermissionsError> {
-        set_shard_permissions(self, address, permissions)
+    fn set_permissions(&mut self, address: &u64, permissions: MemoryPermissions) -> (set: Result<(), SetPermissionsError>) {
+        proof {
+            use_type_invariant(&self.entries);
+        }
+        let index = match find(self.entries.list.as_slice(), *address) {
+            Some(index) => index,
+            None => return Err(SetPermissionsError::NothingHeld),
+        };
+        let shard = reprotect(&self.entries.list[index].shard, permissions);
+        replace(&mut self.entries, index, shard);
+        proof {
+            use_type_invariant(&self.entries);
+            assert(state_of(*self).remove(*address) =~= state_of(*old(self)).remove(*address));
+        }
+        Ok(())
     }
 
-    fn split(&mut self, address: &u64, offset: u64) -> Result<(), SplitError> {
-        split_shard(self, address, offset)
+    fn split(&mut self, address: &u64, offset: u64) -> (split: Result<(), SplitError>) {
+        proof {
+            use_type_invariant(&self.entries);
+        }
+        let index = match find(self.entries.list.as_slice(), *address) {
+            Some(index) => index,
+            None => return Err(SplitError::NothingHeld),
+        };
+        if offset == u64::MIN || offset >= self.entries.list[index].shard.run.length {
+            return Err(SplitError::OutsideShard);
+        }
+        let (first, second) = cut(&self.entries.list[index].shard, offset);
+        let ghost list = self.entries.list@;
+        let ghost held = self.entries.held@;
+        proof {
+            lemma_room_after_cut(list, held, index as int, offset, first);
+        }
+        replace(&mut self.entries, index, first);
+        let second_address = *address + offset;
+        insert(&mut self.entries, Entry { address: second_address, shard: second });
+        proof {
+            use_type_invariant(&self.entries);
+            assert(state_of(*self).remove(*address).remove(second_address) =~= state_of(
+                *old(self),
+            ).remove(*address));
+        }
+        Ok(())
     }
 }
-
 } // verus!
