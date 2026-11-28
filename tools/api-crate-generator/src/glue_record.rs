@@ -38,16 +38,17 @@ pub(super) fn salt_of(place: &str) -> usize {
 /// (one object, which is always there, or bytes).
 fn presence_of(name: &str, ty: &str) -> Option<String> {
     let ty = ty.trim();
-    if !ty.contains("Self") || ty.contains("impl ") || ty.contains("dyn ") || ty.contains("VolatileBytes") {
+    // Bytes are `impl VolatileBytes` and plain data names no `Self`: neither holds objects.
+    if !ty.contains("Self") {
         return None;
     }
     fn slice_of(ty: &str) -> Option<&str> {
         ty.strip_prefix("&[").or_else(|| ty.strip_prefix("&'_ [")).and_then(|rest| rest.strip_suffix(']')).map(str::trim)
     }
     if let Some(inner) = ty.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')).map(str::trim) {
+        // An optional array of objects holds optional objects (`Option<&[Option<&T>]>`, as every such header array is).
         return Some(match slice_of(inner) {
-            Some(element) if element.starts_with("Option<") => format!("{name}.map(|items| items.iter().map(|item| item.is_some()).collect::<Vec<_>>())"),
-            Some(_) => format!("{name}.map(<[_]>::len)"),
+            Some(_) => format!("{name}.map(|items| items.iter().map(|item| item.is_some()).collect::<Vec<_>>())"),
             None => format!("{name}.is_some()"),
         });
     }

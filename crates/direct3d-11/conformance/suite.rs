@@ -17915,7 +17915,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     Ok(v0) => format!(
                         "Ok({})",
                         match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         }
                     ),
@@ -19008,12 +19008,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 "ID3D11Device1::CreateDeviceContextState -> {}",
                 match &answer {
                     Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1) = v0;
+                        let (v0t0, v0t1) = v0;
                         format!(
                             "({}, {})",
-                            format!("{:?}", t1_0),
-                            match t1_1 {
-                                Some(v2) => format!("Some({})", "an object".to_string()),
+                            format!("{:?}", v0t0),
+                            match v0t1 {
+                                Some(v0t10) => format!("Some({})", "an object".to_string()),
                                 None => "None".to_string(),
                             }
                         )
@@ -20239,7 +20239,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) })); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v1| match v1 { Some(v2) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) })); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v00| match v00 { Some(v000) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "IDXGIDevice::CreateSurface on Device");
     // IDXGIDevice::QueryResourceResidency on Device
@@ -21343,21 +21343,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             answers.push(format!(
                 "ID3D11DeviceContext1::VSGetConstantBuffers1 -> {}",
                 {
-                    let (t0_0, t0_1, t0_2) = &answer;
+                    let (vt0, vt1, vt2) = &answer;
                     format!(
                         "({}, {}, {})",
                         format!(
                             "[{}]",
-                            t0_0.iter()
-                                .map(|v1| match v1 {
-                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                            vt0.iter()
+                                .map(|vt00| match vt00 {
+                                    Some(vt000) => format!("Some({})", "an object".to_string()),
                                     None => "None".to_string(),
                                 })
                                 .collect::<Vec<String>>()
                                 .join(", ")
                         ),
-                        format!("{:?}", t0_1),
-                        format!("{:?}", t0_2)
+                        format!("{:?}", vt1),
+                        format!("{:?}", vt2)
                     )
                 }
             ));
@@ -21381,21 +21381,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             answers.push(format!(
                 "ID3D11DeviceContext1::HSGetConstantBuffers1 -> {}",
                 {
-                    let (t0_0, t0_1, t0_2) = &answer;
+                    let (vt0, vt1, vt2) = &answer;
                     format!(
                         "({}, {}, {})",
                         format!(
                             "[{}]",
-                            t0_0.iter()
-                                .map(|v1| match v1 {
-                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                            vt0.iter()
+                                .map(|vt00| match vt00 {
+                                    Some(vt000) => format!("Some({})", "an object".to_string()),
                                     None => "None".to_string(),
                                 })
                                 .collect::<Vec<String>>()
                                 .join(", ")
                         ),
-                        format!("{:?}", t0_1),
-                        format!("{:?}", t0_2)
+                        format!("{:?}", vt1),
+                        format!("{:?}", vt2)
                     )
                 }
             ));
@@ -21419,21 +21419,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             answers.push(format!(
                 "ID3D11DeviceContext1::DSGetConstantBuffers1 -> {}",
                 {
-                    let (t0_0, t0_1, t0_2) = &answer;
+                    let (vt0, vt1, vt2) = &answer;
                     format!(
                         "({}, {}, {})",
                         format!(
                             "[{}]",
-                            t0_0.iter()
-                                .map(|v1| match v1 {
-                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                            vt0.iter()
+                                .map(|vt00| match vt00 {
+                                    Some(vt000) => format!("Some({})", "an object".to_string()),
                                     None => "None".to_string(),
                                 })
                                 .collect::<Vec<String>>()
                                 .join(", ")
                         ),
-                        format!("{:?}", t0_1),
-                        format!("{:?}", t0_2)
+                        format!("{:?}", vt1),
+                        format!("{:?}", vt2)
                     )
                 }
             ));
@@ -21457,21 +21457,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             answers.push(format!(
                 "ID3D11DeviceContext1::GSGetConstantBuffers1 -> {}",
                 {
-                    let (t0_0, t0_1, t0_2) = &answer;
+                    let (vt0, vt1, vt2) = &answer;
                     format!(
                         "({}, {}, {})",
                         format!(
                             "[{}]",
-                            t0_0.iter()
-                                .map(|v1| match v1 {
-                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                            vt0.iter()
+                                .map(|vt00| match vt00 {
+                                    Some(vt000) => format!("Some({})", "an object".to_string()),
                                     None => "None".to_string(),
                                 })
                                 .collect::<Vec<String>>()
                                 .join(", ")
                         ),
-                        format!("{:?}", t0_1),
-                        format!("{:?}", t0_2)
+                        format!("{:?}", vt1),
+                        format!("{:?}", vt2)
                     )
                 }
             ));
@@ -21495,21 +21495,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             answers.push(format!(
                 "ID3D11DeviceContext1::PSGetConstantBuffers1 -> {}",
                 {
-                    let (t0_0, t0_1, t0_2) = &answer;
+                    let (vt0, vt1, vt2) = &answer;
                     format!(
                         "({}, {}, {})",
                         format!(
                             "[{}]",
-                            t0_0.iter()
-                                .map(|v1| match v1 {
-                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                            vt0.iter()
+                                .map(|vt00| match vt00 {
+                                    Some(vt000) => format!("Some({})", "an object".to_string()),
                                     None => "None".to_string(),
                                 })
                                 .collect::<Vec<String>>()
                                 .join(", ")
                         ),
-                        format!("{:?}", t0_1),
-                        format!("{:?}", t0_2)
+                        format!("{:?}", vt1),
+                        format!("{:?}", vt2)
                     )
                 }
             ));
@@ -21533,21 +21533,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             answers.push(format!(
                 "ID3D11DeviceContext1::CSGetConstantBuffers1 -> {}",
                 {
-                    let (t0_0, t0_1, t0_2) = &answer;
+                    let (vt0, vt1, vt2) = &answer;
                     format!(
                         "({}, {}, {})",
                         format!(
                             "[{}]",
-                            t0_0.iter()
-                                .map(|v1| match v1 {
-                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                            vt0.iter()
+                                .map(|vt00| match vt00 {
+                                    Some(vt000) => format!("Some({})", "an object".to_string()),
                                     None => "None".to_string(),
                                 })
                                 .collect::<Vec<String>>()
                                 .join(", ")
                         ),
-                        format!("{:?}", t0_1),
-                        format!("{:?}", t0_2)
+                        format!("{:?}", vt1),
+                        format!("{:?}", vt2)
                     )
                 }
             ));
@@ -23104,7 +23104,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23134,7 +23134,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23171,7 +23171,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23205,7 +23205,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23252,21 +23252,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered({
             let answer = direct3d_11::DeviceContext::ia_get_vertex_buffers(this, 41_u32, 126_u32);
             answers.push(format!("ID3D11DeviceContext::IAGetVertexBuffers -> {}", {
-                let (t0_0, t0_1, t0_2) = &answer;
+                let (vt0, vt1, vt2) = &answer;
                 format!(
                     "({}, {}, {})",
                     format!(
                         "[{}]",
-                        t0_0.iter()
-                            .map(|v1| match v1 {
-                                Some(v2) => format!("Some({})", "an object".to_string()),
+                        vt0.iter()
+                            .map(|vt00| match vt00 {
+                                Some(vt000) => format!("Some({})", "an object".to_string()),
                                 None => "None".to_string(),
                             })
                             .collect::<Vec<String>>()
                             .join(", ")
                     ),
-                    format!("{:?}", t0_1),
-                    format!("{:?}", t0_2)
+                    format!("{:?}", vt1),
+                    format!("{:?}", vt2)
                 )
             }));
             answer
@@ -23286,15 +23286,15 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered({
             let answer = direct3d_11::DeviceContext::ia_get_index_buffer(this);
             answers.push(format!("ID3D11DeviceContext::IAGetIndexBuffer -> {}", {
-                let (t0_0, t0_1, t0_2) = &answer;
+                let (vt0, vt1, vt2) = &answer;
                 format!(
                     "({}, {}, {})",
-                    match t0_0 {
-                        Some(v1) => format!("Some({})", "an object".to_string()),
+                    match vt0 {
+                        Some(vt00) => format!("Some({})", "an object".to_string()),
                         None => "None".to_string(),
                     },
-                    format!("{:?}", t0_1),
-                    format!("{:?}", t0_2)
+                    format!("{:?}", vt1),
+                    format!("{:?}", vt2)
                 )
             }));
             answer
@@ -23320,7 +23320,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23377,7 +23377,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23407,7 +23407,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23428,14 +23428,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered({
             let answer = direct3d_11::DeviceContext::get_predication(this);
             answers.push(format!("ID3D11DeviceContext::GetPredication -> {}", {
-                let (t0_0, t0_1) = &answer;
+                let (vt0, vt1) = &answer;
                 format!(
                     "({}, {})",
-                    match t0_0 {
-                        Some(v1) => format!("Some({})", "an object".to_string()),
+                    match vt0 {
+                        Some(vt00) => format!("Some({})", "an object".to_string()),
                         None => "None".to_string(),
                     },
-                    format!("{:?}", t0_1)
+                    format!("{:?}", vt1)
                 )
             }));
             answer
@@ -23461,7 +23461,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23491,7 +23491,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23512,21 +23512,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered({
             let answer = direct3d_11::DeviceContext::om_get_render_targets(this, 120_u32);
             answers.push(format!("ID3D11DeviceContext::OMGetRenderTargets -> {}", {
-                let (t0_0, t0_1) = &answer;
+                let (vt0, vt1) = &answer;
                 format!(
                     "({}, {})",
                     format!(
                         "[{}]",
-                        t0_0.iter()
-                            .map(|v1| match v1 {
-                                Some(v2) => format!("Some({})", "an object".to_string()),
+                        vt0.iter()
+                            .map(|vt00| match vt00 {
+                                Some(vt000) => format!("Some({})", "an object".to_string()),
                                 None => "None".to_string(),
                             })
                             .collect::<Vec<String>>()
                             .join(", ")
                     ),
-                    match t0_1 {
-                        Some(v1) => format!("Some({})", "an object".to_string()),
+                    match vt1 {
+                        Some(vt10) => format!("Some({})", "an object".to_string()),
                         None => "None".to_string(),
                     }
                 )
@@ -23553,28 +23553,28 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             answers.push(format!(
                 "ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessViews -> {}",
                 {
-                    let (t0_0, t0_1, t0_2) = &answer;
+                    let (vt0, vt1, vt2) = &answer;
                     format!(
                         "({}, {}, {})",
                         format!(
                             "[{}]",
-                            t0_0.iter()
-                                .map(|v1| match v1 {
-                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                            vt0.iter()
+                                .map(|vt00| match vt00 {
+                                    Some(vt000) => format!("Some({})", "an object".to_string()),
                                     None => "None".to_string(),
                                 })
                                 .collect::<Vec<String>>()
                                 .join(", ")
                         ),
-                        match t0_1 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                        match vt1 {
+                            Some(vt10) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         },
                         format!(
                             "[{}]",
-                            t0_2.iter()
-                                .map(|v1| match v1 {
-                                    Some(v2) => format!("Some({})", "an object".to_string()),
+                            vt2.iter()
+                                .map(|vt20| match vt20 {
+                                    Some(vt200) => format!("Some({})", "an object".to_string()),
                                     None => "None".to_string(),
                                 })
                                 .collect::<Vec<String>>()
@@ -23600,15 +23600,15 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered({
             let answer = direct3d_11::DeviceContext::om_get_blend_state(this);
             answers.push(format!("ID3D11DeviceContext::OMGetBlendState -> {}", {
-                let (t0_0, t0_1, t0_2) = &answer;
+                let (vt0, vt1, vt2) = &answer;
                 format!(
                     "({}, {}, {})",
-                    match t0_0 {
-                        Some(v1) => format!("Some({})", "an object".to_string()),
+                    match vt0 {
+                        Some(vt00) => format!("Some({})", "an object".to_string()),
                         None => "None".to_string(),
                     },
-                    format!("{:?}", t0_1),
-                    format!("{:?}", t0_2)
+                    format!("{:?}", vt1),
+                    format!("{:?}", vt2)
                 )
             }));
             answer
@@ -23630,14 +23630,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             answers.push(format!(
                 "ID3D11DeviceContext::OMGetDepthStencilState -> {}",
                 {
-                    let (t0_0, t0_1) = &answer;
+                    let (vt0, vt1) = &answer;
                     format!(
                         "({}, {})",
-                        match t0_0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                        match vt0 {
+                            Some(vt00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         },
-                        format!("{:?}", t0_1)
+                        format!("{:?}", vt1)
                     )
                 }
             ));
@@ -23664,7 +23664,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23751,7 +23751,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23788,7 +23788,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23815,7 +23815,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23845,7 +23845,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23882,7 +23882,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23909,7 +23909,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23939,7 +23939,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -23970,7 +23970,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -24007,7 +24007,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -24034,7 +24034,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     &answer
                         .iter()
                         .map(|v0| match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         })
                         .collect::<Vec<String>>()
@@ -29814,8 +29814,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 "IDXGISurface2::GetResource -> {}",
                 match &answer {
                     Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1) = v0;
-                        format!("({}, {})", "an object".to_string(), format!("{:?}", t1_1))
+                        let (v0t0, v0t1) = v0;
+                        format!("({}, {})", "an object".to_string(), format!("{:?}", v0t1))
                     }),
                     Err(v0) => format!("Err({:#x})", v0.0),
                 }
@@ -36821,7 +36821,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) })); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v1| match v1 { Some(v2) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) })); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v00| match v00 { Some(v000) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "IDXGIDevice::CreateSurface on Device");
     // IDXGIDevice::QueryResourceResidency on Device
@@ -39215,8 +39215,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 "IDXGIOutputDuplication::AcquireNextFrame -> {}",
                 match &answer {
                     Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1) = v0;
-                        format!("({}, {})", format!("{:?}", t1_0), "an object".to_string())
+                        let (v0t0, v0t1) = v0;
+                        format!("({}, {})", format!("{:?}", v0t0), "an object".to_string())
                     }),
                     Err(v0) => format!("Err({:#x})", v0.0),
                 }
@@ -39762,8 +39762,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 "IDXGISurface2::GetResource -> {}",
                 match &answer {
                     Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1) = v0;
-                        format!("({}, {})", "an object".to_string(), format!("{:?}", t1_1))
+                        let (v0t0, v0t1) = v0;
+                        format!("({}, {})", "an object".to_string(), format!("{:?}", v0t1))
                     }),
                     Err(v0) => format!("Err({:#x})", v0.0),
                 }
@@ -40337,7 +40337,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     Ok(v0) => format!(
                         "Ok({})",
                         match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         }
                     ),
@@ -40502,8 +40502,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 "IDXGISwapChain::GetFullscreenState -> {}",
                 match &answer {
                     Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1) = v0;
-                        format!("({}, {})", format!("{:?}", t1_0), "an object".to_string())
+                        let (v0t0, v0t1) = v0;
+                        format!("({}, {})", format!("{:?}", v0t0), "an object".to_string())
                     }),
                     Err(v0) => format!("Err({:#x})", v0.0),
                 }
@@ -40873,11 +40873,11 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 "D3D11CreateDevice -> {}",
                 match &answer {
                     Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1, t1_2) = v0;
+                        let (v0t0, v0t1, v0t2) = v0;
                         format!(
                             "({}, {}, {})",
                             "an object".to_string(),
-                            format!("{:?}", t1_1),
+                            format!("{:?}", v0t1),
                             "an object".to_string()
                         )
                     }),
@@ -40892,7 +40892,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        failure_is_negative({ let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 64_u32, height: 32_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 60_u32, denominator: 1_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(1), scaling: directx_graphics_infrastructure::enumerations::ModeScaling(1) }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 2_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::Usage(32), buffer_count: 2_u32, output_window: component_object_model::structures::Hwnd(29), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::SwapEffect(3), flags: 2_u32 })); answers.push(format!("D3D11CreateDeviceAndSwapChain -> {}", match &answer { Ok(v0) => format!("Ok({})", { let (t1_0, t1_1, t1_2, t1_3) = v0; format!("({}, {}, {}, {})", "an object".to_string(), "an object".to_string(), format!("{:?}", t1_2), "an object".to_string()) }), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 64_u32, height: 32_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 60_u32, denominator: 1_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(1), scaling: directx_graphics_infrastructure::enumerations::ModeScaling(1) }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 2_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::Usage(32), buffer_count: 2_u32, output_window: component_object_model::structures::Hwnd(29), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::SwapEffect(3), flags: 2_u32 })); answers.push(format!("D3D11CreateDeviceAndSwapChain -> {}", match &answer { Ok(v0) => format!("Ok({})", { let (v0t0, v0t1, v0t2, v0t3) = v0; format!("({}, {}, {}, {})", "an object".to_string(), "an object".to_string(), format!("{:?}", v0t2), "an object".to_string()) }), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "D3D11CreateDeviceAndSwapChain");
     driven

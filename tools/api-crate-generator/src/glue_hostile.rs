@@ -687,7 +687,7 @@ impl Writer<'_, '_> {
             match self.shape(inner, scope) {
                 Shape::Object { kind, by_ref: true } => return Some(format!("o.k{kind}.as_ref()")),
                 // One of the objects a reference of several kinds may name: the first held, or none.
-                Shape::Ref { path, kinds } if !kinds.is_empty() => {
+                Shape::Ref { path, kinds } => {
                     *counter += 1;
                     let var = format!("v{counter}");
                     let arms: Vec<String> = kinds.iter().map(|&k| format!("if let Some(x) = o.k{k}.as_ref() {{ Some({path}::{}(x)) }}", self.g.kinds[k].name)).collect();
@@ -1376,7 +1376,6 @@ impl Shapes {
                 return integer(size, read).map(|value| format!("{value:#x}_{ty}"));
             }
             "f32" => return integer(4, read).map(|value| format!("f32::from_bits({value:#x})")),
-            "f64" => return integer(8, read).map(|value| format!("f64::from_bits({value:#x})")),
             _ => {}
         }
         if let Some((element, length)) = self.array_of(ty) {
@@ -1787,7 +1786,7 @@ impl Writer<'_, '_> {
             let bytes = prelude.contains("let lying = bytes();");
             let mut lines = String::new();
             if result != "()" {
-                let (summary, what) = answer_summary(result, "&answer", 0);
+                let (summary, what) = answer_summary(result, "&answer", "v");
                 count(what, place);
                 let _ = write!(lines, "answers.push(format!(\"{place} -> {{}}\", {summary})); ");
             } else if bytes {
@@ -1971,34 +1970,35 @@ pub(in crate::emit) fn write_suite(writer: &Writer<'_, '_>, api: usize, crate_fo
 /// A Rust expression of a `String` that shows every value in an answer of type `ty` held by reference at `expr`: plain
 /// data by `Debug`, every field; an object (or a structure holding one) as `an object`, its identity being no value; a
 /// result, option, list or tuple by its parts. With what the answer holds, for the report.
-fn answer_summary(ty: &str, expr: &str, depth: usize) -> (String, &'static str) {
+fn answer_summary(ty: &str, expr: &str, name: &str) -> (String, &'static str) {
     let ty = ty.trim();
     if !ty.contains("Self") {
         let what = if ty.starts_with("Result<()") { "a status only: compared" } else { "plain data: compared, every field" };
         return (format!("format!(\"{{:?}}\", {expr})"), what);
     }
-    let v = format!("v{depth}");
+    // Each level its own variable, named after the one it is inside of.
+    let v = format!("{name}0");
     let holding = "holds objects: compared, every value but an object's identity";
     if let Some(inner) = ty.strip_prefix("Result<").and_then(|rest| rest.strip_suffix('>')) {
         let parts = super::record::split_types(inner);
-        let (ok, what) = answer_summary(parts.first().map_or("", String::as_str), &v, depth + 1);
+        let (ok, what) = answer_summary(parts.first().map_or("", String::as_str), &v, &v);
         let what = if what.starts_with("an object only") { "an object, or a failure: compared, its success and the failure's code" } else { what };
         return (format!("match {expr} {{ Ok({v}) => format!(\"Ok({{}})\", {ok}), Err({v}) => format!(\"Err({{:#x}})\", {v}.0) }}"), what);
     }
     if let Some(inner) = ty.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
-        let (some, what) = answer_summary(inner, &v, depth + 1);
+        let (some, what) = answer_summary(inner, &v, &v);
         let what = if what.starts_with("an object only") { "an object or none: compared, whether there is one" } else { what };
         return (format!("match {expr} {{ Some({v}) => format!(\"Some({{}})\", {some}), None => \"None\".to_string() }}"), what);
     }
     if let Some(inner) = ty.strip_prefix("Vec<").and_then(|rest| rest.strip_suffix('>')) {
-        let (each, what) = answer_summary(inner, &v, depth + 1);
+        let (each, what) = answer_summary(inner, &v, &v);
         let what = if what.starts_with("an object") { "a list of objects: compared, its length and which are none" } else { holding };
         return (format!("format!(\"[{{}}]\", {expr}.iter().map(|{v}| {each}).collect::<Vec<String>>().join(\", \"))"), what);
     }
     if let Some(inner) = ty.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
         let parts = super::record::split_types(inner);
-        let names: Vec<String> = (0..parts.len()).map(|at| format!("t{depth}_{at}")).collect();
-        let shown: Vec<String> = parts.iter().zip(&names).map(|(part, name)| answer_summary(part, name, depth + 1).0).collect();
+        let names: Vec<String> = (0..parts.len()).map(|at| format!("{name}t{at}")).collect();
+        let shown: Vec<String> = parts.iter().zip(&names).map(|(part, part_name)| answer_summary(part, part_name, part_name).0).collect();
         let holes = vec!["{}"; parts.len()].join(", ");
         return (format!("{{ let ({}) = {expr}; format!(\"({holes})\", {}) }}", names.join(", "), shown.join(", ")), holding);
     }

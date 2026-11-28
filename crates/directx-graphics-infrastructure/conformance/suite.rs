@@ -7505,7 +7505,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) })); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v1| match v1 { Some(v2) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) })); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v00| match v00 { Some(v000) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "IDXGIDevice::CreateSurface on Device");
     // IDXGIDevice::QueryResourceResidency on Device
@@ -9899,8 +9899,8 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                 "IDXGIOutputDuplication::AcquireNextFrame -> {}",
                 match &answer {
                     Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1) = v0;
-                        format!("({}, {})", format!("{:?}", t1_0), "an object".to_string())
+                        let (v0t0, v0t1) = v0;
+                        format!("({}, {})", format!("{:?}", v0t0), "an object".to_string())
                     }),
                     Err(v0) => format!("Err({:#x})", v0.0),
                 }
@@ -10446,8 +10446,8 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                 "IDXGISurface2::GetResource -> {}",
                 match &answer {
                     Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1) = v0;
-                        format!("({}, {})", "an object".to_string(), format!("{:?}", t1_1))
+                        let (v0t0, v0t1) = v0;
+                        format!("({}, {})", "an object".to_string(), format!("{:?}", v0t1))
                     }),
                     Err(v0) => format!("Err({:#x})", v0.0),
                 }
@@ -11021,7 +11021,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     Ok(v0) => format!(
                         "Ok({})",
                         match v0 {
-                            Some(v1) => format!("Some({})", "an object".to_string()),
+                            Some(v00) => format!("Some({})", "an object".to_string()),
                             None => "None".to_string(),
                         }
                     ),
@@ -11186,8 +11186,8 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                 "IDXGISwapChain::GetFullscreenState -> {}",
                 match &answer {
                     Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1) = v0;
-                        format!("({}, {})", format!("{:?}", t1_0), "an object".to_string())
+                        let (v0t0, v0t1) = v0;
+                        format!("({}, {})", format!("{:?}", v0t0), "an object".to_string())
                     }),
                     Err(v0) => format!("Err({:#x})", v0.0),
                 }
