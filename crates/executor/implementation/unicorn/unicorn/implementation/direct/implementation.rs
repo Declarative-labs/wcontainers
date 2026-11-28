@@ -40,6 +40,14 @@ struct Allocation {
     whole: PointerBytes,
 }
 
+impl DirectHostMemory {
+    /// Returns how many hold the memory: this handle and its clones, each view of it, and each range of addresses an
+    /// engine maps it at.
+    pub fn holders(&self) -> usize {
+        Rc::strong_count(&self.0)
+    }
+}
+
 /// Bytes of a host memory, which keep it alive.
 pub struct DirectBytes {
     bytes: PointerBytes,

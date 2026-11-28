@@ -11,8 +11,9 @@ use wcontainers_unicorn::{
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
-/// The most bytes it writes at once.
-const CHUNK: usize = 4096;
+/// The most bytes it writes at once, four pages of unicorn's interface, so that a mapping longer than that takes more
+/// than one write and one of fewer bytes.
+const CHUNK: usize = 4 * 4096;
 /// The state its bytes start from, any odd number: [xorshift64](https://www.jstatsoft.org/article/view/v008i14) never
 /// leaves zero.
 const SEED: u64 = 0x9E37_79B9_7F4A_7C15;

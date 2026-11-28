@@ -72,3 +72,35 @@ fn the_guest_writes_every_writable_byte_before_each_run_and_nothing_else() {
     assert_eq!(read(&data, 1), vec![0; page]);
     assert_eq!(read(&data, 2), written[page..2 * page]);
 }
+
+/// A mapping longer than one write of the hostile guest is written whole in order, and the page after it, which only a
+/// read-only mapping shows, is not.
+#[test]
+fn a_long_mapping_is_written_whole_and_no_further() {
+    let code = Hostile::new_host_memory(PAGE).expect("code memory");
+    Hostile::host_memory_bytes(&code, 0..4)
+        .expect("the first instruction")
+        .write(&BREAKPOINT.to_le_bytes());
+    let data = Hostile::new_host_memory(7 * PAGE).expect("data memory");
+    let mut engine = Hostile::new(Arch::ARM64, Mode::ARM, ()).expect("an engine");
+    engine
+        .mem_map_host_memory(CODE, PAGE, Prot(Prot::READ.0 | Prot::EXEC.0), &code, 0)
+        .expect("the code mapped");
+    engine
+        .mem_map_host_memory(DATA + PAGE, 5 * PAGE, Prot(Prot::READ.0 | Prot::WRITE.0), &data, PAGE)
+        .expect("five pages mapped writable");
+    engine
+        .mem_map_host_memory(DATA + 6 * PAGE, PAGE, Prot::READ, &data, 6 * PAGE)
+        .expect("the page after them mapped read-only");
+    let _ = engine.emu_start(CODE, u64::MAX, 0, 1);
+    assert_eq!(engine.written(), 5 * PAGE);
+    let written = reference(5 * PAGE as usize);
+    let mut bytes = vec![0; 7 * PAGE as usize];
+    Hostile::host_memory_bytes(&data, 0..7 * PAGE)
+        .expect("the whole memory")
+        .read(&mut bytes);
+    let page = PAGE as usize;
+    assert_eq!(bytes[..page], vec![0; page]);
+    assert_eq!(bytes[page..6 * page], written);
+    assert_eq!(bytes[6 * page..], vec![0; page]);
+}
