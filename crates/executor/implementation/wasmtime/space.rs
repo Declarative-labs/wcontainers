@@ -1226,10 +1226,9 @@ impl PageTable for WasmtimePageTable {
                 .fold(
                     Vec::new(),
                     |mut runs: Vec<(Range<u64>, Range<u64>)>, (page, other_page)| {
+                        // The pages and the other's go on together, so the other run is next when this one is.
                         match runs.last_mut() {
-                            Some((run, other_run))
-                                if run.end == page && other_run.end == other_page =>
-                            {
+                            Some((run, other_run)) if run.end == page => {
                                 run.end += 1;
                                 other_run.end += 1;
                             }
