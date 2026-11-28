@@ -966,13 +966,14 @@ fn packed_targets_are_rounded_at_each_texel_and_channel() {
 
 /// Every converted format's held texels holding every byte value in every channel, at a region off
 /// the origin reaching the right edge of a texture 7 texels wide (so a two-pixel format's last pair
-/// is one texel), copied into a buffer (by a draw packing them) give the blocks the host packs them to.
+/// is one texel), copied into a buffer (by a draw packing them) give the blocks the host packs them
+/// to: each rounded to its bits as the host rounds (every 8-bit value, so every rounding).
 #[test]
 fn converted_formats_pack_every_held_value_as_the_host_does() {
     use crate::packed;
     let mut gpu = device();
-    let (wide, high) = (7u32, 8u32);
-    let (x, y, w, h) = (2u32, 1u32, 5u32, 6u32);
+    let (wide, high) = (7u32, 53u32);
+    let (x, y, w, h) = (2u32, 1u32, 5u32, 52u32);
     for format in [
         Format::A8Unorm,
         Format::Bgrx8Unorm,
@@ -996,9 +997,15 @@ fn converted_formats_pack_every_held_value_as_the_host_does() {
                 reinterpret: false,
             })
             .expect("create_texture");
-        // Byte k of texel i holds (i + 64 k) mod 256: every value in every channel over the texture.
-        let held: Vec<u8> = (0..wide * high)
-            .flat_map(|i| (0..4).map(move |k| (i * 7 + 64 * k) as u8))
+        // Byte k of the region's texel r (row after row) holds (r + 64 k) mod 256: the region's 260
+        // texels hold every value in every channel; the rest of the texture holds zero.
+        let held: Vec<u8> = (0..high)
+            .flat_map(|ty| (0..wide).map(move |tx| (tx, ty)))
+            .flat_map(|(tx, ty)| {
+                let inside = (x..x + w).contains(&tx) && (y..y + h).contains(&ty);
+                let r = if inside { (ty - y) * w + tx - x } else { 0 };
+                (0..4).map(move |k| if inside { (r + 64 * k) as u8 } else { 0 })
+            })
             .collect();
         let raw = crate::texture_of(&gpu, &t).expect("held").raw();
         gpu.queue.write_texture(
@@ -1048,48 +1055,56 @@ fn converted_formats_pack_every_held_value_as_the_host_does() {
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 
-/// A converted format's blocks copied from a buffer into slice 1 of a 3D texture at a region off the
-/// origin (a column and a row that differ), and copied from there into a buffer (by draws widening
-/// and packing them), come back as written.
+/// A converted format's blocks (`b5g6r5unorm`'s, and the three-channel `rgb32uint`'s) copied from a
+/// buffer into slice 1 of a 3D texture at a region off the origin (a column and a row that differ),
+/// and copied from there into a buffer (by draws widening and packing them), come back as written.
 #[test]
 fn a_converted_3d_region_copies_in_and_out_at_its_place() {
+    use crate::packed;
     let mut gpu = device();
-    let t = gpu
-        .create_texture(&TextureDesc {
-            dimension: TextureDimension::D3,
-            format: Format::B5g6r5Unorm,
-            width: N,
-            height: N,
-            depth_or_layers: 2,
-            mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-            cube: false,
-            reinterpret: false,
-        })
-        .expect("create_texture");
-    let (w, h) = (4u32, 2u32);
-    let blocks: Vec<u8> = (0..w * h * 2).map(|i| (i * 37 + 11) as u8).collect();
-    let src = upload(&mut gpu, &blocks);
-    let copy = |buffer| CopyBufferTexture {
-        buffer,
-        offset: 0,
-        row_pitch: w * 2,
-        rows_per_layer: h,
-    };
-    let region = TextureRegion {
-        origin: Origin { x: 3, y: 1, z: 1 },
-        ..at(&t, 0, 0, false)
-    };
-    let size = Extent {
-        width: w,
-        height: h,
-        depth_or_layers: 1,
-    };
-    gpu.copy_buffer_to_texture(&copy(&src), &region, size);
-    let dst = upload(&mut gpu, &vec![0; blocks.len()]);
-    gpu.copy_texture_to_buffer(&region, &copy(&dst), size);
-    assert_eq!(read_buffer(&mut gpu, &dst, blocks.len() as u64), blocks);
+    for format in [Format::B5g6r5Unorm, Format::Rgb32Uint] {
+        let t = gpu
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D3,
+                format,
+                width: N,
+                height: N,
+                depth_or_layers: 2,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+            .expect("create_texture");
+        let (w, h) = (4u32, 2u32);
+        let row = packed::packed_bytes(format, u64::from(w)) as u32;
+        let blocks: Vec<u8> = (0..row * h).map(|i| (i * 37 + 11) as u8).collect();
+        let src = upload(&mut gpu, &blocks);
+        let copy = |buffer| CopyBufferTexture {
+            buffer,
+            offset: 0,
+            row_pitch: row,
+            rows_per_layer: h,
+        };
+        let region = TextureRegion {
+            origin: Origin { x: 3, y: 1, z: 1 },
+            ..at(&t, 0, 0, false)
+        };
+        let size = Extent {
+            width: w,
+            height: h,
+            depth_or_layers: 1,
+        };
+        gpu.copy_buffer_to_texture(&copy(&src), &region, size);
+        let dst = upload(&mut gpu, &vec![0; blocks.len()]);
+        gpu.copy_texture_to_buffer(&region, &copy(&dst), size);
+        assert_eq!(
+            read_buffer(&mut gpu, &dst, blocks.len() as u64),
+            blocks,
+            "{format:?}"
+        );
+    }
     assert_eq!(gpu.status(), DeviceStatus::Ok);
 }
 
