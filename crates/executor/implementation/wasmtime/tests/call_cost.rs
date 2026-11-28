@@ -71,8 +71,7 @@ fn run(
         panic!("the executor waited");
     };
     assert_eq!(
-        stopped.general_purpose_registers[ROUNDS_REGISTER],
-        0,
+        stopped.general_purpose_registers[ROUNDS_REGISTER], 0,
         "every round made"
     );
     started.elapsed()

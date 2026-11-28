@@ -631,10 +631,25 @@ fn reads_and_writes_at_an_offset_past_a_window_end_reach_that_offset() {
     let offset = PAGE_SIZE + 3 * WORD;
     let mut word = [u8::MIN; size_of::<u64>()];
     assert_eq!(bytes.read_at(offset, &mut word), word.len());
-    assert_eq!(u64::from_le_bytes(word), (start + offset) / WORD, "read at the offset");
-    assert_eq!(bytes.write_at(offset + WORD, &STORED.to_le_bytes()), word.len());
-    assert_eq!(read_word(&memory, start + offset + WORD), STORED, "written at the offset");
-    assert_eq!(read_word(&memory, WINDOW), WINDOW / WORD, "window 1's first word kept");
+    assert_eq!(
+        u64::from_le_bytes(word),
+        (start + offset) / WORD,
+        "read at the offset"
+    );
+    assert_eq!(
+        bytes.write_at(offset + WORD, &STORED.to_le_bytes()),
+        word.len()
+    );
+    assert_eq!(
+        read_word(&memory, start + offset + WORD),
+        STORED,
+        "written at the offset"
+    );
+    assert_eq!(
+        read_word(&memory, WINDOW),
+        WINDOW / WORD,
+        "window 1's first word kept"
+    );
 }
 
 #[test]
@@ -650,5 +665,9 @@ fn a_window_never_given_a_place_faults_once_every_place_is_given() {
     let address = 20 * WINDOW + LOW_PAGE;
     let (processor, handler) = run(&mut executor, &memory, address);
     assert_eq!(handler.fault, Some((address, Access::Read)));
-    assert_eq!(processor.general_purpose_registers[1], u64::MIN, "nothing read");
+    assert_eq!(
+        processor.general_purpose_registers[1],
+        u64::MIN,
+        "nothing read"
+    );
 }

@@ -413,8 +413,16 @@ fn a_frame_pushed_onto_a_page_that_only_allows_writing_faults_when_read_back() {
         [u64::MIN, u64::MIN],
         "nothing read"
     );
-    assert_eq!(read_word(&memory, stack - 2 * WORD), STORED, "the push stored");
-    assert_eq!(read_word(&memory, stack - WORD), STORED + 1, "the push stored");
+    assert_eq!(
+        read_word(&memory, stack - 2 * WORD),
+        STORED,
+        "the push stored"
+    );
+    assert_eq!(
+        read_word(&memory, stack - WORD),
+        STORED + 1,
+        "the push stored"
+    );
 }
 
 #[test]

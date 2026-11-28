@@ -165,13 +165,23 @@ fn run(
 /// Runs the code as [`run`] does at the look-ahead with a slice of `slice` events and no interrupt.
 fn run_sliced(code: &[u32], link: u64, look_ahead: LookAhead, slice: u64) -> (Processor<()>, u64) {
     let slice = Some(NonZeroU64::new(slice).expect("a slice"));
-    run(code, link, WasmtimeTranslatorConfig { look_ahead, slice }, false)
+    run(
+        code,
+        link,
+        WasmtimeTranslatorConfig { look_ahead, slice },
+        false,
+    )
 }
 
 /// Runs the code as [`run`] does at the look-ahead with no slice, interrupted.
 fn run_interrupted(code: &[u32], link: u64, look_ahead: LookAhead) -> (Processor<()>, u64) {
     let slice = None;
-    run(code, link, WasmtimeTranslatorConfig { look_ahead, slice }, true)
+    run(
+        code,
+        link,
+        WasmtimeTranslatorConfig { look_ahead, slice },
+        true,
+    )
 }
 
 /// One RET with the link register at its own address: every turn returns where no caller waits.
