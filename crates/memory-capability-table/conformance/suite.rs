@@ -1,4 +1,4 @@
-//! What every implementation of a task's memory table must do, written against the traits of memory-capability-table alone.
+//! What every implementation of a task's memory table must do, written against the traits of its interface alone.
 //!
 //! The clauses of `MemoryCapabilityTable` say nothing of a shard's bytes, so a table that loses them or stops sharing
 //! them still proves; these functions check the bytes as well as every clause. Each takes new tables holding nothing.
@@ -524,8 +524,9 @@ pub fn sets_permissions_on_a_half<S: MemoryShard, T: MemoryCapabilityTable<S>>(t
     assert_eq!(read_at(shard_at(&second, BASE), PAGE, page()), written);
 }
 
-/// Checks that every copy on the second half of a split, and on a borrow inside it, moves the bytes of the whole at the
-/// half's start plus the borrow's offset, as a duplicate of the whole held before the split shows.
+/// Checks that each copy on a split's second half moves the whole's bytes at the half's start plus the borrow's offset.
+///
+/// A duplicate of the whole, held in another table before the split, shows which bytes moved.
 pub fn moves_the_bytes_of_the_second_half<S: MemoryShard, T: MemoryCapabilityTable<S>>(
     tables: (T, T),
 ) {

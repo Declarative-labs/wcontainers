@@ -1,5 +1,4 @@
-//! Runs the memory-shard suite on a shard a table makes and on the second half of a split, and the memory table suite on
-//! the table.
+//! Runs the memory-shard suite on a new shard and on a split's second half, and the memory table suite on the table.
 
 use wcontainers_capability_table::CapabilityTable;
 use wcontainers_memory_capability_table::MemoryCapabilityTable;
@@ -36,8 +35,9 @@ fn made() -> (&'static SharedCellsMemoryShard, MemoryShardConfig) {
     )
 }
 
-/// Returns the second half of a new shard twice the suite's length, split at that length, so its view starts inside its
-/// allocation, and the config a shard of its shape is made from.
+/// Returns the second half of a split shard twice the suite's length, and the config a shard of its shape is made from.
+///
+/// Its view starts inside its allocation, not at the start.
 fn made_second_half() -> (&'static SharedCellsMemoryShard, MemoryShardConfig) {
     let table: &'static mut SharedCellsMemoryCapabilityTable =
         Box::leak(Box::new(SharedCellsMemoryCapabilityTable::new()));

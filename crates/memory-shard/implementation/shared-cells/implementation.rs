@@ -485,13 +485,16 @@ fn find_refusal(list: &[Entry], address: u64, length: u64) -> (refused: Option<M
     None
 }
 
-// Returns a run of new cells, every byte zero, of the length the config asks for, as the numbered allocation, or nothing
+// Returns a run of new cells, every byte zero, as the config asks, numbered as the table's next allocation, or nothing
 // when no memory is left.
-fn make(config: MemoryShardConfig, allocation: Ghost<int>) -> (made: Option<SharedCellsMemoryShard>)
+fn make(table: &mut SharedCellsMemoryCapabilityTable, config: MemoryShardConfig) -> (made: Option<SharedCellsMemoryShard>)
     ensures
+        final(table).entries == old(table).entries,
         made matches Some(shard) ==> wcontainers_capability_table::CapabilityConfig::describes(config, shard) && shard.spec_viewed_allocation()
-            == wcontainers_memory_shard::MemoryAllocationIdentity(allocation@) && shard.spec_view_start() == 0,
+            == wcontainers_memory_shard::MemoryAllocationIdentity(old(table).allocations@) && shard.spec_view_start() == 0,
 {
+    let allocation = table.allocations;
+    table.allocations = Ghost(table.allocations@ + 1);
     if config.length > usize::MAX as u64 {
         return None;
     }
@@ -900,11 +903,10 @@ impl CapabilityTable<u64, SharedCellsMemoryShard, MemoryShardConfig, MemoryError
         if let Some(refused) = find_refusal(self.entries.list.as_slice(), identifier, config.length) {
             return Err(CreateError::Failed(refused));
         }
-        let shard = match make(config, self.allocations) {
+        let shard = match make(self, config) {
             Some(shard) => shard,
             None => return Err(CreateError::Failed(MemoryError::OutOfMemory)),
         };
-        self.allocations = Ghost(self.allocations@ + 1);
         insert(&mut self.entries, Entry { address: identifier, shard });
         proof {
             use_type_invariant(&self.entries);

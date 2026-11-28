@@ -11,8 +11,8 @@ use wcontainers_volatile_bytes::VolatileBytes;
 /// The length of one byte, the step between neighboring offsets.
 const STEP: u64 = size_of::<u8>() as u64;
 
-/// How many bytes the offset write changes: two, so that a write one byte off shows at either end.
-const PAIR: usize = 2;
+/// How many bytes the offset write changes, two so that a write one byte off shows at either end.
+const PAIR: usize = size_of::<u16>();
 
 /// The byte the tests write where they need one value.
 const MARK: u8 = u8::MAX;
@@ -28,8 +28,9 @@ fn length_of<S: MemoryShard>(shard: &S) -> usize {
     length
 }
 
-/// Returns bytes that each differ from the bytes beside them and repeat every 255 bytes, so a copy one byte off, or a
-/// power of two bytes off, shows.
+/// Returns bytes that each differ from the bytes beside them and repeat every 255 bytes.
+///
+/// So a copy one byte off, or a power of two bytes off, shows.
 fn number_bytes(count: usize) -> Vec<u8> {
     (1..=u8::MAX).cycle().take(count).collect()
 }
@@ -44,8 +45,9 @@ fn offset_of(index: usize) -> u64 {
     u64::try_from(index).expect("a host index fits an offset")
 }
 
-/// Fills the shard with `number_bytes`, and returns them with a borrow from its middle to one byte before its end and
-/// where that borrow starts, so the borrow starts above zero and has bytes of the shard on both sides.
+/// Fills the shard with `number_bytes`, and returns them with a borrow from its middle and where that borrow starts.
+///
+/// The borrow ends one byte before the shard does, so it starts above zero and has bytes of the shard on both sides.
 fn borrow_middle<S: MemoryShard>(shard: &S) -> (Vec<u8>, S::ByteView<'_>, usize) {
     let length = length_of(shard);
     let bytes = number_bytes(length);
@@ -56,6 +58,11 @@ fn borrow_middle<S: MemoryShard>(shard: &S) -> (Vec<u8>, S::ByteView<'_>, usize)
     let start = length / 2;
     let count = length - start - 1;
     assert!(count > 1, "the suite needs a shard of at least six bytes");
+    assert_eq!(
+        start + count + 1,
+        length,
+        "the borrow ends one byte before the shard does"
+    );
     let view = shard
         .borrow(offset_of(start), offset_of(count))
         .expect("the middle of the shard lies inside");
@@ -253,9 +260,14 @@ pub fn writes_where_a_borrow_starts<S: MemoryShard>(made: (&S, MemoryShardConfig
         "write_at 1 changes the two bytes one after the borrow's start"
     );
     let longer = number_bytes_down(count + size_of::<u64>());
-    let mut source = &longer[size_of::<u64>()..];
+    let mut source = longer.as_slice();
     assert_eq!(view.write_from(&mut source).ok(), Some(count));
-    expected[start..end].copy_from_slice(&longer[size_of::<u64>()..size_of::<u64>() + count]);
+    assert_eq!(
+        source.len(),
+        size_of::<u64>(),
+        "write_from takes only the borrow's length from a longer source"
+    );
+    expected[start..end].copy_from_slice(&longer[..count]);
     assert_eq!(
         read_whole(shard),
         expected,
