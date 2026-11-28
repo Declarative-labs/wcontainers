@@ -861,11 +861,11 @@ mod tests {
             match *self {}
         }
 
-        fn read(&self, _into: &mut [u8]) -> usize {
+        fn read_at(&self, _offset: u64, _into: &mut [u8]) -> usize {
             match *self {}
         }
 
-        fn write(&self, _bytes: &[u8]) -> usize {
+        fn write_at(&self, _offset: u64, _bytes: &[u8]) -> usize {
             match *self {}
         }
 
