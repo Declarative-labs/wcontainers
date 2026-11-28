@@ -17,11 +17,15 @@ use arm64_features::Arm64Features;
 use errno::{Errno, UnknownErrno};
 use signal::Signal;
 use signal_information::SignalInformation;
+use vstd::prelude::*;
 use wcontainers_abi::{CpuError, MemoryId};
 use wcontainers_executor::{Executor, PerThreadWatch};
 use x86_64_features::X86_64Features;
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+#[allow(
+    reviewable::trait_not_verified,
+    reason = "the contract is not written yet"
+)]
 pub trait Kernel: Sync + Sized {
     type Executor: Executor;
     /// A slow or incomplete path that the kernel can take.
@@ -60,7 +64,10 @@ pub trait Kernel: Sync + Sized {
     ) -> Self::UnresumedTasks<'_>;
 }
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+#[allow(
+    reviewable::trait_not_verified,
+    reason = "the contract is not written yet"
+)]
 pub trait Runner<E: Executor>: Send {
     /// Runs what the kernel decides is next, using the given executor.
     fn run(&mut self, executor: &mut E) -> StopReason;
@@ -87,7 +94,10 @@ pub enum ProcessEnd {
 }
 
 /// A handle to one process of a kernel.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+#[allow(
+    reviewable::trait_not_verified,
+    reason = "the contract is not written yet"
+)]
 pub trait Process: ProcessInfo {
     type State;
     type Kernel: Kernel;
@@ -124,19 +134,28 @@ pub trait Process: ProcessInfo {
 }
 
 /// Where the parts of a read of a process's memory go, in order.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+#[allow(
+    reviewable::trait_not_verified,
+    reason = "the contract is not written yet"
+)]
 pub trait MemoryReader {
     fn read_part(&mut self, part: &[u8]);
 }
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+#[allow(
+    reviewable::trait_not_verified,
+    reason = "the contract is not written yet"
+)]
 pub trait ProcessOf<State, K: Kernel>: Process<State = State, Kernel = K> {}
 
 pub type ExecutorOf<K> = <K as Kernel>::Executor;
 pub type SuspendedTaskOf<K> = <K as Kernel>::SuspendedTask;
 pub type ProcessContextOf<K> = <K as Kernel>::ProcessContext;
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+#[allow(
+    reviewable::trait_not_verified,
+    reason = "the contract is not written yet"
+)]
 pub trait ProcessInfo {
     /// Returns the number of bytes of address space the process has mapped.
     fn mapped_memory(&self) -> u64;
@@ -209,9 +228,13 @@ pub enum SystemCallError {
     Unknown(UnknownErrno),
 }
 
+verus! {
+
 /// A [process or thread ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html#:~:text=pid_t%20is%20a%20type).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TaskId(pub u32);
+
+} // verus!
 
 /// A Linux [user ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html#:~:text=uid_t%20is%20a%20type).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
