@@ -1,12 +1,21 @@
 use core::cell::RefCell;
 
+use vstd::prelude::*;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 
 use crate::VolatileBytes;
 
+verus! {
+
 /// A slice held exclusively, which a source or a sink reaches in place.
+#[allow(reviewable::implementation_not_verified, reason = "TODO: prove it against the trait's contract, then remove this line")]
+#[verifier::external]
 impl VolatileBytes for RefCell<&mut [u8]> {
+    spec fn spec_len(&self) -> nat {
+        arbitrary()
+    }
+
     fn len(&self) -> u64 {
         self.borrow().len() as u64
     }
@@ -38,4 +47,6 @@ impl VolatileBytes for RefCell<&mut [u8]> {
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
         source.read(&mut self.borrow_mut())
     }
+}
+
 }
