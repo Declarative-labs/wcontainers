@@ -791,7 +791,12 @@ mod tests {
     #[test]
     fn an_idle_runner_with_no_time_is_run_again_after_the_idle_poll_and_told() {
         let setup = setup(vec![vec![Step::Idles(None), FINISHES_NOW]], SHORT_POLL);
+        let started = Instant::now();
         assert_eq!(stopped(setup.container), Some(FINISHED));
+        assert!(
+            started.elapsed() >= SHORT_POLL,
+            "the runner waits the idle poll"
+        );
         assert_eq!(
             setup.system.warnings(),
             vec![(
@@ -812,7 +817,12 @@ mod tests {
             ]],
             SHORT_POLL,
         );
+        let started = Instant::now();
         assert_eq!(stopped(setup.container), Some(FINISHED));
+        assert!(
+            started.elapsed() >= 2 * SHORT_POLL,
+            "each idle answer waits the idle poll"
+        );
         assert_eq!(
             setup.system.warnings(),
             vec![(
