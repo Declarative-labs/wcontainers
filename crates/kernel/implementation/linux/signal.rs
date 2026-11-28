@@ -624,10 +624,12 @@ impl Kernel {
         // One that dumps core is left to the thread that takes it, as Linux leaves it to
         // `get_signal`.
         let handler = self.handler(pid, signal);
-        // A traced thread's tracer sees the signal before it ends anything.
+        // A traced thread's tracer sees the signal before it ends anything. The container's first
+        // process is ended too, when its first thread blocks the signal and another does not
+        // (MEASURED: SIGTERM so sent ends it with status 143, as `complete_signal` reads no
+        // SIGNAL_UNKILLABLE).
         let fatal = handler == SIG_DFL
             && default_action(signal) == Default::Terminate
-            && !self.dropped(pid, signal)
             && !self.traced(target_thread(target));
         if fatal || signal == SIGKILL {
             self.drop_pending(pid, bit(signal));
@@ -768,9 +770,10 @@ impl Kernel {
                     self.announce(cx, pid, |system, process| {
                         system.on_signal_delivering(process, crate::system::task_id(tid), &signal)
                     });
-                    // A traced thread stops for its tracer first, for any signal but SIGKILL
-                    // (`ptrace_signal`); what it acts on then is the tracer's choice.
-                    if queued.signal != SIGKILL && self.traced(tid) {
+                    // A traced thread stops for its tracer first (`ptrace_signal`); what it acts
+                    // on then is the tracer's choice. SIGKILL, which Linux keeps from the tracer,
+                    // never comes here: `complete` ends the process with it as it is sent.
+                    if self.traced(tid) {
                         self.thread_mut(tid).resume = resume;
                         self.stop_for_tracer(cx, tid, &queued);
                         return None;

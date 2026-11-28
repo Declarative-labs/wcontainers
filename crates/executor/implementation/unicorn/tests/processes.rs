@@ -12,6 +12,14 @@ fn processes_match_reference() {
     assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
 }
 
+/// SIGTERM to the first process with no handler for it, which its first thread blocks and its second
+/// does not: whether it ends the first process, as Linux decides.
+#[test]
+fn a_signal_the_first_process_blocks_in_one_thread_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "firstblocked", &[]);
+}
+
 /// A SIGKILL to the sender's own group reaches every member before the sender ends.
 #[test]
 fn killing_own_group_matches_reference() {
