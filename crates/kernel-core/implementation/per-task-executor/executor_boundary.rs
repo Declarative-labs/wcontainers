@@ -2,7 +2,7 @@
 
 use vstd::prelude::*;
 use wcontainers_kernel_core::execution::{Interrupter, Stop};
-use wcontainers_kernel_core::memory::MemoryCapabilityTable;
+use wcontainers_memory_capability_table::MemoryCapabilityTable;
 use wcontainers_memory_shard::MemoryShard;
 
 use crate::disjoint_memory::DisjointMemory;
@@ -85,7 +85,7 @@ pub trait TaskSource<Shard: MemoryShard> {
                 u64,
                 Shard,
                 wcontainers_memory_shard::MemoryShardConfig,
-                wcontainers_kernel_core::memory::MemoryError,
+                wcontainers_memory_capability_table::MemoryError,
             >::state(&parts.0) == Map::<u64, Shard>::empty(),
     ;
 }

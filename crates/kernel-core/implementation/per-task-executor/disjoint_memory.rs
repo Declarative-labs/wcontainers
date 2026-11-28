@@ -5,12 +5,21 @@ use core::marker::PhantomData;
 
 use vstd::prelude::*;
 use wcontainers_capability_table::{CapabilityTable, CreateError, DuplicateError};
-use wcontainers_kernel_core::memory::{
+use wcontainers_memory_capability_table::{
     MemoryCapabilityTable, MemoryError, SetPermissionsError, SplitError,
 };
 use wcontainers_memory_shard::{MemoryPermissions, MemoryShard, MemoryShardConfig};
 
 verus! {
+
+/// Whether no two shards share an address, as the kernel core states it of a table's shards.
+pub open spec fn keep_apart<Shard: MemoryShard>(shards: Map<u64, Shard>) -> bool {
+    forall|first: u64, second: u64|
+        #![trigger shards.contains_key(first), shards.contains_key(second)]
+        shards.contains_key(first) && shards.contains_key(second) && first != second ==> first
+            + shards.index(first).spec_len() <= second || second + shards.index(second).spec_len()
+            <= first
+}
 
 /// Whether a range of addresses shares no address with the shard at another start.
 pub open spec fn lies_apart<Shard: MemoryShard>(
@@ -95,7 +104,12 @@ pub open spec fn follows_set_permissions<Shard: MemoryShard>(
             &&& before.contains_key(address)
             &&& after.contains_key(address)
             &&& after.remove(address) == before.remove(address)
-            &&& after.index(address).spec_len() == before.index(address).spec_len()
+            &&& wcontainers_memory_capability_table::views_bytes_of(
+                after.index(address),
+                before.index(address),
+                0,
+                before.index(address).spec_len() as int,
+            )
             &&& after.index(address).spec_permissions() == permissions
         },
         Err(SetPermissionsError::NothingHeld) => !before.contains_key(address) && after == before,
@@ -119,8 +133,18 @@ pub open spec fn follows_split<Shard: MemoryShard>(
             &&& after.contains_key(address)
             &&& after.contains_key(second)
             &&& after.remove(address).remove(second) == before.remove(address)
-            &&& after.index(address).spec_len() == offset
-            &&& after.index(second).spec_len() == shard.spec_len() - offset
+            &&& wcontainers_memory_capability_table::views_bytes_of(
+                after.index(address),
+                shard,
+                0,
+                offset as int,
+            )
+            &&& wcontainers_memory_capability_table::views_bytes_of(
+                after.index(second),
+                shard,
+                offset as int,
+                shard.spec_len() - offset,
+            )
             &&& after.index(address).spec_permissions() == shard.spec_permissions()
             &&& after.index(second).spec_permissions() == shard.spec_permissions()
         },
@@ -137,14 +161,14 @@ proof fn lemma_insert_keeps_apart<Shard: MemoryShard>(
     start: u64,
 )
     requires
-        wcontainers_kernel_core::memory::shards_are_disjoint(before),
+        keep_apart(before),
         fit_in_address_space(before),
         !before.contains_key(start),
         after == before.insert(start, after.index(start)),
         misses_every_shard(before, start, after.index(start).spec_len()),
         start + after.index(start).spec_len() <= u64::MAX,
     ensures
-        wcontainers_kernel_core::memory::shards_are_disjoint(after),
+        keep_apart(after),
         fit_in_address_space(after),
 {
     assert forall|first: u64, second: u64|
@@ -177,12 +201,12 @@ proof fn lemma_split_keeps_apart<Shard: MemoryShard>(
     offset: u64,
 )
     requires
-        wcontainers_kernel_core::memory::shards_are_disjoint(before),
+        keep_apart(before),
         fit_in_address_space(before),
         follows_split(before, after, address, offset, Ok(())),
     ensures
         !before.contains_key((address + offset) as u64),
-        wcontainers_kernel_core::memory::shards_are_disjoint(after),
+        keep_apart(after),
         fit_in_address_space(after),
         forall|start: u64| #[trigger]
             after.contains_key(start) ==> before.contains_key(start) || start == (address
@@ -244,7 +268,7 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> Parts<Shard, Table
     spec fn is_consistent(&self) -> bool {
         &&& forall|start: u64| #[trigger]
             self.table.state().contains_key(start) ==> self.starts@.contains(start)
-        &&& wcontainers_kernel_core::memory::shards_are_disjoint(self.table.state())
+        &&& keep_apart(self.table.state())
         &&& fit_in_address_space(self.table.state())
     }
 
@@ -661,7 +685,8 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> DisjointMemory<Sha
 
     pub proof fn lemma_shards_are_disjoint(memory: Self)
         ensures
-            wcontainers_kernel_core::memory::shards_are_disjoint(memory.state()),
+            wcontainers_kernel_core::memory::shards_are_disjoint::<Shard, Self>(memory),
+            keep_apart(memory.state()),
             fit_in_address_space(memory.state()),
     {
     }
@@ -719,7 +744,7 @@ impl<Shard: MemoryShard, Table: MemoryCapabilityTable<Shard>> CapabilityTable<
 > for DisjointMemory<Shard, Table> {
     closed spec fn state(&self) -> Map<u64, Shard> {
         match self.parts {
-            Some(parts) => if wcontainers_kernel_core::memory::shards_are_disjoint(parts.table.state()) && fit_in_address_space(
+            Some(parts) => if keep_apart(parts.table.state()) && fit_in_address_space(
                 parts.table.state(),
             ) {
                 parts.table.state()
