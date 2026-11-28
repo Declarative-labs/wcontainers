@@ -29,6 +29,8 @@ const LOAD: u32 = 0xF940_0001;
 const STORE_WORD: u32 = 0xB900_0003;
 /// STP X29, X30, [SP, #-16]! (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STP--Store-pair-of-registers->).
 const PUSH_PAIR: u32 = 0xA9BF_7BFD;
+/// LDP X0, X1, [SP] (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDP--Load-pair-of-registers->).
+const LOAD_PAIR: u32 = 0xA940_07E0;
 /// FADD S2, S0, S1 (<https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FADD--scalar---Floating-point-add--scalar-->).
 const ADD_SINGLES: u32 = 0x1E21_2802;
 /// DC CVAC, X0 (<https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/DC--Data-cache-operation--an-alias-of-SYS->).
@@ -383,6 +385,36 @@ fn a_push_onto_a_page_that_forbids_writing_faults_at_its_address() {
         );
         assert_eq!(handler.system_calls, 0);
     }
+}
+
+#[test]
+fn a_frame_pushed_onto_a_page_that_only_allows_writing_faults_when_read_back() {
+    // The push writes, which the page allows; reading the pair back is a read, which it does not.
+    let mut executor = executor();
+    let (memory, mut table) = with_code(&executor, &[PUSH_PAIR, LOAD_PAIR]);
+    let stack = LOWEST_ADDRESS + 8 * PAGE_SIZE;
+    allow(&mut table, stack - PAGE_SIZE..stack, Permissions::WRITE);
+    let mut registers = ZERO_PROCESSOR.general_purpose_registers;
+    registers[29] = STORED;
+    registers[30] = STORED + 1;
+    let start = Processor {
+        program_counter: LOWEST_ADDRESS,
+        general_purpose_registers: registers,
+        stack_pointer: stack,
+        ..ZERO_PROCESSOR
+    };
+    let (processor, handler) = run_from(&mut executor, &memory, start);
+    assert_eq!(
+        (handler.fault, handler.system_calls),
+        (Some((stack - 2 * WORD, Access::Read)), 0)
+    );
+    assert_eq!(
+        processor.general_purpose_registers[..2],
+        [u64::MIN, u64::MIN],
+        "nothing read"
+    );
+    assert_eq!(read_word(&memory, stack - 2 * WORD), STORED, "the push stored");
+    assert_eq!(read_word(&memory, stack - WORD), STORED + 1, "the push stored");
 }
 
 #[test]

@@ -46,7 +46,7 @@ pub trait Wasmtime {
         offset: u64,
     ) -> Result<(), Errno>;
 
-    /// Returns the memory's bytes at the offsets; none for offsets past its length.
+    /// Returns the memory's bytes at the offsets; none for offsets past its length or that end before they start.
     fn host_memory_bytes(
         &self,
         memory: &Self::HostMemory,

@@ -617,3 +617,38 @@ fn a_borrow_across_a_window_end_past_the_64_kib_after_it_holds_each_address_once
         }
     }
 }
+
+#[test]
+fn reads_and_writes_at_an_offset_past_a_window_end_reach_that_offset() {
+    let (_executor, memory, mut table) = with_code(&[LOAD]);
+    let start = WINDOW - PAGE_SIZE;
+    writable_range(&mut table, start..start + FILL);
+    fill(&memory, start);
+    let bytes = memory
+        .borrow(start..WINDOW + PAGE_SIZE)
+        .expect("addresses across the end of window 0");
+    // Past the part in window 0, into the part in window 1.
+    let offset = PAGE_SIZE + 3 * WORD;
+    let mut word = [u8::MIN; size_of::<u64>()];
+    assert_eq!(bytes.read_at(offset, &mut word), word.len());
+    assert_eq!(u64::from_le_bytes(word), (start + offset) / WORD, "read at the offset");
+    assert_eq!(bytes.write_at(offset + WORD, &STORED.to_le_bytes()), word.len());
+    assert_eq!(read_word(&memory, start + offset + WORD), STORED, "written at the offset");
+    assert_eq!(read_word(&memory, WINDOW), WINDOW / WORD, "window 1's first word kept");
+}
+
+#[test]
+fn a_window_never_given_a_place_faults_once_every_place_is_given() {
+    let (mut executor, memory, mut table) = with_code(&[LOAD]);
+    // Windows 1 to 7 take the guest memory's other seven places, in that order.
+    for window in 1..HOST_WINDOWS {
+        let address = window * WINDOW + LOW_PAGE;
+        writable_range(&mut table, address..address + PAGE_SIZE);
+    }
+    let last = (HOST_WINDOWS - 1) * WINDOW + LOW_PAGE;
+    write_word(&memory, last, STORED);
+    let address = 20 * WINDOW + LOW_PAGE;
+    let (processor, handler) = run(&mut executor, &memory, address);
+    assert_eq!(handler.fault, Some((address, Access::Read)));
+    assert_eq!(processor.general_purpose_registers[1], u64::MIN, "nothing read");
+}

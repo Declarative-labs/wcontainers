@@ -97,7 +97,7 @@ fn write_word<W: Wasmtime>(wasmtime: &W, memory: &W::HostMemory, at: u64, value:
     );
 }
 
-/// Checks that a host memory shows its file's bytes, both ways, and lends nothing past its length.
+/// Checks that a host memory shows its file's bytes, both ways, and lends nothing past its length or for reversed offsets.
 pub fn host_memory_shows_its_file<W: Wasmtime>(wasmtime: W) {
     let length = PAGES * page();
     let file = sealed_file(length);
@@ -136,6 +136,12 @@ pub fn host_memory_shows_its_file<W: Wasmtime>(wasmtime: W) {
         .host_memory_bytes(&memory, at..at)
         .expect("no bytes inside the length");
     assert_eq!(none.len(), u64::MIN, "no bytes");
+    assert!(
+        wasmtime
+            .host_memory_bytes(&memory, at + size_of::<u64>() as u64..at)
+            .is_none(),
+        "bytes were lent for offsets that end before they start"
+    );
 }
 
 /// Checks that a file mapped into two memories shows each one's writes in the other.
