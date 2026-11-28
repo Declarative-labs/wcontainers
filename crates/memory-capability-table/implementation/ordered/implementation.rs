@@ -322,7 +322,7 @@ impl OrderedMemoryCapabilityTable {
 
 impl CapabilityTable<u64, SharedBytesMemoryShard, MemoryShardConfig, MemoryError> for
     OrderedMemoryCapabilityTable {
-    closed spec fn state(&self) -> Map<u64, SharedBytesMemoryShard> {
+    open spec fn state(&self) -> Map<u64, SharedBytesMemoryShard> {
         self.held()
     }
 
