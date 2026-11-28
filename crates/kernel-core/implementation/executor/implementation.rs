@@ -165,7 +165,7 @@ impl<E: ExecutorBoundary + Clone + 'static> KernelCore for ExecutorKernelCore<E>
         })
     }
 
-    type Execution<'task> = ExecutorExecution<'task, E> where ExecutorTask<E>: 'task;
+    type Execution<'task> = ExecutorExecution<'task, E>;
 
     type Interrupter = ExecutorInterrupter<E>;
 

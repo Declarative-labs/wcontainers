@@ -252,6 +252,7 @@ impl VolatileBytes for SharedBytes<'_> {
             invariant
                 count == copied(self.spec_len(), offset, old(into)@.len()),
                 first + count <= self.allocation.bytes@.len(),
+                self.allocation.bytes@.len() <= usize::MAX,
                 count <= old(into)@.len(),
                 into@.len() == old(into)@.len(),
                 index <= count,
@@ -278,6 +279,7 @@ impl VolatileBytes for SharedBytes<'_> {
         while index < count
             invariant
                 first + count <= self.allocation.bytes@.len(),
+                self.allocation.bytes@.len() <= usize::MAX,
                 count <= bytes@.len(),
                 index <= count,
             decreases count - index,
@@ -300,6 +302,7 @@ impl VolatileBytes for SharedBytes<'_> {
         while index < length
             invariant
                 first + length <= self.allocation.bytes@.len(),
+                self.allocation.bytes@.len() <= usize::MAX,
                 length == self.spec_len(),
                 index <= length,
                 copy@.len() == index,
@@ -332,6 +335,7 @@ impl VolatileBytes for SharedBytes<'_> {
             while index < count
                 invariant
                     first + length <= self.allocation.bytes@.len(),
+                    self.allocation.bytes@.len() <= usize::MAX,
                     count <= copy@.len(),
                     copy@.len() == length,
                     index <= count,

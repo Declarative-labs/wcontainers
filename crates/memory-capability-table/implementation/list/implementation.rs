@@ -59,10 +59,15 @@ spec fn holds(entries: Seq<Entry>, address: u64) -> bool {
     exists|index: int| 0 <= index < entries.len() && #[trigger] entries[index].address == address
 }
 
+// The addresses of the entries, in their order.
+spec fn addresses(entries: Seq<Entry>) -> Seq<u64> {
+    entries.map_values(|entry: Entry| entry.address)
+}
+
 // The shards of the entries under their addresses.
 spec fn map_of(entries: Seq<Entry>) -> Map<u64, SharedAllocationMemoryShard> {
     Map::new(
-        |address: u64| holds(entries, address),
+        addresses(entries).to_set(),
         |address: u64|
             entries[choose|index: int|
                 0 <= index < entries.len() && #[trigger] entries[index].address == address].shard,
@@ -78,6 +83,32 @@ spec fn state_of(entries: Seq<Entry>) -> Map<u64, SharedAllocationMemoryShard> {
     }
 }
 
+// The map of the entries holds exactly the addresses where an entry starts.
+proof fn lemma_map_of_domain(entries: Seq<Entry>)
+    ensures
+        forall|address: u64|
+            #![trigger map_of(entries).contains_key(address)]
+            #![trigger holds(entries, address)]
+            map_of(entries).contains_key(address) <==> holds(entries, address),
+{
+    let addresses = addresses(entries);
+    addresses.to_set_ensures();
+    assert forall|address: u64|
+        #![trigger map_of(entries).contains_key(address)]
+        #![trigger holds(entries, address)]
+        map_of(entries).contains_key(address) <==> holds(entries, address) by {
+        if holds(entries, address) {
+            let index = choose|index: int| 0 <= index < entries.len() && #[trigger] entries[index].address == address;
+            assert(addresses[index] == address);
+            assert(addresses.contains(address));
+        }
+        if addresses.contains(address) {
+            let index = choose|index: int| 0 <= index < addresses.len() && addresses[index] == address;
+            assert(entries[index].address == address);
+        }
+    }
+}
+
 // The entry at an index is the one the map holds under its address.
 proof fn lemma_map_of_index(entries: Seq<Entry>, at: int)
     requires
@@ -87,6 +118,7 @@ proof fn lemma_map_of_index(entries: Seq<Entry>, at: int)
         map_of(entries).contains_key(entries[at].address),
         map_of(entries).index(entries[at].address) == entries[at].shard,
 {
+    lemma_map_of_domain(entries);
     let address = entries[at].address;
     assert(holds(entries, address));
     let index = choose|index: int|
@@ -106,6 +138,7 @@ proof fn lemma_map_of_holds(entries: Seq<Entry>, address: u64)
             0 <= index < entries.len() && #[trigger] entries[index].address == address
                 && map_of(entries).index(address) == entries[index].shard,
 {
+    lemma_map_of_domain(entries);
     let index = choose|index: int| 0 <= index < entries.len() && #[trigger] entries[index].address == address;
     lemma_map_of_index(entries, index);
 }
@@ -128,6 +161,8 @@ proof fn lemma_push(entries: Seq<Entry>, entry: Entry)
         map_of(entries.push(entry)) == map_of(entries).insert(entry.address, entry.shard),
 {
     let pushed = entries.push(entry);
+    lemma_map_of_domain(entries);
+    lemma_map_of_domain(pushed);
     assert forall|first: int, second: int|
         #![trigger pushed[first], pushed[second]]
         0 <= first < pushed.len() && 0 <= second < pushed.len() && first != second implies {
@@ -207,6 +242,8 @@ proof fn lemma_update(entries: Seq<Entry>, index: int, entry: Entry)
         map_of(entries.update(index, entry)) == map_of(entries).insert(entry.address, entry.shard),
 {
     let updated = entries.update(index, entry);
+    lemma_map_of_domain(entries);
+    lemma_map_of_domain(updated);
     assert forall|first: int, second: int|
         #![trigger updated[first], updated[second]]
         0 <= first < updated.len() && 0 <= second < updated.len() && first != second implies {
@@ -272,6 +309,8 @@ proof fn lemma_remove(entries: Seq<Entry>, index: int)
         map_of(entries.remove(index)) == map_of(entries).remove(entries[index].address),
 {
     let removed = entries.remove(index);
+    lemma_map_of_domain(entries);
+    lemma_map_of_domain(removed);
     let gone = entries[index].address;
     // The index in the old list of each index in the new one.
     let before = |later: int| if later < index { later } else { later + 1 };
@@ -386,6 +425,7 @@ pub proof fn lemma_shards_are_disjoint(table: ListMemoryCapabilityTable)
         }),
 {
     let entries = table.held.entries@;
+    lemma_map_of_domain(entries);
     if well_formed(entries) {
         let shards = map_of(entries);
         assert forall|first: u64, second: u64|
@@ -418,6 +458,9 @@ impl ListMemoryCapabilityTable {
             table.state() == Map::<u64, SharedAllocationMemoryShard>::empty(),
     {
         let table = ListMemoryCapabilityTable { held: wrap(Vec::new()) };
+        proof {
+            lemma_map_of_domain(Seq::<Entry>::empty());
+        }
         assert(map_of(Seq::<Entry>::empty()) =~= Map::<u64, SharedAllocationMemoryShard>::empty());
         table
     }
@@ -495,6 +538,7 @@ impl ListMemoryCapabilityTable {
     {
         proof {
             use_type_invariant(&self.held);
+            lemma_map_of_domain(self.held.entries@);
         }
         if shard.len() as u128 > (u64::MAX as u128) + 1 - (address as u128) {
             return Err(MemoryError::OutOfMemory);
@@ -522,6 +566,7 @@ impl CapabilityTable<u64, SharedAllocationMemoryShard, MemoryShardConfig, Memory
     fn create(&mut self, identifier: u64, config: MemoryShardConfig) -> (created: Result<(), CreateError<MemoryError>>) {
         proof {
             use_type_invariant(&self.held);
+            lemma_map_of_domain(self.held.entries@);
         }
         if let Some(index) = self.find(identifier) {
             proof {
@@ -545,6 +590,7 @@ impl CapabilityTable<u64, SharedAllocationMemoryShard, MemoryShardConfig, Memory
     fn get(&self, identifier: &u64) -> (capability: Option<&SharedAllocationMemoryShard>) {
         proof {
             use_type_invariant(&self.held);
+            lemma_map_of_domain(self.held.entries@);
         }
         match self.find(*identifier) {
             Some(index) => {
@@ -560,6 +606,7 @@ impl CapabilityTable<u64, SharedAllocationMemoryShard, MemoryShardConfig, Memory
     fn drop(&mut self, identifier: &u64) {
         proof {
             use_type_invariant(&self.held);
+            lemma_map_of_domain(self.held.entries@);
         }
         if let Some(index) = self.find(*identifier) {
             let ghost before = self.held.entries@;
@@ -577,6 +624,7 @@ impl CapabilityTable<u64, SharedAllocationMemoryShard, MemoryShardConfig, Memory
     fn duplicate_within(&mut self, identifier: &u64, new_identifier: u64) -> (duplicated: Result<(), DuplicateError<MemoryError>>) {
         proof {
             use_type_invariant(&self.held);
+            lemma_map_of_domain(self.held.entries@);
         }
         let duplicate = match self.find(*identifier) {
             Some(index) => {
@@ -603,6 +651,8 @@ impl CapabilityTable<u64, SharedAllocationMemoryShard, MemoryShardConfig, Memory
         proof {
             use_type_invariant(&self.held);
             use_type_invariant(&other.held);
+            lemma_map_of_domain(self.held.entries@);
+            lemma_map_of_domain(other.held.entries@);
         }
         let duplicate = match other.find(*identifier) {
             Some(index) => {
@@ -630,6 +680,7 @@ impl MemoryCapabilityTable<SharedAllocationMemoryShard> for ListMemoryCapability
     fn set_permissions(&mut self, address: &u64, permissions: MemoryPermissions) -> (set: Result<(), SetPermissionsError>) {
         proof {
             use_type_invariant(&self.held);
+            lemma_map_of_domain(self.held.entries@);
         }
         let index = match self.find(*address) {
             Some(index) => index,
@@ -654,6 +705,7 @@ impl MemoryCapabilityTable<SharedAllocationMemoryShard> for ListMemoryCapability
     fn split(&mut self, address: &u64, offset: u64) -> (split: Result<(), SplitError>) {
         proof {
             use_type_invariant(&self.held);
+            lemma_map_of_domain(self.held.entries@);
         }
         let index = match self.find(*address) {
             Some(index) => index,
