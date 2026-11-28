@@ -1953,6 +1953,45 @@ crates); ours: gpu 1,367, conformance 3,989, recording 1,026, trace 129, webgl 6
 - Next: GI8 part B's queries (end_query handing back the active query), then stream output, draw, blit, present;
   waits on nothing. D1 waits on the API track's `system()` constructors.
 
+## The eighteenth run (2026-11-27): the depth-range reset removed, every 24-bit word run through both conversions, committed plant lists, fill.rs covered whole
+
+Commits fe4be8bd4..38e92d0c9 on the owner's main merged at 0a860e7f2 (FETCH_HEAD 1f24bddad). Logs in
+pyro-parked/wcontainers-scratch/graphics-implementations/r18. All MEASURED on the x86-64 machine unless marked.
+
+- Depth-range reset before webgl's comparison pass (the check's survivor at implementation.rs:2402): REMOVED.
+  The browser suite (Chromium 155, ANGLE on SwiftShader) passes 80 of 80 with the reset planted away and also
+  with the whole comparison pass planted away, so that device never runs the pass. READ/INFERRED: the pass runs
+  only where stored words are sampled by the product (llvmpipe), which clamps `gl_FragDepth` to 0..1; a
+  device sampling the nearest float (Direct3D's rule, so ANGLE over Direct3D 11) has no colliding word.
+- The browser host was missing the four suite tests the seventeenth run added; it now lists them and the new
+  16-bit test (browser suite 81 passed, 0 failed).
+- The two WGSL survivors: webgpu unit test unorm24_read.rs runs `unorm24_functions` and `NEAREST_OF_UNORM24`
+  for all 2^24 words under both conversions in two compute dispatches (a read in the same invocation let Mesa
+  regroup the products) and states each right word: the sampled float, the word read back (0xfffffe reads as
+  0xffffff only under the product), the nearest float. The same for webgl's GLSL in depth.rs's tests.
+- Found by the plants: rounding, truncating and taking the ceiling of d (2^24 - 1) give the same word for every
+  sampled depth, so `round` and the `min` cap are gone from both `unorm24`s, and the `e > 0u` guard too (0 - 1
+  wraps to a word whose float is above 1). webgl's 16-bit read had no test that told rounding from truncating:
+  new suite test every_16_bit_depth_word_copies_out_as_written (passes on recording, webgl, webgpu, browser).
+- Committed plant lists: crates/gpu/implementation/webgpu/plants.txt (41) and webgl/plants.txt (35), run by
+  tools/plants/run-plants.py (the API track's runner, same blob). At the last full run (wip5) every plant
+  but the equivalent whole-part ones was caught, each by named tests; those two are dropped and said in the
+  lists' headers.
+- fill.rs whole file under cargo-mutants 27.1.0: 169 mutants at 0a860e7f2 (98 caught, 50 missed); after the
+  new tests (unit_tests/fills.rs: a packed target's rounding at its level and layer, four samples, the present
+  and resolve draws, a converted format at level 1 layer 1, depth and stencil by draws across layers, each
+  fill program made once and counted, clears by draws, which formats are made bindable; r32sint into depth)
+  159 mutants: 136 caught, 4 missed, 19 unviable, 0 caught only by the timing test. The 4 were removed or
+  covered after: the two layer counts a 2D or 3D view already implies, the dimension that then matters, and
+  the clear pipeline's count (now in the counting test). The sign mask in `depth_of_float_bits` and the `|` of
+  two distinct flags were removed (`union`).
+
+Claim at the final code (x86-64): check exits 0 for every listed package but nir (47, D7) and opengl (1413,
+1404 unsafe: one more than before, from the owner's merge, INFERRED); webgl 101 passed; opengl-es direct 18;
+webgpu on lavapipe 176 passed, the 3 known failures, 4 ignored; shaders 158 passed, 5 ignored; recording 361.
+fmt 0 diffs (wip5). The x86-64 machine was replaced twice during the run; the final plants, mutants, clippy and
+linter runs were lost with it and are owed.
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
