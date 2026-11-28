@@ -1047,50 +1047,6 @@ pub(crate) fn encode_windows_win32_graphics_direct_3d12_d_3d12_range(
     );
 }
 
-/// `D3D12_CPU_DESCRIPTOR_HANDLE` as C lays it out: its offsets and size are this type's.
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub(crate) struct WindowsWin32GraphicsDirect3d12D3d12CpuDescriptorHandleLayout {
-    ptr: usize,
-}
-
-/// Reads `D3D12_CPU_DESCRIPTOR_HANDLE` from the 8 bytes C lays it out in.
-pub(crate) fn decode_windows_win32_graphics_direct_3d12_d_3d12_cpu_descriptor_handle(
-    bytes: &[u8],
-) -> direct3d_12::structures::CpuDescriptorHandle {
-    direct3d_12::structures::CpuDescriptorHandle {
-        ptr: get_usize(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d12D3d12CpuDescriptorHandleLayout,
-                ptr
-            ),
-        ),
-    }
-}
-
-/// `D3D12_GPU_DESCRIPTOR_HANDLE` as C lays it out: its offsets and size are this type's.
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub(crate) struct WindowsWin32GraphicsDirect3d12D3d12GpuDescriptorHandleLayout {
-    ptr: u64,
-}
-
-/// Reads `D3D12_GPU_DESCRIPTOR_HANDLE` from the 8 bytes C lays it out in.
-pub(crate) fn decode_windows_win32_graphics_direct_3d12_d_3d12_gpu_descriptor_handle(
-    bytes: &[u8],
-) -> direct3d_12::structures::GpuDescriptorHandle {
-    direct3d_12::structures::GpuDescriptorHandle {
-        ptr: get_u64(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d12D3d12GpuDescriptorHandleLayout,
-                ptr
-            ),
-        ),
-    }
-}
-
 /// `_Anonymous_e__Union`: each member alone, the others zero, is the member written.
 #[cfg(test)]
 #[test]

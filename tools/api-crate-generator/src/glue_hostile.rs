@@ -1433,9 +1433,43 @@ impl Shapes {
         }
         Some(format!("{ty} {{ {} }}", parts.join(", ")))
     }
+
+    /// A Rust expression of type `ty` that is all zero bytes, made only of literals (a structure's fields each zero; a
+    /// union's none: its Rust form is no structure).
+    pub(super) fn zero(&self, ty: &str) -> Option<String> {
+        let ty = ty.trim();
+        if KNOWN_INTEGERS.contains(&ty) {
+            return Some(format!("0_{ty}"));
+        }
+        if ["f32", "f64"].contains(&ty) {
+            return Some(format!("0.0_{ty}"));
+        }
+        if ty == "bool" {
+            return Some("false".to_string());
+        }
+        if let Some((element, _)) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).and_then(|inner| inner.rsplit_once(';')) {
+            return self.zero(element).map(|value| format!("core::array::from_fn(|_| {value})"));
+        }
+        if self.values.contains_key(ty) || self.newtypes.contains(ty) {
+            return Some(format!("{ty}(0)"));
+        }
+        let (fields, union) = self.structs.get(ty)?;
+        if *union {
+            return None;
+        }
+        let parts: Option<Vec<String>> = fields.iter().map(|(name, field)| self.zero(field).map(|value| format!("{name}: {value}"))).collect();
+        parts.map(|parts| format!("{ty} {{ {} }}", parts.join(", ")))
+    }
 }
 
-/// Sets the writer's structure values from the set's crates (a decoder of zero bytes, or `Default`), and returns the
+/// The shapes of the set's crates' plain data (their structures' fields, enumerations and newtypes), for a writer that
+/// writes values of them before the recorder is written.
+pub(super) fn shapes_from(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Shapes {
+    codecs(writer, crates, api).shapes
+}
+
+/// Sets the writer's structure values from the set's crates (zero bytes as literals, a decoder of zero bytes, or
+/// `Default`), and returns the
 /// data modules they name: module name and path from an implementation's crate.
 pub(super) fn struct_values(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Vec<(String, String)> {
     let codecs = codecs(writer, crates, api);
@@ -1443,6 +1477,13 @@ pub(super) fn struct_values(writer: &Writer<'_, '_>, crates: &Path, api: usize) 
     values.clear();
     for path in &codecs.defaults {
         values.insert(path.clone(), "Default::default()".to_string());
+    }
+    // A structure of zero bytes as literals, which needs no decoder; a decoder of zero bytes only where none can be
+    // written (a union).
+    for path in codecs.shapes.structs.keys() {
+        if let Some(zero) = codecs.shapes.zero(path) {
+            values.entry(path.clone()).or_insert(zero);
+        }
     }
     for (path, (module, ident, size)) in &codecs.decoders {
         values.entry(path.clone()).or_insert_with(|| format!("{module}::decode_{ident}(&[u8::MIN; {size}])"));

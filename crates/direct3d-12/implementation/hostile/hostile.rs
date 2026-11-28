@@ -1065,25 +1065,24 @@ impl<A: Hostile> direct3d_12::Object for HostileCommandQueue<A> {
 impl<A: Hostile> direct3d_12::DescriptorHeap for HostileDescriptorHeap<A> {
     fn get_desc(&self) -> direct3d_12::structures::DescriptorHeapDesc {
         record("ID3D12DescriptorHeap::GetDesc()".to_string());
-        data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(
-            &[u8::MIN; 16],
-        )
+        direct3d_12::structures::DescriptorHeapDesc {
+            type_: direct3d_12::enumerations::DescriptorHeapType(0),
+            num_descriptors: 0_u32,
+            flags: direct3d_12::enumerations::DescriptorHeapFlags(0),
+            node_mask: 0_u32,
+        }
     }
     fn get_cpu_descriptor_handle_for_heap_start(
         &self,
     ) -> direct3d_12::structures::CpuDescriptorHandle {
         record("ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart()".to_string());
-        data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_cpu_descriptor_handle(
-            &[u8::MIN; 8],
-        )
+        direct3d_12::structures::CpuDescriptorHandle { ptr: 0_usize }
     }
     fn get_gpu_descriptor_handle_for_heap_start(
         &self,
     ) -> direct3d_12::structures::GpuDescriptorHandle {
         record("ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart()".to_string());
-        data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_gpu_descriptor_handle(
-            &[u8::MIN; 8],
-        )
+        direct3d_12::structures::GpuDescriptorHandle { ptr: 0_u64 }
     }
 }
 
@@ -1918,7 +1917,27 @@ impl<A: Hostile> direct3d_12::Device for HostileDevice<A> {
             "ID3D12Device::GetCopyableFootprints(first_subresource={:?}, num_subresources={:?}, base_offset={:?})",
             first_subresource, num_subresources, base_offset
         ));
-        ((0..num_subresources.min(4)).map(|_| data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_placed_subresource_footprint(&[u8::MIN; 32])).collect(), (0..num_subresources.min(4)).map(|_| Default::default()).collect(), (0..num_subresources.min(4)).map(|_| Default::default()).collect(), Default::default())
+        (
+            (0..num_subresources.min(4))
+                .map(|_| direct3d_12::structures::PlacedSubresourceFootprint {
+                    offset: 0_u64,
+                    footprint: direct3d_12::structures::SubresourceFootprint {
+                        format: directx_graphics_infrastructure::enumerations::Format(0),
+                        width: 0_u32,
+                        height: 0_u32,
+                        depth: 0_u32,
+                        row_pitch: 0_u32,
+                    },
+                })
+                .collect(),
+            (0..num_subresources.min(4))
+                .map(|_| Default::default())
+                .collect(),
+            (0..num_subresources.min(4))
+                .map(|_| Default::default())
+                .collect(),
+            Default::default(),
+        )
     }
     fn create_query_heap(
         &self,
@@ -2387,9 +2406,21 @@ impl<A: Hostile> direct3d_12::Resource for HostileResource<A> {
     }
     fn get_desc(&self) -> direct3d_12::structures::ResourceDesc {
         record("ID3D12Resource::GetDesc()".to_string());
-        data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(
-            &[u8::MIN; 56],
-        )
+        direct3d_12::structures::ResourceDesc {
+            dimension: direct3d_12::enumerations::ResourceDimension(0),
+            alignment: 0_u64,
+            width: 0_u64,
+            height: 0_u32,
+            depth_or_array_size: 0_u16,
+            mip_levels: 0_u16,
+            format: directx_graphics_infrastructure::enumerations::Format(0),
+            sample_desc: directx_graphics_infrastructure::structures::SampleDesc {
+                count: 0_u32,
+                quality: 0_u32,
+            },
+            layout: direct3d_12::enumerations::TextureLayout(0),
+            flags: direct3d_12::enumerations::ResourceFlags(0),
+        }
     }
     fn get_gpu_virtual_address(&self) -> u64 {
         record("ID3D12Resource::GetGPUVirtualAddress()".to_string());

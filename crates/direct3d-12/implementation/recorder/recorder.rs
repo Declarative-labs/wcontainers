@@ -12,9 +12,6 @@
     reason = "generated: every method has the same shape"
 )]
 
-#[path = "../direct/data.rs"]
-mod data_direct3d_12;
-
 use wcontainers_component_object_model as component_object_model;
 use wcontainers_direct3d_12 as direct3d_12;
 use wcontainers_direct3d_common as direct3d_common;
@@ -779,18 +776,14 @@ impl<A: Recorded> direct3d_12::DescriptorHeap for RecordedDescriptorHeap<A> {
     ) -> direct3d_12::structures::CpuDescriptorHandle {
         record("ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart()".to_string());
         record_arguments("ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart()".to_string());
-        data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_cpu_descriptor_handle(
-            &[u8::MIN; 8],
-        )
+        direct3d_12::structures::CpuDescriptorHandle { ptr: 0_usize }
     }
     fn get_gpu_descriptor_handle_for_heap_start(
         &self,
     ) -> direct3d_12::structures::GpuDescriptorHandle {
         record("ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart()".to_string());
         record_arguments("ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart()".to_string());
-        data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_gpu_descriptor_handle(
-            &[u8::MIN; 8],
-        )
+        direct3d_12::structures::GpuDescriptorHandle { ptr: 0_u64 }
     }
 }
 

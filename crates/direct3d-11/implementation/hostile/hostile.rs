@@ -3160,18 +3160,46 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileAuthenticatedCh
 impl<A: Hostile> direct3d_11::BlendState1 for HostileBlendState<A> {
     fn get_desc1(&self) -> direct3d_11::structures::BlendDesc1 {
         record("ID3D11BlendState1::GetDesc1()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_blend_desc1(
-            &[u8::MIN; 328],
-        )
+        direct3d_11::structures::BlendDesc1 {
+            alpha_to_coverage_enable: false,
+            independent_blend_enable: false,
+            render_target: core::array::from_fn(|_| {
+                direct3d_11::structures::RenderTargetBlendDesc1 {
+                    blend_enable: false,
+                    logic_op_enable: false,
+                    src_blend: direct3d_11::enumerations::Blend(0),
+                    dest_blend: direct3d_11::enumerations::Blend(0),
+                    blend_op: direct3d_11::enumerations::BlendOp(0),
+                    src_blend_alpha: direct3d_11::enumerations::Blend(0),
+                    dest_blend_alpha: direct3d_11::enumerations::Blend(0),
+                    blend_op_alpha: direct3d_11::enumerations::BlendOp(0),
+                    logic_op: direct3d_11::enumerations::LogicOp(0),
+                    render_target_write_mask: 0_u8,
+                }
+            }),
+        }
     }
 }
 
 impl<A: Hostile> direct3d_11::BlendState for HostileBlendState<A> {
     fn get_desc(&self) -> direct3d_11::structures::BlendDesc {
         record("ID3D11BlendState::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_blend_desc(
-            &[u8::MIN; 264],
-        )
+        direct3d_11::structures::BlendDesc {
+            alpha_to_coverage_enable: false,
+            independent_blend_enable: false,
+            render_target: core::array::from_fn(|_| {
+                direct3d_11::structures::RenderTargetBlendDesc {
+                    blend_enable: false,
+                    src_blend: direct3d_11::enumerations::Blend(0),
+                    dest_blend: direct3d_11::enumerations::Blend(0),
+                    blend_op: direct3d_11::enumerations::BlendOp(0),
+                    src_blend_alpha: direct3d_11::enumerations::Blend(0),
+                    dest_blend_alpha: direct3d_11::enumerations::Blend(0),
+                    blend_op_alpha: direct3d_11::enumerations::BlendOp(0),
+                    render_target_write_mask: 0_u8,
+                }
+            }),
+        }
     }
 }
 
@@ -3245,9 +3273,14 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileBlendState<A> {
 impl<A: Hostile> direct3d_11::Buffer for HostileBuffer<A> {
     fn get_desc(&self) -> direct3d_11::structures::BufferDesc {
         record("ID3D11Buffer::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_buffer_desc(
-            &[u8::MIN; 24],
-        )
+        direct3d_11::structures::BufferDesc {
+            byte_width: 0_u32,
+            usage: direct3d_11::enumerations::Usage(0),
+            bind_flags: 0_u32,
+            cpu_access_flags: 0_u32,
+            misc_flags: 0_u32,
+            structure_byte_stride: 0_u32,
+        }
     }
 }
 
@@ -3803,9 +3836,16 @@ impl<A: Hostile> direct3d_11::ClassInstance for HostileClassInstance<A> {
     }
     fn get_desc(&self) -> direct3d_11::structures::ClassInstanceDesc {
         record("ID3D11ClassInstance::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_class_instance_desc(
-            &[u8::MIN; 32],
-        )
+        direct3d_11::structures::ClassInstanceDesc {
+            instance_id: 0_u32,
+            instance_index: 0_u32,
+            type_id: 0_u32,
+            constant_buffer: 0_u32,
+            base_constant_buffer_offset: 0_u32,
+            base_texture: 0_u32,
+            base_sampler: 0_u32,
+            created: false,
+        }
     }
     fn get_instance_name(&self, instance_name: Option<&std::ffi::CStr>) {
         let _ = &instance_name;
@@ -4138,9 +4178,10 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileComputeShader<A
 impl<A: Hostile> direct3d_11::Counter for HostileCounter<A> {
     fn get_desc(&self) -> direct3d_11::structures::CounterDesc {
         record("ID3D11Counter::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_counter_desc(
-            &[u8::MIN; 8],
-        )
+        direct3d_11::structures::CounterDesc {
+            counter: direct3d_11::enumerations::CounterKind(0),
+            misc_flags: 0_u32,
+        }
     }
 }
 
@@ -4414,9 +4455,26 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileDebug<A> {
 impl<A: Hostile> direct3d_11::DepthStencilState for HostileDepthStencilState<A> {
     fn get_desc(&self) -> direct3d_11::structures::DepthStencilDesc {
         record("ID3D11DepthStencilState::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_depth_stencil_desc(
-            &[u8::MIN; 52],
-        )
+        direct3d_11::structures::DepthStencilDesc {
+            depth_enable: false,
+            depth_write_mask: direct3d_11::enumerations::DepthWriteMask(0),
+            depth_func: direct3d_11::enumerations::ComparisonFunc(0),
+            stencil_enable: false,
+            stencil_read_mask: 0_u8,
+            stencil_write_mask: 0_u8,
+            front_face: direct3d_11::structures::DepthStencilopDesc {
+                stencil_fail_op: direct3d_11::enumerations::StencilOp(0),
+                stencil_depth_fail_op: direct3d_11::enumerations::StencilOp(0),
+                stencil_pass_op: direct3d_11::enumerations::StencilOp(0),
+                stencil_func: direct3d_11::enumerations::ComparisonFunc(0),
+            },
+            back_face: direct3d_11::structures::DepthStencilopDesc {
+                stencil_fail_op: direct3d_11::enumerations::StencilOp(0),
+                stencil_depth_fail_op: direct3d_11::enumerations::StencilOp(0),
+                stencil_pass_op: direct3d_11::enumerations::StencilOp(0),
+                stencil_func: direct3d_11::enumerations::ComparisonFunc(0),
+            },
+        }
     }
 }
 
@@ -5526,12 +5584,17 @@ impl<A: Hostile> direct3d_11::Device2 for HostileDevice<A> {
         record("ID3D11Device2::GetResourceTiling()".to_string());
         (
             Default::default(),
-            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_packed_mip_desc(
-                &[u8::MIN; 12],
-            ),
-            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_tile_shape(
-                &[u8::MIN; 12],
-            ),
+            direct3d_11::structures::PackedMipDesc {
+                num_standard_mips: 0_u8,
+                num_packed_mips: 0_u8,
+                num_tiles_for_packed_mips: 0_u32,
+                start_tile_index_in_overall_resource: 0_u32,
+            },
+            direct3d_11::structures::TileShape {
+                width_in_texels: 0_u32,
+                height_in_texels: 0_u32,
+                depth_in_texels: 0_u32,
+            },
             Vec::new(),
         )
     }
@@ -7088,9 +7151,11 @@ impl<A: Hostile> direct3d_11::Device for HostileDevice<A> {
     }
     fn check_counter_info(&self) -> direct3d_11::structures::CounterInfo {
         record("ID3D11Device::CheckCounterInfo()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_counter_info(
-            &[u8::MIN; 12],
-        )
+        direct3d_11::structures::CounterInfo {
+            last_device_dependent_counter: direct3d_11::enumerations::CounterKind(0),
+            num_simultaneous_counters: 0_u32,
+            num_detectable_parallel_units: 0_u8,
+        }
     }
     fn check_counter(
         &self,
@@ -9200,20 +9265,24 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
     fn rs_get_viewports(&self) -> Vec<direct3d_11::structures::Viewport> {
         record("ID3D11DeviceContext::RSGetViewports()".to_string());
         (0..2_u32)
-            .map(|_| {
-                data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_viewport(
-                    &[u8::MIN; 24],
-                )
+            .map(|_| direct3d_11::structures::Viewport {
+                top_left_x: 0.0_f32,
+                top_left_y: 0.0_f32,
+                width: 0.0_f32,
+                height: 0.0_f32,
+                min_depth: 0.0_f32,
+                max_depth: 0.0_f32,
             })
             .collect()
     }
     fn rs_get_scissor_rects(&self) -> Vec<component_object_model::structures::Rect> {
         record("ID3D11DeviceContext::RSGetScissorRects()".to_string());
         (0..2_u32)
-            .map(|_| {
-                data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                    &[u8::MIN; 16],
-                )
+            .map(|_| component_object_model::structures::Rect {
+                left: 0_i32,
+                top: 0_i32,
+                right: 0_i32,
+                bottom: 0_i32,
             })
             .collect()
     }
@@ -10306,7 +10375,10 @@ impl<A: Hostile> direct3d_11::Predicate for HostilePredicate<A> {}
 impl<A: Hostile> direct3d_11::Query for HostilePredicate<A> {
     fn get_desc(&self) -> direct3d_11::structures::QueryDesc {
         record("ID3D11Query::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(&[u8::MIN; 8])
+        direct3d_11::structures::QueryDesc {
+            query: direct3d_11::enumerations::QueryKind(0),
+            misc_flags: 0_u32,
+        }
     }
 }
 
@@ -10387,16 +10459,21 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostilePredicate<A> {
 impl<A: Hostile> direct3d_11::Query1 for HostileQuery<A> {
     fn get_desc1(&self) -> direct3d_11::structures::QueryDesc1 {
         record("ID3D11Query1::GetDesc1()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc1(
-            &[u8::MIN; 12],
-        )
+        direct3d_11::structures::QueryDesc1 {
+            query: direct3d_11::enumerations::QueryKind(0),
+            misc_flags: 0_u32,
+            context_type: direct3d_11::enumerations::ContextType(0),
+        }
     }
 }
 
 impl<A: Hostile> direct3d_11::Query for HostileQuery<A> {
     fn get_desc(&self) -> direct3d_11::structures::QueryDesc {
         record("ID3D11Query::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(&[u8::MIN; 8])
+        direct3d_11::structures::QueryDesc {
+            query: direct3d_11::enumerations::QueryKind(0),
+            misc_flags: 0_u32,
+        }
     }
 }
 
@@ -10477,27 +10554,57 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileQuery<A> {
 impl<A: Hostile> direct3d_11::RasterizerState2 for HostileRasterizerState<A> {
     fn get_desc2(&self) -> direct3d_11::structures::RasterizerDesc2 {
         record("ID3D11RasterizerState2::GetDesc2()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc2(
-            &[u8::MIN; 48],
-        )
+        direct3d_11::structures::RasterizerDesc2 {
+            fill_mode: direct3d_11::enumerations::FillMode(0),
+            cull_mode: direct3d_11::enumerations::CullMode(0),
+            front_counter_clockwise: false,
+            depth_bias: 0_i32,
+            depth_bias_clamp: 0.0_f32,
+            slope_scaled_depth_bias: 0.0_f32,
+            depth_clip_enable: false,
+            scissor_enable: false,
+            multisample_enable: false,
+            antialiased_line_enable: false,
+            forced_sample_count: 0_u32,
+            conservative_raster: direct3d_11::enumerations::ConservativeRasterizationMode(0),
+        }
     }
 }
 
 impl<A: Hostile> direct3d_11::RasterizerState1 for HostileRasterizerState<A> {
     fn get_desc1(&self) -> direct3d_11::structures::RasterizerDesc1 {
         record("ID3D11RasterizerState1::GetDesc1()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc1(
-            &[u8::MIN; 44],
-        )
+        direct3d_11::structures::RasterizerDesc1 {
+            fill_mode: direct3d_11::enumerations::FillMode(0),
+            cull_mode: direct3d_11::enumerations::CullMode(0),
+            front_counter_clockwise: false,
+            depth_bias: 0_i32,
+            depth_bias_clamp: 0.0_f32,
+            slope_scaled_depth_bias: 0.0_f32,
+            depth_clip_enable: false,
+            scissor_enable: false,
+            multisample_enable: false,
+            antialiased_line_enable: false,
+            forced_sample_count: 0_u32,
+        }
     }
 }
 
 impl<A: Hostile> direct3d_11::RasterizerState for HostileRasterizerState<A> {
     fn get_desc(&self) -> direct3d_11::structures::RasterizerDesc {
         record("ID3D11RasterizerState::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc(
-            &[u8::MIN; 40],
-        )
+        direct3d_11::structures::RasterizerDesc {
+            fill_mode: direct3d_11::enumerations::FillMode(0),
+            cull_mode: direct3d_11::enumerations::CullMode(0),
+            front_counter_clockwise: false,
+            depth_bias: 0_i32,
+            depth_bias_clamp: 0.0_f32,
+            slope_scaled_depth_bias: 0.0_f32,
+            depth_clip_enable: false,
+            scissor_enable: false,
+            multisample_enable: false,
+            antialiased_line_enable: false,
+        }
     }
 }
 
@@ -10743,9 +10850,18 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileRenderTargetVie
 impl<A: Hostile> direct3d_11::SamplerState for HostileSamplerState<A> {
     fn get_desc(&self) -> direct3d_11::structures::SamplerDesc {
         record("ID3D11SamplerState::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_sampler_desc(
-            &[u8::MIN; 52],
-        )
+        direct3d_11::structures::SamplerDesc {
+            filter: direct3d_11::enumerations::Filter(0),
+            address_u: direct3d_11::enumerations::TextureAddressMode(0),
+            address_v: direct3d_11::enumerations::TextureAddressMode(0),
+            address_w: direct3d_11::enumerations::TextureAddressMode(0),
+            mip_lod_bias: 0.0_f32,
+            max_anisotropy: 0_u32,
+            comparison_func: direct3d_11::enumerations::ComparisonFunc(0),
+            border_color: core::array::from_fn(|_| 0.0_f32),
+            min_lod: 0.0_f32,
+            max_lod: 0.0_f32,
+        }
     }
 }
 
@@ -11109,9 +11225,16 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileSwitchToRef<A> 
 impl<A: Hostile> direct3d_11::Texture1D for HostileTexture1D<A> {
     fn get_desc(&self) -> direct3d_11::structures::Texture1DDesc {
         record("ID3D11Texture1D::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_1d_desc(
-            &[u8::MIN; 32],
-        )
+        direct3d_11::structures::Texture1DDesc {
+            width: 0_u32,
+            mip_levels: 0_u32,
+            array_size: 0_u32,
+            format: directx_graphics_infrastructure::enumerations::Format(0),
+            usage: direct3d_11::enumerations::Usage(0),
+            bind_flags: 0_u32,
+            cpu_access_flags: 0_u32,
+            misc_flags: 0_u32,
+        }
     }
 }
 
@@ -11663,18 +11786,43 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileTexture1D<A> {
 impl<A: Hostile> direct3d_11::Texture2D1 for HostileTexture2D<A> {
     fn get_desc1(&self) -> direct3d_11::structures::Texture2DDesc1 {
         record("ID3D11Texture2D1::GetDesc1()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_2d_desc1(
-            &[u8::MIN; 48],
-        )
+        direct3d_11::structures::Texture2DDesc1 {
+            width: 0_u32,
+            height: 0_u32,
+            mip_levels: 0_u32,
+            array_size: 0_u32,
+            format: directx_graphics_infrastructure::enumerations::Format(0),
+            sample_desc: directx_graphics_infrastructure::structures::SampleDesc {
+                count: 0_u32,
+                quality: 0_u32,
+            },
+            usage: direct3d_11::enumerations::Usage(0),
+            bind_flags: 0_u32,
+            cpu_access_flags: 0_u32,
+            misc_flags: 0_u32,
+            texture_layout: direct3d_11::enumerations::TextureLayout(0),
+        }
     }
 }
 
 impl<A: Hostile> direct3d_11::Texture2D for HostileTexture2D<A> {
     fn get_desc(&self) -> direct3d_11::structures::Texture2DDesc {
         record("ID3D11Texture2D::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_2d_desc(
-            &[u8::MIN; 44],
-        )
+        direct3d_11::structures::Texture2DDesc {
+            width: 0_u32,
+            height: 0_u32,
+            mip_levels: 0_u32,
+            array_size: 0_u32,
+            format: directx_graphics_infrastructure::enumerations::Format(0),
+            sample_desc: directx_graphics_infrastructure::structures::SampleDesc {
+                count: 0_u32,
+                quality: 0_u32,
+            },
+            usage: direct3d_11::enumerations::Usage(0),
+            bind_flags: 0_u32,
+            cpu_access_flags: 0_u32,
+            misc_flags: 0_u32,
+        }
     }
 }
 
@@ -12454,18 +12602,35 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileTexture2D<A> {
 impl<A: Hostile> direct3d_11::Texture3D1 for HostileTexture3D<A> {
     fn get_desc1(&self) -> direct3d_11::structures::Texture3DDesc1 {
         record("ID3D11Texture3D1::GetDesc1()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_3d_desc1(
-            &[u8::MIN; 40],
-        )
+        direct3d_11::structures::Texture3DDesc1 {
+            width: 0_u32,
+            height: 0_u32,
+            depth: 0_u32,
+            mip_levels: 0_u32,
+            format: directx_graphics_infrastructure::enumerations::Format(0),
+            usage: direct3d_11::enumerations::Usage(0),
+            bind_flags: 0_u32,
+            cpu_access_flags: 0_u32,
+            misc_flags: 0_u32,
+            texture_layout: direct3d_11::enumerations::TextureLayout(0),
+        }
     }
 }
 
 impl<A: Hostile> direct3d_11::Texture3D for HostileTexture3D<A> {
     fn get_desc(&self) -> direct3d_11::structures::Texture3DDesc {
         record("ID3D11Texture3D::GetDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_3d_desc(
-            &[u8::MIN; 36],
-        )
+        direct3d_11::structures::Texture3DDesc {
+            width: 0_u32,
+            height: 0_u32,
+            depth: 0_u32,
+            mip_levels: 0_u32,
+            format: directx_graphics_infrastructure::enumerations::Format(0),
+            usage: direct3d_11::enumerations::Usage(0),
+            bind_flags: 0_u32,
+            cpu_access_flags: 0_u32,
+            misc_flags: 0_u32,
+        }
     }
 }
 
@@ -13662,9 +13827,12 @@ impl<A: Hostile> direct3d_11::VideoContext for HostileVideoContext<A> {
         record("ID3D11VideoContext::VideoProcessorGetOutputTargetRect()".to_string());
         (
             Default::default(),
-            data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                &[u8::MIN; 16],
-            ),
+            component_object_model::structures::Rect {
+                left: 0_i32,
+                top: 0_i32,
+                right: 0_i32,
+                bottom: 0_i32,
+            },
         )
     }
     fn video_processor_get_output_background_color(
@@ -13686,7 +13854,7 @@ impl<A: Hostile> direct3d_11::VideoContext for HostileVideoContext<A> {
     ) -> direct3d_11::structures::VideoProcessorColorSpace {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputColorSpace()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_color_space(&[u8::MIN; 4])
+        direct3d_11::structures::VideoProcessorColorSpace { _bitfield: 0_u32 }
     }
     fn video_processor_get_output_alpha_fill_mode(
         &self,
@@ -13704,7 +13872,10 @@ impl<A: Hostile> direct3d_11::VideoContext for HostileVideoContext<A> {
         record("ID3D11VideoContext::VideoProcessorGetOutputConstriction()".to_string());
         (
             Default::default(),
-            data_direct3d_11::decode_windows_win32_foundation_size(&[u8::MIN; 8]),
+            component_object_model::structures::Size {
+                cx: 0_i32,
+                cy: 0_i32,
+            },
         )
     }
     fn video_processor_get_output_stereo_mode(
@@ -13975,7 +14146,7 @@ impl<A: Hostile> direct3d_11::VideoContext for HostileVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamColorSpace(stream_index={:?})",
             stream_index
         ));
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_color_space(&[u8::MIN; 4])
+        direct3d_11::structures::VideoProcessorColorSpace { _bitfield: 0_u32 }
     }
     fn video_processor_get_stream_output_rate(
         &self,
@@ -13992,7 +14163,14 @@ impl<A: Hostile> direct3d_11::VideoContext for HostileVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamOutputRate(stream_index={:?})",
             stream_index
         ));
-        (Default::default(), Default::default(), data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&[u8::MIN; 8]))
+        (
+            Default::default(),
+            Default::default(),
+            directx_graphics_infrastructure::structures::Rational {
+                numerator: 0_u32,
+                denominator: 0_u32,
+            },
+        )
     }
     fn video_processor_get_stream_source_rect(
         &self,
@@ -14007,9 +14185,12 @@ impl<A: Hostile> direct3d_11::VideoContext for HostileVideoContext<A> {
         ));
         (
             Default::default(),
-            data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                &[u8::MIN; 16],
-            ),
+            component_object_model::structures::Rect {
+                left: 0_i32,
+                top: 0_i32,
+                right: 0_i32,
+                bottom: 0_i32,
+            },
         )
     }
     fn video_processor_get_stream_dest_rect(
@@ -14025,9 +14206,12 @@ impl<A: Hostile> direct3d_11::VideoContext for HostileVideoContext<A> {
         ));
         (
             Default::default(),
-            data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                &[u8::MIN; 16],
-            ),
+            component_object_model::structures::Rect {
+                left: 0_i32,
+                top: 0_i32,
+                right: 0_i32,
+                bottom: 0_i32,
+            },
         )
     }
     fn video_processor_get_stream_alpha(
@@ -14073,7 +14257,17 @@ impl<A: Hostile> direct3d_11::VideoContext for HostileVideoContext<A> {
             "ID3D11VideoContext::VideoProcessorGetStreamPixelAspectRatio(stream_index={:?})",
             stream_index
         ));
-        (Default::default(), data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&[u8::MIN; 8]), data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&[u8::MIN; 8]))
+        (
+            Default::default(),
+            directx_graphics_infrastructure::structures::Rational {
+                numerator: 0_u32,
+                denominator: 0_u32,
+            },
+            directx_graphics_infrastructure::structures::Rational {
+                numerator: 0_u32,
+                denominator: 0_u32,
+            },
+        )
     }
     fn video_processor_get_stream_luma_key(
         &self,
@@ -14917,13 +15111,34 @@ impl<A: Hostile> direct3d_common::DestructionNotifier for HostileVideoDevice<A> 
 impl<A: Hostile> direct3d_11::VideoProcessor for HostileVideoProcessor<A> {
     fn get_content_desc(&self) -> direct3d_11::structures::VideoProcessorContentDesc {
         record("ID3D11VideoProcessor::GetContentDesc()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_content_desc(&[u8::MIN; 40])
+        direct3d_11::structures::VideoProcessorContentDesc {
+            input_frame_format: direct3d_11::enumerations::VideoFrameFormat(0),
+            input_frame_rate: directx_graphics_infrastructure::structures::Rational {
+                numerator: 0_u32,
+                denominator: 0_u32,
+            },
+            input_width: 0_u32,
+            input_height: 0_u32,
+            output_frame_rate: directx_graphics_infrastructure::structures::Rational {
+                numerator: 0_u32,
+                denominator: 0_u32,
+            },
+            output_width: 0_u32,
+            output_height: 0_u32,
+            usage: direct3d_11::enumerations::VideoUsage(0),
+        }
     }
     fn get_rate_conversion_caps(
         &self,
     ) -> direct3d_11::structures::VideoProcessorRateConversionCaps {
         record("ID3D11VideoProcessor::GetRateConversionCaps()".to_string());
-        data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_rate_conversion_caps(&[u8::MIN; 20])
+        direct3d_11::structures::VideoProcessorRateConversionCaps {
+            past_frames: 0_u32,
+            future_frames: 0_u32,
+            processor_caps: 0_u32,
+            i_telecine_caps: 0_u32,
+            custom_rate_count: 0_u32,
+        }
     }
 }
 

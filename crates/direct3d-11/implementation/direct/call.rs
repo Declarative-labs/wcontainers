@@ -10890,12 +10890,17 @@ impl<A: System> direct3d_11::Device2 for SystemDevice<A> {
         // Refused by its form (the report's NOT GLUED): the system is not called.
         (
             Default::default(),
-            decode_windows_win32_graphics_direct_3d11_d_3d11_packed_mip_desc(
-                &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout>()],
-            ),
-            decode_windows_win32_graphics_direct_3d11_d_3d11_tile_shape(
-                &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11D3d11TileShapeLayout>()],
-            ),
+            direct3d_11::structures::PackedMipDesc {
+                num_standard_mips: 0_u8,
+                num_packed_mips: 0_u8,
+                num_tiles_for_packed_mips: 0_u32,
+                start_tile_index_in_overall_resource: 0_u32,
+            },
+            direct3d_11::structures::TileShape {
+                width_in_texels: 0_u32,
+                height_in_texels: 0_u32,
+                depth_in_texels: 0_u32,
+            },
             Vec::new(),
         )
     }

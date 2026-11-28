@@ -59,9 +59,13 @@ impl Writer<'_, '_> {
         }
         if ty.contains("::structures::") {
             let record_key = self.g.read.records.keys().find(|k| self.record_path(k) == ty)?.clone();
-            // A handle's newtype derives `Default` (zero); a structure is zero bytes decoded.
+            // A handle's newtype derives `Default` (zero); a structure is its fields' zeros as literals, or (a union) zero
+            // bytes decoded.
             if !matches!(self.g.read.records[&record_key].kind, crate::metadata::RecordKind::Struct | crate::metadata::RecordKind::Union) {
                 return Some("Default::default()".to_string());
+            }
+            if let Some(zero) = self.shapes.borrow().zero(ty) {
+                return Some(zero);
             }
             let coded = self.codec_of(&record_key)?;
             return Some(format!("decode_{}(&[u8::MIN; size_of::<{}>()])", coded.ident, coded.mirror));

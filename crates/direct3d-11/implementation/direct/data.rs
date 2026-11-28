@@ -6318,42 +6318,6 @@ pub(crate) struct WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout {
     start_tile_index_in_overall_resource: u32,
 }
 
-/// Reads `D3D11_PACKED_MIP_DESC` from the 12 bytes C lays it out in.
-pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_packed_mip_desc(
-    bytes: &[u8],
-) -> direct3d_11::structures::PackedMipDesc {
-    direct3d_11::structures::PackedMipDesc {
-        num_standard_mips: get_u8(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout,
-                num_standard_mips
-            ),
-        ),
-        num_packed_mips: get_u8(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout,
-                num_packed_mips
-            ),
-        ),
-        num_tiles_for_packed_mips: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout,
-                num_tiles_for_packed_mips
-            ),
-        ),
-        start_tile_index_in_overall_resource: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout,
-                start_tile_index_in_overall_resource
-            ),
-        ),
-    }
-}
-
 /// `D3D11_TILE_SHAPE` as C lays it out: its offsets and size are this type's.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -6361,35 +6325,6 @@ pub(crate) struct WindowsWin32GraphicsDirect3d11D3d11TileShapeLayout {
     width_in_texels: u32,
     height_in_texels: u32,
     depth_in_texels: u32,
-}
-
-/// Reads `D3D11_TILE_SHAPE` from the 12 bytes C lays it out in.
-pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_tile_shape(
-    bytes: &[u8],
-) -> direct3d_11::structures::TileShape {
-    direct3d_11::structures::TileShape {
-        width_in_texels: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11TileShapeLayout,
-                width_in_texels
-            ),
-        ),
-        height_in_texels: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11TileShapeLayout,
-                height_in_texels
-            ),
-        ),
-        depth_in_texels: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11TileShapeLayout,
-                depth_in_texels
-            ),
-        ),
-    }
 }
 
 /// `D3D11_SUBRESOURCE_TILING` as C lays it out: its offsets and size are this type's.

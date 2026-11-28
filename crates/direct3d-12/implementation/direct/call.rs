@@ -1603,17 +1603,13 @@ impl<A: System> direct3d_12::DescriptorHeap for SystemDescriptorHeap<A> {
         &self,
     ) -> direct3d_12::structures::CpuDescriptorHandle {
         // Refused by its form (the report's NOT GLUED): the system is not called.
-        decode_windows_win32_graphics_direct_3d12_d_3d12_cpu_descriptor_handle(
-            &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12D3d12CpuDescriptorHandleLayout>()],
-        )
+        direct3d_12::structures::CpuDescriptorHandle { ptr: 0_usize }
     }
     fn get_gpu_descriptor_handle_for_heap_start(
         &self,
     ) -> direct3d_12::structures::GpuDescriptorHandle {
         // Refused by its form (the report's NOT GLUED): the system is not called.
-        decode_windows_win32_graphics_direct_3d12_d_3d12_gpu_descriptor_handle(
-            &[u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12D3d12GpuDescriptorHandleLayout>()],
-        )
+        direct3d_12::structures::GpuDescriptorHandle { ptr: 0_u64 }
     }
 }
 

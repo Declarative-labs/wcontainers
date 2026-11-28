@@ -3817,7 +3817,22 @@ impl<A: Hostile> directx_graphics_infrastructure::Output1 for HostileOutput<A> {
             "IDXGIOutput1::GetDisplayModeList1(enum_format={:?}, flags={:?})",
             enum_format, flags
         ));
-        Ok((0..2_u32).map(|_| data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_mode_desc1(&[u8::MIN; 32])).collect())
+        Ok((0..2_u32)
+            .map(|_| directx_graphics_infrastructure::structures::ModeDesc1 {
+                width: 0_u32,
+                height: 0_u32,
+                refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                    numerator: 0_u32,
+                    denominator: 0_u32,
+                },
+                format: directx_graphics_infrastructure::enumerations::Format(0),
+                scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(
+                    0,
+                ),
+                scaling: directx_graphics_infrastructure::enumerations::ModeScaling(0),
+                stereo: false,
+            })
+            .collect())
     }
     fn find_closest_matching_mode1(
         &self,
@@ -3873,7 +3888,21 @@ impl<A: Hostile> directx_graphics_infrastructure::Output for HostileOutput<A> {
             "IDXGIOutput::GetDisplayModeList(enum_format={:?}, flags={:?})",
             enum_format, flags
         ));
-        Ok((0..2_u32).map(|_| data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&[u8::MIN; 28])).collect())
+        Ok((0..2_u32)
+            .map(|_| directx_graphics_infrastructure::structures::ModeDesc {
+                width: 0_u32,
+                height: 0_u32,
+                refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                    numerator: 0_u32,
+                    denominator: 0_u32,
+                },
+                format: directx_graphics_infrastructure::enumerations::Format(0),
+                scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(
+                    0,
+                ),
+                scaling: directx_graphics_infrastructure::enumerations::ModeScaling(0),
+            })
+            .collect())
     }
     fn find_closest_matching_mode(
         &self,
@@ -4161,9 +4190,23 @@ impl<A: Hostile> directx_graphics_infrastructure::OutputDuplication
 {
     fn get_desc(&self) -> directx_graphics_infrastructure::structures::OutduplDesc {
         record("IDXGIOutputDuplication::GetDesc()".to_string());
-        data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_outdupl_desc(
-            &[u8::MIN; 36],
-        )
+        directx_graphics_infrastructure::structures::OutduplDesc {
+            mode_desc: directx_graphics_infrastructure::structures::ModeDesc {
+                width: 0_u32,
+                height: 0_u32,
+                refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                    numerator: 0_u32,
+                    denominator: 0_u32,
+                },
+                format: directx_graphics_infrastructure::enumerations::Format(0),
+                scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(
+                    0,
+                ),
+                scaling: directx_graphics_infrastructure::enumerations::ModeScaling(0),
+            },
+            rotation: directx_graphics_infrastructure::enumerations::ModeRotation(0),
+            desktop_image_in_system_memory: false,
+        }
     }
     fn acquire_next_frame(
         &self,

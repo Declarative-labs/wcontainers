@@ -974,6 +974,10 @@ impl Writer<'_, '_> {
 pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_folder: &Path) -> Result<String, String> {
     let g = writer.g;
     writer.current.set(api);
+    // The plain data's shapes, so that a value that holds nothing is written as literals (`nothing_of`).
+    if let Some(crates) = crate_folder.parent() {
+        *writer.shapes.borrow_mut() = super::hostile::shapes_from(writer, crates, api);
+    }
     writer.coded.borrow_mut().clear();
     writer.codecs.borrow_mut().clear();
     writer.mirror_checks.borrow_mut().clear();

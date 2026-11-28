@@ -36,30 +36,16 @@ pub(super) fn salt_of(place: &str) -> usize {
     usize::try_from(folded % 1_000_003).unwrap_or(0)
 }
 
-/// An expression of which objects an argument of objects holds (`name`, of Rust type `ty`): whether an optional object is
-/// there, and for an array, whether each element is there or how many there are; none for an argument of no such form
-/// (one object, which is always there, or bytes).
+/// An expression of how many objects an array of objects (`&[&T]`, none of them left out) holds; none for any other
+/// form (an object, an optional one, a reference of several kinds or a list of optional objects is named by its
+/// identities, `identity_of`; bytes and plain data hold no object).
 fn presence_of(name: &str, ty: &str) -> Option<String> {
     let ty = ty.trim();
-    // Bytes are `impl VolatileBytes` and plain data names no `Self`: neither holds objects.
     if !ty.contains("Self") {
         return None;
     }
-    fn slice_of(ty: &str) -> Option<&str> {
-        ty.strip_prefix("&[").or_else(|| ty.strip_prefix("&'_ [")).and_then(|rest| rest.strip_suffix(']')).map(str::trim)
-    }
-    if let Some(inner) = ty.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')).map(str::trim) {
-        // An optional array of objects holds optional objects (`Option<&[Option<&T>]>`, as every such header array is).
-        return Some(match slice_of(inner) {
-            Some(_) => format!("{name}.map(|items| items.iter().map(|item| item.is_some()).collect::<Vec<_>>())"),
-            None => format!("{name}.is_some()"),
-        });
-    }
-    match slice_of(ty) {
-        Some(element) if element.starts_with("Option<") => Some(format!("{name}.iter().map(|item| item.is_some()).collect::<Vec<_>>()")),
-        Some(_) => Some(format!("{name}.len()")),
-        None => None,
-    }
+    let element = ty.strip_prefix("&[").or_else(|| ty.strip_prefix("&'_ [")).and_then(|rest| rest.strip_suffix(']'))?;
+    (!element.trim().starts_with("Option<")).then(|| format!("{name}.len()"))
 }
 
 /// The recorder's log, objects, bytes and helpers, the same in every recorder crate.
@@ -320,8 +306,9 @@ impl Writer<'_, '_> {
             let api = top.split("::").next().unwrap_or(top);
             return Some(format!("named(\"{api}::{kind}\", {name}.identity())"));
         }
-        let (path, generics) = ty.split_once('<')?;
-        if !(generics.starts_with("'_, Self") && path.ends_with("Ref")) {
+        // (Every reference enum of the traits is `<Name>Ref<'_, Self::Api>` or `<Name>Ref<'_, Self>`.)
+        let (path, _) = ty.split_once('<')?;
+        if !path.ends_with("Ref") {
             return None;
         }
         let mut arms: Vec<String> = if path.ends_with("::UnknownRef") {
