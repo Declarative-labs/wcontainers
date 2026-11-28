@@ -292,17 +292,7 @@ pub struct Shard {
 
 /// A run of a shard's bytes that a borrow lends.
 pub struct Window<'shard> {
-    shard: &'shard Shard,
-    start: usize,
-    length: usize,
-}
-
-impl<'shard> Window<'shard> {
-    // The run lies inside the shard.
-    #[verifier::type_invariant]
-    spec fn inside(self) -> bool {
-        self.start + self.length <= self.shard.cells@.len()
-    }
+    cells: &'shard [InvCell<u8, AnyByte>],
 }
 
 // The rule every byte of a shard meets, which any byte does.
@@ -381,45 +371,44 @@ impl MemoryShard for Shard {
     }
 
     fn borrow(&self, offset: u64, length: u64) -> (borrowed: Result<Window<'_>, BorrowError>) {
-        let size = self.cells.len() as u64;
+        let cells = self.cells.as_slice();
+        let size = cells.len() as u64;
         if offset > size || length > size - offset {
             return Err(BorrowError::OutsideShard);
         }
-        Ok(Window { shard: self, start: offset as usize, length: length as usize })
+        let (_, rest) = cells.split_at(offset as usize);
+        let (window, _) = rest.split_at(length as usize);
+        Ok(Window { cells: window })
     }
 }
 
-// Returns where in the shard a copy at the offset of the window starts and how many bytes it moves for a buffer.
+// Returns where in the window a copy at the offset starts and how many bytes it moves for a buffer of the length.
 fn range(window: &Window, offset: u64, buffer: usize) -> (range: (usize, usize))
     ensures
         range.1 == wcontainers_volatile_bytes::copied(window.spec_len(), offset, buffer as nat),
-        range.0 + range.1 <= window.shard.cells@.len(),
-        window.start + window.length <= window.shard.cells@.len(),
-        window.shard.cells@.len() <= usize::MAX,
+        range.0 + range.1 <= window.cells@.len(),
+        window.cells@.len() <= usize::MAX,
 {
-    proof {
-        use_type_invariant(window);
+    let length = window.cells.len();
+    if offset >= length as u64 {
+        return (usize::MIN, usize::MIN);
     }
-    let _ = window.shard.cells.len();
-    if offset >= window.length as u64 {
-        return (window.start, usize::MIN);
-    }
-    let skip = offset as usize;
-    let rest = window.length - skip;
+    let start = offset as usize;
+    let rest = length - start;
     if buffer <= rest {
-        (window.start + skip, buffer)
+        (start, buffer)
     } else {
-        (window.start + skip, rest)
+        (start, rest)
     }
 }
 
 impl<'shard> VolatileBytes for Window<'shard> {
     closed spec fn spec_len(&self) -> nat {
-        self.length as nat
+        self.cells@.len()
     }
 
     fn len(&self) -> (length: u64) {
-        self.length as u64
+        self.cells.len() as u64
     }
 
     fn read_at(&self, offset: u64, into: &mut [u8]) -> (count: usize) {
@@ -428,14 +417,14 @@ impl<'shard> VolatileBytes for Window<'shard> {
         while index < count
             invariant
                 count == wcontainers_volatile_bytes::copied(self.spec_len(), offset, old(into)@.len()),
-                start + count <= self.shard.cells@.len(),
-                self.shard.cells@.len() <= usize::MAX,
+                start + count <= self.cells@.len(),
+                self.cells@.len() <= usize::MAX,
                 into@.len() == old(into)@.len(),
                 index <= count,
                 forall|later: int| count <= later < old(into)@.len() ==> into@[later] == old(into)@[later],
             decreases count - index,
         {
-            into[index] = self.shard.cells[start + index].get();
+            into[index] = self.cells[start + index].get();
             index += 1;
         }
         count
@@ -447,61 +436,50 @@ impl<'shard> VolatileBytes for Window<'shard> {
         while index < count
             invariant
                 count == wcontainers_volatile_bytes::copied(self.spec_len(), offset, bytes@.len()),
-                start + count <= self.shard.cells@.len(),
-                self.shard.cells@.len() <= usize::MAX,
+                start + count <= self.cells@.len(),
+                self.cells@.len() <= usize::MAX,
                 count <= bytes@.len(),
                 index <= count,
             decreases count - index,
         {
-            self.shard.cells[start + index].set(bytes[index]);
+            self.cells[start + index].set(bytes[index]);
             index += 1;
         }
         count
     }
 
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> (read: Result<usize, Sink::Error>) {
-        let (start, count) = range(self, u64::MIN, self.length);
         let mut copy: Vec<u8> = Vec::new();
-        while copy.len() < count
+        while copy.len() < self.cells.len()
             invariant
-                start + count <= self.shard.cells@.len(),
-                self.shard.cells@.len() <= usize::MAX,
-                count <= self.length,
-                copy@.len() <= count,
-            decreases count - copy@.len(),
+                copy@.len() <= self.cells@.len(),
+            decreases self.cells@.len() - copy@.len(),
         {
-            copy.push(self.shard.cells[start + copy.len()].get());
+            copy.push(self.cells[copy.len()].get());
         }
         sink.write(copy.as_slice())
     }
 
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> (written: Result<usize, Source::Error>) {
-        let (start, count) = range(self, u64::MIN, self.length);
         let mut copy: Vec<u8> = Vec::new();
-        while copy.len() < count
+        while copy.len() < self.cells.len()
             invariant
-                start + count <= self.shard.cells@.len(),
-                self.shard.cells@.len() <= usize::MAX,
-                count <= self.length,
-                copy@.len() <= count,
-            decreases count - copy@.len(),
+                copy@.len() <= self.cells@.len(),
+            decreases self.cells@.len() - copy@.len(),
         {
             copy.push(u8::MIN);
         }
         let read = source.read(copy.as_mut_slice());
-        if let Ok(read_count) = read {
+        if let Ok(count) = read {
             let mut index: usize = usize::MIN;
-            while index < read_count
+            while index < count
                 invariant
-                    read_count <= copy@.len(),
-                    copy@.len() == count,
-                    count <= self.length,
-                    start + count <= self.shard.cells@.len(),
-                    self.shard.cells@.len() <= usize::MAX,
-                    index <= read_count,
-                decreases read_count - index,
+                    count <= copy@.len(),
+                    copy@.len() == self.cells@.len(),
+                    index <= count,
+                decreases count - index,
             {
-                self.shard.cells[start + index].set(copy[index]);
+                self.cells[index].set(copy[index]);
                 index += 1;
             }
         }
