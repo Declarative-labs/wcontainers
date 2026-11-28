@@ -18,17 +18,19 @@ pub const LOWEST_ADDRESS: u64 = 64 * 1024;
 
 verus! {
 
+/// What a page allows. Empty means any access faults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Permissions(u8);
+
+} // verus!
+
 bitflags! {
-    /// What a page allows. Empty means any access faults.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub struct Permissions: u8 {
+    impl Permissions: u8 {
         const READ = 1;
         const WRITE = 2;
         const EXECUTE = 4;
     }
 }
-
-} // verus!
 
 /// The addresses a process may use: from [`LOWEST_ADDRESS`] up to, not including, `end`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

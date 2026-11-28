@@ -33,9 +33,19 @@ pub struct ReadinessReport {
     pub unconditional: UnconditionalEvents,
 }
 
+// VERUS: the items a macro makes are outside `verus!` even inside it, so each set of flags is declared here
+// and bitflags gives it its operations below, as bitflags' externally defined flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ReadyFor(u8);
+
+/// The events of a handle that every wait reports, as [`poll`](https://man7.org/linux/man-pages/man2/poll.2.html#:~:text=only%20returned%20in%20revents) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UnconditionalEvents(u8);
+
+} // verus!
+
 bitflags! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub struct ReadyFor: u8 {
+    impl ReadyFor: u8 {
         const READABLE = 1 << 0;
         const WRITABLE = 1 << 1;
         /// The peer sent [urgent data](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP%20supports%20urgent%20data), a byte marked to be noticed ahead of the stream.
@@ -46,13 +56,9 @@ bitflags! {
 }
 
 bitflags! {
-    /// The events of a handle that every wait reports, as [`poll`](https://man7.org/linux/man-pages/man2/poll.2.html#:~:text=only%20returned%20in%20revents) does.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub struct UnconditionalEvents: u8 {
+    impl UnconditionalEvents: u8 {
         const ERROR = 1 << 0;
         /// The other end has closed; data it already sent can still be read.
         const HANG_UP = 1 << 1;
     }
 }
-
-} // verus!

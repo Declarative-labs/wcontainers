@@ -58,101 +58,6 @@ pub trait BehaviorSource {
         Ok(before)
     }
 
-    /// Returns the one behavior of the instruction that this source shows.
-    ///
-    /// The source runs every generated state, so a source that shows no known behavior fails here and not later.
-    fn measure_instruction<Generator: DistinguishingStateGenerator<Self::Architecture>>(
-        &mut self,
-        instruction: <Self::Architecture as ProcessorArchitecture>::Instruction,
-        generator: &Generator,
-    ) -> Result<
-        <Self::Architecture as ProcessorArchitecture>::PreciseInstruction,
-        MeasureInstructionError<Self::Architecture, Self::Error>,
-    >
-    where
-        // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
-        <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
-            Simulator<Self::Architecture, Error = Infallible>,
-        // TODO: replace this clause with what the method promises.
-        ensures
-            true,
-    {
-        let mut candidates: Vec<_> =
-            <Self::Architecture as ProcessorArchitecture>::list_known_behaviors(instruction)
-                .collect();
-        if candidates.is_empty() {
-            return Err(MeasureInstructionError::NoKnownBehavior { instruction });
-        }
-        for before in generator.generate_states(instruction) {
-            let simulated_results: Vec<_> = candidates
-                .iter()
-                .map(|&precise| {
-                    let Ok(after) = precise.simulate_state(before.clone());
-                    (precise, after)
-                })
-                .collect();
-            let observed_result = match self.execute_single_instruction(before.clone()) {
-                Ok(observed_result) => observed_result,
-                Err(error) => {
-                    return Err(MeasureInstructionError::ExecutionFailed {
-                        instruction,
-                        before,
-                        error,
-                    });
-                }
-            };
-            candidates = simulated_results
-                .iter()
-                .filter(|(_, after)| observed_result.meets_expectations(after))
-                .map(|&(precise, _)| precise)
-                .collect();
-            if candidates.is_empty() {
-                return Err(MeasureInstructionError::NoBehaviorAgrees {
-                    instruction,
-                    before,
-                    behaviors: simulated_results,
-                    observed: observed_result,
-                });
-            }
-        }
-        match candidates.as_slice() {
-            [precise] => Ok(*precise),
-            // No generated state tells these candidates apart, so two known behaviors are the same or our generator lacks a state that separates them.
-            _ => Err(MeasureInstructionError::IndistinguishableBehaviors {
-                instruction,
-                behaviors: candidates,
-            }),
-        }
-    }
-
-    /// Returns each instruction of the architecture with the one behavior this source shows for it.
-    fn measure_instructions<Generator: DistinguishingStateGenerator<Self::Architecture>>(
-        &mut self,
-        generator: &Generator,
-    ) -> Result<
-        Vec<(
-            <Self::Architecture as ProcessorArchitecture>::Instruction,
-            <Self::Architecture as ProcessorArchitecture>::PreciseInstruction,
-        )>,
-        MeasureInstructionError<Self::Architecture, Self::Error>,
-    >
-    where
-        // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
-        <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
-            Simulator<Self::Architecture, Error = Infallible>,
-        // TODO: replace this clause with what the method promises.
-        ensures
-            true,
-    {
-        let mut measurements = Vec::new();
-        for instruction in <Self::Architecture as ProcessorArchitecture>::list_instructions() {
-            measurements.push((
-                instruction,
-                self.measure_instruction(instruction, generator)?,
-            ));
-        }
-        Ok(measurements)
-    }
 }
 
 pub enum MeasureInstructionError<Architecture: ProcessorArchitecture, ExecutionError> {
@@ -183,3 +88,94 @@ pub enum MeasureInstructionError<Architecture: ProcessorArchitecture, ExecutionE
 }
 
 } // verus!
+
+// VERUS: no proof of a body with closures and iterator chains, so these stay outside `verus!` as functions over any source.
+/// Returns the one behavior of the instruction that this source shows.
+///
+/// The source runs every generated state, so a source that shows no known behavior fails here and not later.
+pub fn measure_instruction<Source: BehaviorSource, Generator: DistinguishingStateGenerator<Source::Architecture>>(
+    source: &mut Source,
+    instruction: <Source::Architecture as ProcessorArchitecture>::Instruction,
+    generator: &Generator,
+) -> Result<
+    <Source::Architecture as ProcessorArchitecture>::PreciseInstruction,
+    MeasureInstructionError<Source::Architecture, Source::Error>,
+>
+where
+    // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
+    <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Source::Architecture, Error = Infallible>,
+{
+    let mut candidates: Vec<_> =
+        <Source::Architecture as ProcessorArchitecture>::list_known_behaviors(instruction)
+            .collect();
+    if candidates.is_empty() {
+        return Err(MeasureInstructionError::NoKnownBehavior { instruction });
+    }
+    for before in generator.generate_states(instruction) {
+        let simulated_results: Vec<_> = candidates
+            .iter()
+            .map(|&precise| {
+                let Ok(after) = precise.simulate_state(before.clone());
+                (precise, after)
+            })
+            .collect();
+        let observed_result = match source.execute_single_instruction(before.clone()) {
+            Ok(observed_result) => observed_result,
+            Err(error) => {
+                return Err(MeasureInstructionError::ExecutionFailed {
+                    instruction,
+                    before,
+                    error,
+                });
+            }
+        };
+        candidates = simulated_results
+            .iter()
+            .filter(|(_, after)| observed_result.meets_expectations(after))
+            .map(|&(precise, _)| precise)
+            .collect();
+        if candidates.is_empty() {
+            return Err(MeasureInstructionError::NoBehaviorAgrees {
+                instruction,
+                before,
+                behaviors: simulated_results,
+                observed: observed_result,
+            });
+        }
+    }
+    match candidates.as_slice() {
+        [precise] => Ok(*precise),
+        // No generated state tells these candidates apart, so two known behaviors are the same or our generator lacks a state that separates them.
+        _ => Err(MeasureInstructionError::IndistinguishableBehaviors {
+            instruction,
+            behaviors: candidates,
+        }),
+    }
+}
+
+/// Returns each instruction of the architecture with the one behavior this source shows for it.
+pub fn measure_instructions<Source: BehaviorSource, Generator: DistinguishingStateGenerator<Source::Architecture>>(
+    source: &mut Source,
+    generator: &Generator,
+) -> Result<
+    Vec<(
+        <Source::Architecture as ProcessorArchitecture>::Instruction,
+        <Source::Architecture as ProcessorArchitecture>::PreciseInstruction,
+    )>,
+    MeasureInstructionError<Source::Architecture, Source::Error>,
+>
+where
+    // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
+    <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Source::Architecture, Error = Infallible>,
+{
+    let mut measurements = Vec::new();
+    for instruction in <Source::Architecture as ProcessorArchitecture>::list_instructions() {
+        measurements.push((
+            instruction,
+            measure_instruction(source, instruction, generator)?,
+        ));
+    }
+    Ok(measurements)
+}
