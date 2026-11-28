@@ -50,7 +50,8 @@ it copies from a source that changes meanwhile is some value that byte held duri
 - Miri: `cargo +nightly miri test -p wcontainers-volatile-bytes-pointer`
 - Verus, strict, as the linter's proof run: `cargo verus focus --package wcontainers-byte-sink --package
   wcontainers-byte-source --package wcontainers-volatile-bytes --package wcontainers-volatile-bytes-pointer --package
-  wcontainers-volatile-bytes-shared-mapping -- --no-cheating -Aduplicate_features` (every package that opts in must be
+  wcontainers-volatile-bytes-exclusive-slice --package wcontainers-volatile-bytes-shared-mapping -- --no-cheating
+  -Aduplicate_features` (every package that opts in must be
   named, or the workspace's `feature(register_tool)` meets Verus's own in a dependency)
 - Kani (the range arithmetic, proofs.rs): `RUSTFLAGS="-Zcrate-attr=register_tool(reviewable)" cargo kani -p
   wcontainers-volatile-bytes-pointer`
