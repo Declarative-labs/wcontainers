@@ -53,6 +53,20 @@ interface.rs differ, and none of the three is on his main).
 2026-11-27 (evening): his main FETCH_HEAD ac696ea19 already merged (`git merge-base --is-ancestor`, MEASURED); no other
 branch merged this run.
 
+2026-11-28: his main FETCH_HEAD b9cab24fe (the proven kernel core crates, `VolatileBytes` with required `read_at` and
+`write_at`) merged in e9b05743e. Conflicts: Cargo.lock (both sides' packages kept) and four volatile-bytes implementation
+files (pointer and shared-mapping, README and implementation.rs), taken as his main has them: the branch's side only
+added a provisional `address()` that nothing here calls (MEASURED, `git grep`). The merged tree did not build: the
+WebAssembly executor's crates lacked `read_at` and `write_at` (MEASURED, E0046 in crates/wasmtime direct). So a9e13fda7
+merges origin/executor-wasmtime 7d3575f97, which already holds his main b9cab24fe and follows the new contract (29 files;
+one conflict, Cargo.lock, this side kept; then cargo's own update in a6555c4e5). After the merges every top-level file of
+his interface folders that exists on his main is byte-identical to it, except crates/linux-socket-options/interface.rs and
+options.table (MEASURED, `git diff --quiet FETCH_HEAD HEAD` per file). His main now holds that crate at 3caf049bc, older
+than the host-sockets track's four later commits this branch carries; with his two files restored the socket options
+direct crate does not compile (MEASURED, job rt4-sock/20261128-121757-1901313: generated.rs:315 E0053
+`set_ipv6_flowlabel_mgr` "types differ in mutability"), so they stay as the host-sockets track has them (one line for the
+owner below).
+
 ## RT0: done (results in SCRATCH/runtime-restart/results-main, results-agents)
 
 ## RT1: built; bar NOT met: the linter (the earlier line here that called it met but for the linter was wrong)
@@ -503,6 +517,61 @@ Linter (`cargo reviewable check`, reviewable-rust da55b9d7, x86-64, no model key
 in single-kernel's runners.rs, beyond `summary_unanswered` and `name_unanswered` (no key, so nothing was asked), there are
 only the three findings it had before: `public_outside_interface` (`RunInterrupter`) and `conformance_not_run` ×2.
 
+### The check's two surviving plants, and the dead `Suspended` arm (2026-11-28)
+
+The check of 4e86e4b7e found two plants in runners.rs that no test caught, a dead arm, and two plants caught only by the
+suite. Each is now tested against the interface-only double, or removed:
+- P11 (the idle wait reads no clock: `now` is zero): the double's clock stood at zero, so `now` was never anything else.
+  The double's system now stands at a time it is given, and two tests set it to a day: `an_idle_runner_waits_the_time_left_on_the_clock`
+  (until a day plus 300 ms, idle poll an hour: no warning, and the run takes at least 300 ms) and
+  `an_idle_runner_whose_time_has_passed_on_the_clock_is_run_again_and_not_told` (until 300 ms, idle poll 20 ms: no
+  warning). The right values come from `wait`'s documentation ("Waits until `until` on `clock`'s monotonic time, at most
+  the idle poll") and `IDLE_WITHOUT_WAKE`'s ("run again before the time the kernel gave").
+- P09 (the told count never recorded): `the_idle_polls_are_told_again_only_when_they_grew` now has three runs: interrupted
+  with no poll (nothing told), one poll then interrupted (told once, count 1), then a finish with no new poll (still told
+  once).
+- P12 (`Suspended` waits the idle poll): REMOVED. No kernel returns `Suspended` (READ, `git grep`: only the runtime and a
+  match in unicorn's driver.rs) and the interface says nothing of it, so it now shares the `Interrupted` arm and has no
+  code of its own; `a_suspended_runner_is_run_again` still holds.
+- P01 (no `resume` after a run): `a_run_after_an_interrupt_runs_the_runners_again` checks that the executions may run
+  again once the first run is over (`RunnerStops::resume`: "Lets the executors run again once a run is over").
+- P02 (a finish not kept): `a_container_that_finished_is_not_run_again` (the second run returns the same finish, one run in
+  all).
+- My own plant R (an idle runner with no time, or a time past the idle poll, is run again at once) survived the first
+  round; the two tests of that case now state that the run takes at least the idle poll for each idle answer.
+
+Plants, each a sed line in the machine's copy (MEASURED, ARM64 job rt4-round2/20261128-124745-2663296 at 2a1fb52af,
+`cargo test --lib runners`): all 11 exit 101, each failing the tests named. P11: the two clocked tests; P09: the told
+test; P01: the interrupt-again test and the told test; P02: the finished test; A, B, F, O and M as before (M also fails the
+two clocked tests); Q (`until` not reduced by the clock): the two clocked tests; R: the two idle-poll tests. The plant list
+and its runner are in SCRATCH/runtime-restart/rt4/evidence/scripts (plants.sh), not in the repository.
+
+cargo-mutants 27.1.0 over runners.rs (MEASURED, same job; installed on the machine only): "21 mutants tested in 7m: 14
+caught, 7 unviable", 0 missed, 0 timeouts, MUTANTS=0. The same at 49e9881ce (job rt4-round/20261128-122051-2024861).
+
+Bar at 49e9881ce (pushed; the product code is the tip's, later commits change tests only; MEASURED, ARM64 job
+rt4-bar/20261128-122024-2012999 load 66-161, x86-64 job rt4-bar/20261128-122114-3072367 load 41-183):
+
+| | ARM64 | x86-64 |
+|---|---|---|
+| `cargo metadata --locked`; rustfmt `--check` | 0; 0 | 0; 0 |
+| check and clippy `-D warnings --all-targets`, single-kernel and the runtime suite | 0, 0 | 0, 0 (job rt4-pkg/20261128-130025-678994, at 2a1fb52af) |
+| clippy single-kernel `--no-default-features` | 0 | 0 |
+| single-kernel unit tests | 33 of 33 | 33 of 33 |
+| the 19 double-kernel tests, three rounds | 19 of 19 each | 19 of 19 each |
+| runtime suite on the stand-in and on wasmtime, 1 runner and 4, three rounds each | 10 of 10 every time | 10 of 10 every time |
+| seeded-test-policy: `--lib` check; all targets and its tests | 0; 101 | 0; 101 |
+
+The policy's tests do not build: they run the system suite, and crates/system/conformance/suite.rs:155 `impl VolatileBytes
+for CellBytes` lacks the now required `read_at` and `write_at` (E0046, both machines). That file is the streams track's;
+the change is below for the orchestrator.
+
+Linter (reviewable-rust da55b9d7, no model key; MEASURED, ARM64 job rt4-round/20261128-122051-2024861): in runners.rs only
+the three findings it had before, `public_outside_interface` (`RunInterrupter`) and `conformance_not_run` ×2.
+
+The look-ahead switch (tools/runtime-modes/la-switch.sh) left the repository in bfa8cc200, by the owner's rule that only
+source goes there; it is kept at SCRATCH/runtime-restart/rt4/evidence/runners/la-switch.sh.
+
 ### RT2's remainder, measured (2026-11-27)
 
 The look-ahead switch is committed: tools/runtime-modes/la-switch.sh (852859ad5). In a throwaway copy it makes the harness's
@@ -581,6 +650,20 @@ with the reference too (INFERRED: the same cause).
 - 2026-11-28: the check's six plants are answered (A, B and F tested; C and D removed), and so are its three
   non-blocking ones (O, P and M tested). There are 0 survivors of cargo-mutants over runners.rs. The whole LTP set is
   unchanged by the removal. The independent check of this run can start now, at the tip.
+- 2026-11-28 (later): the check's two survivors (P11, P09) are tested, its dead arm (P12) removed, and its two weak spots
+  (P01, P02) tested in the double; 11 of 11 plants and 0 cargo-mutants survivors at 2a1fb52af. RT2's close waits on the
+  same named differences as before and on the independent check of this run. The whole LTP on wasmtime at full runs again
+  at 2a1fb52af, because the merged WebAssembly executor changed.
+- His kernel package will be removed for a Linux kernel built on his proven core. Until he writes its executor interface
+  this track keeps its interfaces and makes no structural investment in crates/kernel's traits. What carries over as Linux
+  behavior (READ, the module summaries): the OCI configuration honoured or refused field by field (spec.rs), root files from
+  a tar or an OCI image layout (image.rs), the file backend serving a host directory in Linux's FUSE messages (files.rs), the
+  network on host sockets with TCP, UDP and published ports (net.rs, tcp.rs, udp.rs), the resolver (names.rs), Linux error
+  numbers from the host's (errno.rs), clocks, randomness and standard streams (system.rs), and the runtime suite's ten
+  container tests. What goes with crates/kernel: runners.rs (the loop over `Kernel`, `Runner` and `StopReason`), the
+  `Interruptible` executor wrapper and the kernel construction in container.rs; on the core they become a loop over
+  `prepare_execution`, `Execution::run` and its `Interrupter`, and the double's tests carry over as statements of the
+  container's run (a finish ends every execution, a panic outranks a finish, an interrupt ends a run that can run again).
 - RT3: waits on KP2 and X4.
 
 ## For the orchestrator (one line each)
@@ -613,6 +696,20 @@ with the reference too (INFERRED: the same cause).
    promises (tools/runtime-modes/la-switch.sh is the change, for a throwaway copy).
 11. Translator and executor tracks: LTP's math floating-point tests run about 10 times slower on wasmtime at full than on
    the stand-in (float_iperb 695 s against 46 s); read_all_dev's worker restarts take over 3 s.
+12. Streams track: after his main b9cab24fe the system suite does not build (crates/system/conformance/suite.rs:155, E0046),
+   so seeded-test-policy's tests cannot run. The two methods `CellBytes` lacks, following his documentation ("as many as
+   the shorter of the two holds ... none from past the end"):
+   ```rust
+   fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+       let from = usize::try_from(offset).ok().and_then(|offset| self.cells.get(offset..)).unwrap_or_default();
+       into.iter_mut().zip(from).map(|(byte, cell)| *byte = cell.get()).count()
+   }
+
+   fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+       let to = usize::try_from(offset).ok().and_then(|offset| self.cells.get(offset..)).unwrap_or_default();
+       to.iter().zip(bytes).map(|(cell, &byte)| cell.set(byte)).count()
+   }
+   ```
 
 For the owner (his files unchanged):
 1. A system has no constructor. Before (crates/system/interface.rs:26):
@@ -643,6 +740,10 @@ For the owner (his files unchanged):
    Minimal reproduction: SCRATCH/runtime/linter-faults/return-type-notation (with-notation and without-notation:
    reviewable-rust's own examples/conforming plus one async trait; MEASURED: the finding with the notation, none
    without). Seeded-test-policy implementation.rs:336 and the kernel's own `System` need the notation.
+3. Your main holds crates/linux-socket-options/interface.rs and options.table at 3caf049bc; the host-sockets track's four
+   later commits (8ac0c13ce, 73a3e6da2, 8ba636218, 572e37e70) change both, and the direct crate built from them does not
+   compile against yours (generated.rs:315, `set_ipv6_flowlabel_mgr`: "types differ in mutability"), so this branch keeps
+   theirs until you take them or say otherwise.
 
 ## SECURITY
 
@@ -653,6 +754,9 @@ For the owner (his files unchanged):
   `[lints] workspace = true`; no lint lowered, no linter exclusion.
   2026-11-28, 6011f8560 -> tip: single-kernel 0 -> 0, runtime suite 0 -> 0, seeded-test-policy 0 -> 0 (MEASURED, same
   command). cargo-mutants ran from a folder on the machine and is in no lock file.
+  2026-11-28 (later), 4e86e4b7e -> 2a1fb52af: single-kernel 0 -> 0, runtime suite 0 -> 0, seeded-test-policy 0 -> 0
+  (MEASURED, same command, comment lines left out). No Cargo.toml of this track changed; the lock file's new entries
+  (vstd and the verus crates, the four kernel core crates) come with his main.
 - New dependencies: none from outside the workspace. Single-kernel adds workspace crates behavior-source and
   processor-architecture (for `Interruptible`) and, as dev-dependencies, the runtime suite and the unicorn stand-in
   (GPL-2.0-only, test-only, `publish = false`, without its harness), and since 4d868b54c the WebAssembly executor
