@@ -651,13 +651,21 @@ const NOT_VECTOR: u32 = 0x6e20_5800;
 const SOURCE_SHIFT: u32 = 5;
 #[cfg(target_arch = "aarch64")]
 const SECOND_SOURCE_SHIFT: u32 = 16;
+/// `msr fpsr, x0`, its register clear ([Arm ARM, C6.2](https://developer.arm.com/documentation/ddi0602/latest)), the
+/// register it takes the new status from, after its add, and every flag FPSR keeps: QC, IDC, IXC, UFC, OFC, DZC, IOC.
+#[cfg(target_arch = "aarch64")]
+const WRITE_FPSR: u32 = 0xd51b_4420;
+#[cfg(target_arch = "aarch64")]
+const FPSR_FROM: usize = 22;
+#[cfg(target_arch = "aarch64")]
+const EVERY_STATUS_FLAG: u64 = 0x0800_009f;
 /// The general register `add x29, x29, x30` sums into, after its own add.
 #[cfg(target_arch = "aarch64")]
 const SUMMED: usize = 29;
 
 /// Instructions that change every general register they may (all but x23, which they exit through, x28, the frame,
-/// and x30, which their branch to the exit sets) by adding one, add x30 into x29, and invert every vector register;
-/// then exit. Each register's value goes in from the frame and comes back to it: every one is checked.
+/// and x30, which their branch to the exit sets) by adding one, add x30 into x29, invert every vector register and set
+/// every FPSR flag; then exit. Each register's value goes in from the frame and comes back to it: every one is checked.
 #[cfg(target_arch = "aarch64")]
 pub fn takes_every_register_in_and_gives_every_register_back(linux: impl LinuxProcess) {
     use wcontainers_linux_process::{GENERAL_REGISTERS, RunEnd, RunFrame, VECTOR_REGISTERS};
@@ -675,6 +683,7 @@ pub fn takes_every_register_in_and_gives_every_register_back(linux: impl LinuxPr
             | SUMMED as u32,
     );
     instructions.extend((0..VECTOR_REGISTERS as u32).map(|v| NOT_VECTOR | v << SOURCE_SHIFT | v));
+    instructions.push(WRITE_FPSR | FPSR_FROM as u32);
     instructions.extend(TO_EXIT);
     assert!(instructions.len() * size_of::<u32>() <= EXIT_AT);
     let (pc, mapping) = mapped_in(
@@ -695,6 +704,7 @@ pub fn takes_every_register_in_and_gives_every_register_back(linux: impl LinuxPr
     frame.registers.pc = pc;
     frame.registers.nzcv = FLAGS;
     frame.registers.fpsr = STATUS;
+    frame.registers.x[FPSR_FROM] = EVERY_STATUS_FLAG - 1;
     frame.registers.fpcr = ROUND_TOWARD_ZERO;
     frame.registers.tpidr_el0 = WORD;
     let before = frame.registers;
@@ -717,6 +727,7 @@ pub fn takes_every_register_in_and_gives_every_register_back(linux: impl LinuxPr
     for value in &mut wanted.v {
         *value = !*value;
     }
+    wanted.fpsr = EVERY_STATUS_FLAG;
     let left = frame.registers;
     let general: Vec<usize> = (0..GENERAL_REGISTERS)
         .filter(|&r| left.x[r] != wanted.x[r])
