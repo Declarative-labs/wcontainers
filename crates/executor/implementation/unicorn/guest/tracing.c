@@ -1,11 +1,13 @@
 // ptrace as the six LTP tests and a tracer like them use it: PTRACE_TRACEME and PTRACE_ATTACH, the
 // stop at each signal and how a wait and SIGCHLD report it, PTRACE_CONT, PTRACE_KILL and
-// PTRACE_DETACH with and without a signal, PEEK and POKE, GETSIGINFO and SETSIGINFO, the refusals,
-// /proc's TracerPid and state, and a tracer that ends. Only the parent prints; children write what
+// PTRACE_DETACH with and without a signal (real-time ones too), PEEK and POKE (a word across a
+// mapping's end too), GETSIGINFO and SETSIGINFO, the refusals, /proc's TracerPid and state, a
+// traced child's own child, and a tracer that ends. Only the parent prints; children write what
 // they saw into a pipe the parent prints after them. Numbers that change from run to run (process
 // ids) are printed as who they name.
 #define _GNU_SOURCE
 #include <errno.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -13,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -111,6 +114,8 @@ static void wait_sleeping(pid_t pid) {
     }
 }
 
+static int wait_any(const char *label);
+
 static pid_t fork_flushed(void) {
     fflush(stdout);
     return fork();
@@ -159,6 +164,13 @@ static void stops_and_requests(void) {
     printf("== stops and requests\n");
     int pipe_fds[2];
     pipe(pipe_fds);
+    // A mapping whose next page is unmapped, its last word known: a word across its end is
+    // reached only in part.
+    long page = sysconf(_SC_PAGESIZE);
+    uint8_t *area = mmap(0, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    munmap(area + page, page);
+    uint8_t *end = area + page;
+    memset(end - 8, 0x5a, 8);
     chld_count = 0;
     on(SIGCHLD, on_child);
     pid_t child = fork_flushed();
@@ -207,6 +219,13 @@ static void stops_and_requests(void) {
     SHOW("poketext", pt(POKETEXT, child, (long)&marker[1], 0x0a0b0c0d0e0f1011l));
     SHOW("pokedata at 0", pt(POKEDATA, child, 0, 1));
     SHOW("poketext at 3", pt(POKETEXT, child, 3, 1));
+    word = 0;
+    SHOW("peekdata across the end of a mapping", pt(PEEKDATA, child, (long)(end - 4), (long)&word));
+    printf("peeked %llx\n", (unsigned long long)word);
+    SHOW("pokedata across the end of a mapping",
+         pt(POKEDATA, child, (long)(end - 4), 0x1122334455667788l));
+    SHOW("peekdata of the mapping's last word", pt(PEEKDATA, child, (long)(end - 8), (long)&word));
+    printf("peeked %llx\n", (unsigned long long)word);
     SHOW("peekusr", pt(PEEKUSR, child, 0, (long)&word));
     SHOW("pokeusr", pt(POKEUSR, child, 0, 0));
     SHOW("an unknown request", pt(12345, child, 0, 0));
@@ -230,6 +249,7 @@ static void stops_and_requests(void) {
     wait_for("end", child, 0);
     print_pipe(pipe_fds[0]);
     signal(SIGCHLD, SIG_DFL);
+    munmap(area, page);
 }
 
 // A signal the tracer gives that the child blocks waits for it, and stops it again once
@@ -297,6 +317,177 @@ static void information_set(void) {
     SHOW("cont with SIGUSR1", pt(CONT, child, 0, SIGUSR1));
     wait_for("end", child, 0);
     print_pipe(pipe_fds[0]);
+}
+
+// A tracer may give a real-time signal, up to the last, when it lets a child go on or go.
+static void real_time(void) {
+    printf("== real-time signals\n");
+    int pipe_fds[2];
+    pipe(pipe_fds);
+    pid_t child = fork_flushed();
+    if (child == 0) {
+        close(pipe_fds[0]);
+        handled = 0;
+        on(64, record);
+        on(35, record);
+        pt(TRACEME, 0, 0, 0);
+        kill(getpid(), SIGUSR1);
+        dprintf(pipe_fds[1], "child: handled %d, code %d, from the tracer %d\n", handled,
+                handled_code, handled_from_parent);
+        kill(getpid(), SIGUSR2);
+        dprintf(pipe_fds[1], "child: handled %d after the detach\n", handled);
+        _exit(0);
+    }
+    close(pipe_fds[1]);
+    wait_for("stop", child, 0);
+    errno = 0;
+    long answer = pt(CONT, child, 0, 64);
+    printf("cont with signal 64: %ld %s\n", answer, answer == -1 ? name(errno) : "");
+    if (answer == -1)
+        pt(CONT, child, 0, 0);
+    wait_for("second stop", child, 0);
+    errno = 0;
+    answer = pt(DETACH, child, 0, 35);
+    printf("detach with signal 35: %ld %s\n", answer, answer == -1 ? name(errno) : "");
+    if (answer == -1)
+        pt(DETACH, child, 0, 0);
+    wait_for("end", child, 0);
+    print_pipe(pipe_fds[0]);
+}
+
+// The tracer /proc names for the calling thread.
+static int own_tracer(void) {
+    char line[256];
+    int tracer = -1;
+    FILE *status = fopen("/proc/thread-self/status", "r");
+    while (status && fgets(line, sizeof line, status))
+        if (strncmp(line, "TracerPid:", 10) == 0)
+            tracer = atoi(line + 10);
+    if (status)
+        fclose(status);
+    return tracer;
+}
+
+static int thread_fd = -1;
+
+static void *untraced_thread(void *unused) {
+    (void)unused;
+    int tracer = own_tracer();
+    pthread_kill(pthread_self(), SIGUSR1);
+    dprintf(thread_fd, "thread: TracerPid %d, handled %d\n", tracer, handled);
+    return 0;
+}
+
+// A thread and a child a traced child makes are not traced (no PTRACE_O_TRACECLONE or
+// PTRACE_O_TRACEFORK): their signals reach them, and /proc names no tracer for them. The child's
+// end stops the traced child, for SIGCHLD, which it ignores.
+static void traced_childs_child(void) {
+    printf("== a traced child's child\n");
+    int pipe_fds[2];
+    pipe(pipe_fds);
+    pid_t child = fork_flushed();
+    if (child == 0) {
+        close(pipe_fds[0]);
+        handled = 0;
+        signal(SIGUSR1, count);
+        pt(TRACEME, 0, 0, 0);
+        // The thread says what it saw into a pipe of its own, which this thread waits on for up
+        // to three seconds.
+        int said[2];
+        pipe(said);
+        thread_fd = said[1];
+        pthread_t thread;
+        pthread_create(&thread, 0, untraced_thread, 0);
+        struct pollfd ready = {.fd = said[0], .events = POLLIN};
+        if (poll(&ready, 1, 3000) == 1) {
+            char text[128];
+            ssize_t length = read(said[0], text, sizeof text - 1);
+            text[length > 0 ? length : 0] = 0;
+            dprintf(pipe_fds[1], "%s", text);
+            pthread_join(thread, 0);
+        } else {
+            dprintf(pipe_fds[1], "child: its thread was still there\n");
+            _exit(1);
+        }
+        handled = 0;
+        pid_t grandchild = fork();
+        if (grandchild == 0) {
+            int tracer = own_tracer();
+            kill(getpid(), SIGUSR1);
+            dprintf(pipe_fds[1], "grandchild: TracerPid %d, handled %d\n", tracer, handled);
+            _exit(6);
+        }
+        int status = 0;
+        pid_t got = 0;
+        for (int tries = 0; tries < 300 && got <= 0; tries++) {
+            got = waitpid(grandchild, &status, WNOHANG);
+            if (got <= 0)
+                usleep(10000);
+        }
+        if (got <= 0) {
+            kill(grandchild, SIGKILL);
+            waitpid(grandchild, &status, 0);
+            dprintf(pipe_fds[1], "child: its child was still there\n");
+        } else {
+            dprintf(pipe_fds[1], "child: its child exited %d\n",
+                    WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        }
+        _exit(0);
+    }
+    close(pipe_fds[1]);
+    for (int stops = 0; stops < 4; stops++) {
+        int status = 0;
+        if (waitpid(child, &status, 0) != child)
+            break;
+        describe("child", status);
+        if (!WIFSTOPPED(status))
+            break;
+        pt(CONT, child, 0, 0);
+    }
+    print_pipe(pipe_fds[0]);
+}
+
+// A tracer that ends with its child stopped: the child goes on, without the signal it stopped
+// for, and runs to its end with nothing else sent to it.
+static void tracer_ends(void) {
+    printf("== a tracer that ends\n");
+    prctl(PR_SET_CHILD_SUBREAPER, 1);
+    int pipe_fds[2], numbers[2];
+    pipe(pipe_fds);
+    pipe(numbers);
+    pid_t tracer = fork_flushed();
+    if (tracer == 0) {
+        close(pipe_fds[0]);
+        pid_t traced = fork();
+        if (traced == 0) {
+            handled = 0;
+            signal(SIGUSR1, count);
+            pt(TRACEME, 0, 0, 0);
+            kill(getpid(), SIGUSR1);
+            for (int tries = 0; tries < 20 && !handled; tries++)
+                usleep(10000);
+            dprintf(pipe_fds[1], "traced: handled %d once its tracer ended\n", handled);
+            _exit(handled ? 7 : 9);
+        }
+        int status = 0;
+        waitpid(traced, &status, 0);
+        dprintf(pipe_fds[1], "tracer: its child stopped %d\n",
+                WIFSTOPPED(status) ? WSTOPSIG(status) : -1);
+        write(numbers[1], &traced, sizeof traced);
+        _exit(0);
+    }
+    close(pipe_fds[1]);
+    wait_for("tracer", tracer, 0);
+    pid_t traced;
+    read(numbers[0], &traced, sizeof traced);
+    if (!wait_any("traced, once its tracer ended")) {
+        kill(traced, SIGKILL);
+        wait_any("traced, once killed");
+    }
+    print_pipe(pipe_fds[0]);
+    close(numbers[0]);
+    close(numbers[1]);
+    prctl(PR_SET_CHILD_SUBREAPER, 0);
 }
 
 // A process sharing this one's handlers and memory (CLONE_SIGHAND | CLONE_VM), which says so
@@ -703,5 +894,8 @@ int main(void) {
     attaching();
     another_tracer();
     no_stop_signal();
+    real_time();
+    traced_childs_child();
+    tracer_ends();
     return 0;
 }
