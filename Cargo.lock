@@ -4818,20 +4818,9 @@ dependencies = [
 name = "wcontainers-kernel-core"
 version = "0.1.0"
 dependencies = [
- "thiserror",
  "vstd",
- "wcontainers-capability-table",
+ "wcontainers-memory-capability-table",
  "wcontainers-memory-shard",
-]
-
-[[package]]
-name = "wcontainers-kernel-core-conformance"
-version = "0.1.0"
-dependencies = [
- "wcontainers-capability-table",
- "wcontainers-kernel-core",
- "wcontainers-memory-shard",
- "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4866,36 +4855,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-memory-capability-table"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "vstd",
+ "wcontainers-capability-table",
+ "wcontainers-memory-shard",
+]
+
+[[package]]
 name = "wcontainers-memory-shard"
 version = "0.1.0"
 dependencies = [
  "thiserror",
  "vstd",
  "wcontainers-capability-table",
- "wcontainers-volatile-bytes",
-]
-
-[[package]]
-name = "wcontainers-memory-shard-conformance"
-version = "0.1.0"
-dependencies = [
- "wcontainers-memory-shard",
- "wcontainers-volatile-bytes",
- "wcontainers-volatile-bytes-conformance",
-]
-
-[[package]]
-name = "wcontainers-memory-shard-shared-cells"
-version = "0.1.0"
-dependencies = [
- "vstd",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
- "wcontainers-capability-table",
- "wcontainers-kernel-core",
- "wcontainers-kernel-core-conformance",
- "wcontainers-memory-shard",
- "wcontainers-memory-shard-conformance",
  "wcontainers-volatile-bytes",
 ]
 

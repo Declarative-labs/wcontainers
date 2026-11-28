@@ -18,6 +18,12 @@ pub trait MemoryShard {
             length == self.spec_len(),
     ;
 
+    /// Which allocation of memory the shard is a view of, and never what it holds.
+    spec fn spec_viewed_allocation(&self) -> MemoryAllocationIdentity;
+
+    /// How many bytes into that allocation the view starts.
+    spec fn spec_view_start(&self) -> nat;
+
     spec fn spec_permissions(&self) -> MemoryPermissions;
 
     #[verifier::when_used_as_spec(spec_permissions)]
@@ -38,7 +44,10 @@ pub trait MemoryShard {
     ;
 }
 
+pub ghost struct MemoryAllocationIdentity(pub int);
+
 /// What the instructions of a task may do with the bytes of a shard.
+// VERUS: no type made by the `bitflags` macro in a clause or in verified code, so each permission is a boolean.
 #[derive(Clone, Copy)]
 pub struct MemoryPermissions {
     pub read: bool,
