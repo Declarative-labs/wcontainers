@@ -60,9 +60,8 @@ fn copies_at_both_edges_of_a_mapping_with_no_page_mapped_beside_it() {
         let mut buffer = vec![0; length];
         for count in (0..=257).chain([511, 512, 513, 4095, 4096, 4097, length - 1, length]) {
             for at in [0, length - count] {
-                let part = memory.part(at as u64..(at + count) as u64).expect("inside");
-                assert_eq!(part.write(&pattern[..count]), count);
-                assert_eq!(part.read(&mut buffer[..count]), count);
+                assert_eq!(memory.write_at(at as u64, &pattern[..count]), count);
+                assert_eq!(memory.read_at(at as u64, &mut buffer[..count]), count);
                 assert_eq!(buffer[..count], pattern[..count], "{count} bytes at {at}");
             }
         }
