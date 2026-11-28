@@ -1,0 +1,23 @@
+[package]
+name = "wcontainers-memory-capability-table-ordered"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-capability-table = { path = "../../../capability-table" }
+wcontainers-memory-capability-table = { path = "../.." }
+wcontainers-memory-shard = { path = "../../../memory-shard" }
+wcontainers-memory-shard-shared-bytes = { path = "../../../memory-shard/implementation/shared-bytes" }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+
+[package.metadata.verus]
+verify = true
+
+[lints]
+workspace = true

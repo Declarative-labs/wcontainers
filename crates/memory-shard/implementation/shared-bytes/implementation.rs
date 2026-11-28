@@ -13,9 +13,9 @@ use vstd::prelude::*;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_memory_shard::{
-    BorrowError, MemoryAllocationIdentity, MemoryPermissions, MemoryShard, MemoryShardConfig,
+    BorrowError, MemoryPermissions, MemoryShard, MemoryShardConfig,
 };
-use wcontainers_volatile_bytes::{VolatileBytes, copied};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 verus! {
 
@@ -77,7 +77,7 @@ impl SharedBytesMemoryShard {
             made matches Some(shard) ==> {
                 &&& shard.spec_len() == config.length
                 &&& shard.spec_permissions() == config.permissions
-                &&& shard.spec_viewed_allocation() == MemoryAllocationIdentity(allocation)
+                &&& shard.spec_viewed_allocation() == wcontainers_memory_shard::MemoryAllocationIdentity(allocation)
                 &&& shard.spec_view_start() == 0
             },
     {
@@ -179,8 +179,8 @@ impl MemoryShard for SharedBytesMemoryShard {
         self.length
     }
 
-    closed spec fn spec_viewed_allocation(&self) -> MemoryAllocationIdentity {
-        MemoryAllocationIdentity(self.allocation@)
+    closed spec fn spec_viewed_allocation(&self) -> wcontainers_memory_shard::MemoryAllocationIdentity {
+        wcontainers_memory_shard::MemoryAllocationIdentity(self.allocation@)
     }
 
     closed spec fn spec_view_start(&self) -> nat {
@@ -223,7 +223,7 @@ impl<'shard> SharedBytesView<'shard> {
 // Returns where in the allocation a copy at the offset starts and how many bytes it moves for a buffer of the length.
 fn locate(view: &SharedBytesView, offset: u64, buffer: usize) -> (range: (usize, usize))
     ensures
-        range.1 == copied(view.spec_len(), offset, buffer as nat),
+        range.1 == wcontainers_volatile_bytes::copied(view.spec_len(), offset, buffer as nat),
         range.0 + range.1 <= view.bytes.len(),
         range.1 <= buffer,
 {
@@ -256,7 +256,7 @@ impl<'shard> VolatileBytes for SharedBytesView<'shard> {
         let mut index: usize = usize::MIN;
         while index < count
             invariant
-                count == copied(self.spec_len(), offset, old(into)@.len()),
+                count == wcontainers_volatile_bytes::copied(self.spec_len(), offset, old(into)@.len()),
                 start + count <= self.bytes.len(),
                 into@.len() == old(into)@.len(),
                 index <= count,
@@ -275,7 +275,7 @@ impl<'shard> VolatileBytes for SharedBytesView<'shard> {
         let mut index: usize = usize::MIN;
         while index < count
             invariant
-                count == copied(self.spec_len(), offset, bytes@.len()),
+                count == wcontainers_volatile_bytes::copied(self.spec_len(), offset, bytes@.len()),
                 start + count <= self.bytes.len(),
                 count <= bytes@.len(),
                 index <= count,
