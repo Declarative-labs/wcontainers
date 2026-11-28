@@ -7311,12 +7311,14 @@ pub fn every_24_bit_depth_word_copies_out_as_written<B: Gpu>(mut b: B) {
     assert!(wrong.is_empty(), "{} words: {wrong:?}", wrong.len());
 }
 
-/// The side of each face of the cube tests.
+/// The side of level 0 of each face of the cube tests.
 const CUBE_SIDE: u32 = 8;
 /// The faces of a cube.
 const CUBE_FACES: u32 = 6;
+/// The levels of the cubes of the cube tests.
+const CUBE_LEVELS: u32 = 2;
 
-/// A cube texture of `format`, each face [`CUBE_SIDE`] square.
+/// A cube texture of `format`, each face [`CUBE_SIDE`] square at level 0, of [`CUBE_LEVELS`] levels.
 fn cube<B: Gpu>(b: &mut B, format: Format, usage: TextureUsage) -> B::Texture {
     b.create_texture(&TextureDesc {
         dimension: TextureDimension::D2,
@@ -7324,7 +7326,7 @@ fn cube<B: Gpu>(b: &mut B, format: Format, usage: TextureUsage) -> B::Texture {
         width: CUBE_SIDE,
         height: CUBE_SIDE,
         depth_or_layers: CUBE_FACES,
-        mip_levels: 1,
+        mip_levels: CUBE_LEVELS,
         samples: 1,
         usage,
         cube: true,
@@ -7333,82 +7335,422 @@ fn cube<B: Gpu>(b: &mut B, format: Format, usage: TextureUsage) -> B::Texture {
     .expect("create_texture")
 }
 
-/// The word of texel (x, y) of `face` in the cube tests: a float of its own in 1 to 2 (no denormal,
-/// which a draw may flush), the face, the row and the column each in their own bits.
-fn cube_word(face: u32, x: u32, y: u32) -> u32 {
-    0x3f80_0000 | face << 16 | y << 8 | x
+/// The word of texel (x, y) of `face` at level `mip` in the cube tests: a float of its own in 1 to 2
+/// (no denormal, which a draw may flush), the level, the face, the row and the column each in their
+/// own bits.
+fn cube_word(mip: u32, face: u32, x: u32, y: u32) -> u32 {
+    0x3f80_0000 | mip << 20 | face << 16 | y << 8 | x
 }
 
-/// A cube of `r32uint` whose texels all differ ([`cube_word`]), each face copied into a 2D `r32float`
-/// texture of its typeless group and each face read back, holds every word at its own face, row and
-/// column; and a `depth32float` cube whose texels all differ, each face read back, holds each depth
-/// where it was written. A back end drawing such copies or reads samples the cube towards each
-/// texel's centre, so every face's direction and axes are told apart.
+/// The bytes of level `mip` of `face`, each texel `texel(mip, face, x, y)`.
+fn cube_level(mip: u32, face: u32, texel: impl Fn(u32, u32, u32, u32) -> u32) -> Vec<u8> {
+    let n = CUBE_SIDE >> mip;
+    (0..n)
+        .flat_map(|y| (0..n).map(move |x| (x, y)))
+        .flat_map(|(x, y)| texel(mip, face, x, y).to_le_bytes())
+        .collect()
+}
+
+/// Writes every level of every face of `cube` with [`cube_level`]'s texels.
+fn fill_cube<B: Gpu>(
+    b: &mut B,
+    cube: &B::Texture,
+    texel: impl Fn(u32, u32, u32, u32) -> u32 + Copy,
+) {
+    for mip in 0..CUBE_LEVELS {
+        let n = CUBE_SIDE >> mip;
+        for face in 0..CUBE_FACES {
+            b.write_texture(
+                &region(cube, mip, face, 0, 0),
+                extent(n, n, 1),
+                &cube_level(mip, face, texel),
+                n * 4,
+                n,
+                WriteMode::Ordered,
+            );
+        }
+    }
+}
+
+/// A cube of `r32uint` of two levels whose texels all differ ([`cube_word`]), each level of each face
+/// copied into a 2D `r32float` texture of its typeless group and read back, holds every word at its
+/// own level, face, row and column; and a `depth32float` cube of two levels whose texels all differ,
+/// each level of each face read back, holds each depth where it was written. A back end drawing such
+/// copies or reads samples the cube towards each texel's centre at the level asked, so every face's
+/// direction and axes and every level are told apart.
 pub fn every_face_of_a_cube_reads_and_copies_texel_for_texel<B: Gpu>(mut b: B) {
-    let n = CUBE_SIDE;
-    let face_words = |face: u32| -> Vec<u8> {
-        (0..n)
-            .flat_map(|y| (0..n).flat_map(move |x| cube_word(face, x, y).to_le_bytes()))
-            .collect()
-    };
     let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLE;
     let words = cube(&mut b, Format::R32Uint, usage);
-    for face in 0..CUBE_FACES {
-        b.write_texture(
-            &region(&words, 0, face, 0, 0),
-            extent(n, n, 1),
-            &face_words(face),
-            n * 4,
-            n,
-            WriteMode::Ordered,
-        );
-    }
-    for face in 0..CUBE_FACES {
-        assert_eq!(
-            read_texture(&mut b, region(&words, 0, face, 0, 0), extent(n, n, 1), 4),
-            face_words(face),
-            "face {face} of the r32uint cube read back"
-        );
-        let to = texture(&mut b, Format::R32Float, (n, n), 1, 1, usage);
-        b.copy_texture(
-            &region(&words, 0, face, 0, 0),
-            &region(&to, 0, 0, 0, 0),
-            extent(n, n, 1),
-        );
-        assert_eq!(
-            read_texture(&mut b, region(&to, 0, 0, 0, 0), extent(n, n, 1), 4),
-            face_words(face),
-            "face {face} of the r32uint cube copied into r32float"
-        );
+    fill_cube(&mut b, &words, cube_word);
+    for mip in 0..CUBE_LEVELS {
+        let n = CUBE_SIDE >> mip;
+        for face in 0..CUBE_FACES {
+            let want = cube_level(mip, face, cube_word);
+            assert_eq!(
+                read_texture(&mut b, region(&words, mip, face, 0, 0), extent(n, n, 1), 4),
+                want,
+                "level {mip}, face {face} of the r32uint cube read back"
+            );
+            let to = texture(&mut b, Format::R32Float, (n, n), 1, 1, usage);
+            b.copy_texture(
+                &region(&words, mip, face, 0, 0),
+                &region(&to, 0, 0, 0, 0),
+                extent(n, n, 1),
+            );
+            assert_eq!(
+                read_texture(&mut b, region(&to, 0, 0, 0, 0), extent(n, n, 1), 4),
+                want,
+                "level {mip}, face {face} of the r32uint cube copied into r32float"
+            );
+        }
     }
     ok(&mut b);
     let depth = Format::Depth32Float;
     if !b.caps().formats.uses[depth as usize].contains(FormatUse::COPY_OUT) {
         return;
     }
-    let depth_of =
-        |face: u32, x: u32, y: u32| ((face * n * n + y * n + x + 1) as f32 / 1024.0).to_bits();
-    let face_depths = |face: u32| -> Vec<u8> {
-        (0..n)
-            .flat_map(|y| (0..n).flat_map(move |x| depth_of(face, x, y).to_le_bytes()))
-            .collect()
+    // Each depth k / 1024 for its own k, exact in 32 bits.
+    let depth_of = |mip: u32, face: u32, x: u32, y: u32| {
+        let n = CUBE_SIDE >> mip;
+        ((mip * 512 + face * n * n + y * n + x + 1) as f32 / 1024.0).to_bits()
     };
     let depths = cube(&mut b, depth, usage);
-    for face in 0..CUBE_FACES {
+    fill_cube(&mut b, &depths, depth_of);
+    for mip in 0..CUBE_LEVELS {
+        let n = CUBE_SIDE >> mip;
+        for face in 0..CUBE_FACES {
+            assert_eq!(
+                read_texture(&mut b, region(&depths, mip, face, 0, 0), extent(n, n, 1), 4),
+                cube_level(mip, face, depth_of),
+                "level {mip}, face {face} of the depth32float cube read back"
+            );
+        }
+    }
+    ok(&mut b);
+}
+
+/// Half floats of every kind with their 32-bit floats: normal values of both signs (the largest,
+/// the smallest, a fraction and an integer), denormals (the smallest, the largest exponent's, one
+/// of a negative sign), both zeros and both infinities. A NaN is drawn too ([`DRAWN_NAN`]).
+const DRAWN_HALVES: [(u32, u16); 15] = [
+    (0x3f80_0000, 0x3c00), // 1
+    (0xc020_0000, 0xc100), // -2.5
+    (0x477f_e000, 0x7bff), // 65504, the largest
+    (0x3880_0000, 0x0400), // 2^-14, the smallest normal
+    (0x3eaa_a000, 0x3555), // 0.333251953125
+    (0xc49a_4000, 0xe4d2), // -1234
+    (0x3380_0000, 0x0001), // 2^-24, the smallest denormal
+    (0x3800_0000, 0x0200), // 2^-15, of the largest denormal exponent
+    (0x3640_0000, 0x0030), // 3 2^-20
+    (0xb700_0000, 0x8080), // -2^-17
+    (0x0000_0000, 0x0000), // 0
+    (0x8000_0000, 0x8000), // -0
+    (0x7f80_0000, 0x7c00), // infinity
+    (0xff80_0000, 0xfc00), // -infinity
+    (0x4080_0000, 0x4400), // 4
+];
+
+/// The 32-bit NaN drawn beside the values of [`DRAWN_HALVES`] and [`SMALL_FLOATS`]: any NaN of the format
+/// is right for it (a draw keeps no payload).
+const DRAWN_NAN: u32 = 0x7fc0_0000;
+
+/// Unsigned 11-bit and 10-bit floats (R11G11B10's) with their 32-bit floats, each exact in both
+/// widths: normal values (the largest both hold, the smallest, fractions and integers), denormals
+/// (the smallest of 10 bits, others of 11 and 10), zero and infinity.
+const SMALL_FLOATS: [(u32, u16, u16); 11] = [
+    (0x3f80_0000, 0x3c0, 0x1e0), // 1
+    (0x3f40_0000, 0x3a0, 0x1d0), // 0.75
+    (0x4040_0000, 0x420, 0x210), // 3
+    (0x40a0_0000, 0x450, 0x228), // 5
+    (0x3880_0000, 0x040, 0x020), // 2^-14, the smallest normal
+    (0x3800_0000, 0x020, 0x010), // 2^-15, a denormal
+    (0x36c0_0000, 0x006, 0x003), // 3 2^-19, a denormal
+    (0x3600_0000, 0x002, 0x001), // 2^-19, the smallest 10-bit denormal
+    (0x0000_0000, 0x000, 0x000), // 0
+    (0x7f80_0000, 0x7c0, 0x3e0), // infinity
+    (0x477c_0000, 0x7be, 0x3df), // 64512, the largest 10-bit float
+];
+
+/// Whether `got` is a NaN of a float whose exponent is `exponent` (all ones) and mantissa `mantissa`.
+fn small_nan(got: u32, exponent: u32, mantissa: u32) -> bool {
+    got & exponent == exponent && got & mantissa != 0
+}
+
+/// A program writing, at each texel of its target, the 32-bit floats whose bits the same texel of an
+/// `rgba32uint` texture holds.
+const DRAWN_BITS: &str = "
+@group(0) @binding(32) var t: texture_2d<u32>;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return bitcast<vec4<f32>>(textureLoad(t, vec2<u32>(p.xy), 0));
+}
+";
+
+/// Draws into a new `w` by `h` target of `format` the 32-bit floats whose bits `words` holds (four
+/// a texel, row after row), and returns the target's texels as read back (`texel` bytes each).
+fn drawn_floats<B: Gpu>(
+    b: &mut B,
+    format: Format,
+    (w, h): (u32, u32),
+    words: &[u32],
+    texel: usize,
+) -> Vec<u8> {
+    let bits = texture(
+        b,
+        Format::Rgba32Uint,
+        (w, h),
+        1,
+        1,
+        TextureUsage::COPY_DST | TextureUsage::SAMPLE,
+    );
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    b.write_texture(
+        &region(&bits, 0, 0, 0, 0),
+        extent(w, h, 1),
+        &bytes,
+        w * 16,
+        h,
+        WriteMode::Ordered,
+    );
+    let bits_view = view(b, &bits, Format::Rgba32Uint);
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&bits_view),
+        }])
+        .expect("create_binding_set");
+    let target = texture(
+        b,
+        format,
+        (w, h),
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    );
+    let target_view = view(b, &target, format);
+    let p = program(b, DRAWN_BITS, "vs", "fs");
+    let rs = raster(b, CullMode::None);
+    let vl = positions(b);
+    let vb = quad(b);
+    b.begin_pass(&color_pass::<B>(&target_view, LoadOp::Clear([0; 4])));
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    draw_into(
+        b,
+        &p,
+        &rs,
+        &vl,
+        [Some(&set), None, None, None],
+        &streams,
+        Topology::TriangleStrip,
+        once(4),
+        (w, h),
+    );
+    b.end_pass();
+    let got = read_texture(b, region(&target, 0, 0, 0, 0), extent(w, h, 1), texel);
+    b.destroy(Object::BindingSet(set));
+    got
+}
+
+/// Half floats of every kind ([`DRAWN_HALVES`], and a NaN) drawn into an `rgba16float` target, each in every
+/// channel at some texel, read back as their exact bits (any NaN for the NaN); and unsigned 11-bit and
+/// 10-bit floats of every kind ([`SMALL_FLOATS`], and a NaN) drawn into an `rg11b10float` target, read
+/// back as their exact packed word. A back end reading such targets by sampling them recovers each
+/// value's bits from its float.
+pub fn float_targets_drawn_with_every_kind_of_value_read_back_its_bits<B: Gpu>(mut b: B) {
+    let uses = |b: &B, f: Format| {
+        b.caps().formats.uses[f as usize].contains(FormatUse::RENDER | FormatUse::COPY_OUT)
+    };
+    let side = 4u32;
+    let texels = (side * side) as usize;
+    if uses(&b, Format::Rgba16Float) {
+        // Value k of the sixteen (the fifteen and the NaN) in channel c at texel (k + 5c) mod 16.
+        let value = |i: usize, c: usize| (i + 16 - 5 * c % 16) % 16;
+        let words: Vec<u32> = (0..texels)
+            .flat_map(|i| (0..4).map(move |c| value(i, c)))
+            .map(|k| DRAWN_HALVES.get(k).map_or(DRAWN_NAN, |h| h.0))
+            .collect();
+        let got = drawn_floats(&mut b, Format::Rgba16Float, (side, side), &words, 8);
+        let wrong: Vec<String> = got
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .enumerate()
+            .filter_map(|(at, bytes)| {
+                let (got, k) = (u16::from_le_bytes(*bytes), value(at / 4, at % 4));
+                let right = match DRAWN_HALVES.get(k) {
+                    Some(&(_, half)) => got == half,
+                    None => small_nan(got.into(), 0x7c00, 0x3ff),
+                };
+                (!right).then(|| {
+                    format!(
+                        "texel {} channel {}: {got:#06x} for value {k}",
+                        at / 4,
+                        at % 4
+                    )
+                })
+            })
+            .collect();
+        assert!(wrong.is_empty(), "rgba16float: {wrong:?}");
+    }
+    if uses(&b, Format::Rg11b10Float) {
+        let count = SMALL_FLOATS.len() + 1;
+        // Value k of the twelve (the eleven and the NaN) in channel c at texel (k + 3c) mod 12.
+        let value = |i: usize, c: usize| (i + 3 * count - 3 * c) % count;
+        let (w, h) = (count as u32, 1);
+        let words: Vec<u32> = (0..count)
+            .flat_map(|i| (0..4).map(move |c| value(i, c)))
+            .map(|k| SMALL_FLOATS.get(k).map_or(DRAWN_NAN, |s| s.0))
+            .collect();
+        let got = drawn_floats(&mut b, Format::Rg11b10Float, (w, h), &words, 4);
+        let wrong: Vec<String> = got
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter_map(|(i, bytes)| {
+                let word = u32::from_le_bytes(*bytes);
+                let parts = [(word & 0x7ff, 0), (word >> 11 & 0x7ff, 1), (word >> 22, 2)];
+                let right = parts.iter().all(|&(got, c)| {
+                    let (exponent, mantissa) = if c == 2 { (0x3e0, 0x1f) } else { (0x7c0, 0x3f) };
+                    match SMALL_FLOATS.get(value(i, c)) {
+                        Some(&(_, eleven, ten)) => {
+                            got == u32::from(if c == 2 { ten } else { eleven })
+                        }
+                        None => small_nan(got, exponent, mantissa),
+                    }
+                });
+                (!right).then(|| format!("texel {i}: {word:#010x}"))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "rg11b10float: {wrong:?}");
+    }
+    ok(&mut b);
+}
+
+/// Copies between formats of one typeless group whose texels hold every value of their components
+/// arrive with every bit as stored: signed integers into unsigned ones and back (the sign bits of
+/// each width kept, none spread past it), unsigned into signed normalised sources' twins, unsigned
+/// normalised into signed integers, and every 16-bit depth word into `r16uint` and `r16unorm`. A
+/// signed normalised source holds no smallest value (-1 twice over, which a back end sampling it
+/// reads as the next); signed normalised destinations are left out (a draw writes -127 for -1).
+pub fn typeless_group_copies_keep_every_bit<B: Gpu>(mut b: B) {
+    let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLE;
+    // 256 texels, each byte of a texel a value of its own, every value in every byte at some texel.
+    let side = 16u32;
+    let texel_bytes = |bytes: u32| -> Vec<u8> {
+        (0..side * side)
+            .flat_map(|i| (0..bytes).map(move |k| (i + 67 * k) as u8))
+            .collect()
+    };
+    let no_smallest = |mut v: Vec<u8>, width: usize| {
+        for chunk in v.chunks_mut(width) {
+            if chunk[width - 1] == 0x80 && chunk[..width - 1].iter().all(|&c| c == 0) {
+                chunk[width - 1] = 0x81;
+            }
+        }
+        v
+    };
+    let cases: Vec<(Format, Format, Vec<u8>)> = vec![
+        (Format::R8Sint, Format::R8Uint, texel_bytes(1)),
+        (Format::R8Uint, Format::R8Sint, texel_bytes(1)),
+        (Format::Rg16Sint, Format::Rg16Uint, texel_bytes(4)),
+        (Format::Rg16Uint, Format::Rg16Sint, texel_bytes(4)),
+        (Format::Rgba8Sint, Format::Rgba8Unorm, texel_bytes(4)),
+        (Format::Rgba8Unorm, Format::Rgba8Sint, texel_bytes(4)),
+        (Format::R32Sint, Format::R32Uint, texel_bytes(4)),
+        (
+            Format::R8Snorm,
+            Format::R8Uint,
+            no_smallest(texel_bytes(1), 1),
+        ),
+        (
+            Format::Rg16Snorm,
+            Format::Rg16Uint,
+            no_smallest(texel_bytes(4), 2),
+        ),
+    ];
+    let has = |b: &B, f: Format, u: FormatUse| b.caps().formats.uses[f as usize].contains(u);
+    for (from, to, bytes) in cases {
+        if !has(&b, from, FormatUse::COPY_OUT) || !has(&b, to, FormatUse::COPY_OUT) {
+            continue;
+        }
+        let texel = bytes.len() as u32 / (side * side);
+        let src = texture(&mut b, from, (side, side), 1, 1, usage);
         b.write_texture(
-            &region(&depths, 0, face, 0, 0),
-            extent(n, n, 1),
-            &face_depths(face),
-            n * 4,
-            n,
+            &region(&src, 0, 0, 0, 0),
+            extent(side, side, 1),
+            &bytes,
+            side * texel,
+            side,
             WriteMode::Ordered,
         );
+        let dst = texture(&mut b, to, (side, side), 1, 1, usage);
+        b.copy_texture(
+            &region(&src, 0, 0, 0, 0),
+            &region(&dst, 0, 0, 0, 0),
+            extent(side, side, 1),
+        );
+        let got = read_texture(
+            &mut b,
+            region(&dst, 0, 0, 0, 0),
+            extent(side, side, 1),
+            texel as usize,
+        );
+        let wrong: Vec<String> = got
+            .iter()
+            .zip(&bytes)
+            .enumerate()
+            .filter(|(_, (g, w))| g != w)
+            .take(16)
+            .map(|(i, (g, w))| format!("byte {i}: {w:#04x} became {g:#04x}"))
+            .collect();
+        assert!(wrong.is_empty(), "{from:?} into {to:?}: {wrong:?}");
     }
-    for face in 0..CUBE_FACES {
-        assert_eq!(
-            read_texture(&mut b, region(&depths, 0, face, 0, 0), extent(n, n, 1), 4),
-            face_depths(face),
-            "face {face} of the depth32float cube read back"
+    ok(&mut b);
+    let depth = Format::Depth16Unorm;
+    if !has(&b, depth, FormatUse::COPY_OUT) {
+        return;
+    }
+    let wide = 1u32 << 8;
+    let words: Vec<u8> = (0..=u16::MAX).flat_map(u16::to_le_bytes).collect();
+    let src = texture(&mut b, depth, (wide, wide), 1, 1, usage);
+    b.write_texture(
+        &region(&src, 0, 0, 0, 0),
+        extent(wide, wide, 1),
+        &words,
+        wide * 2,
+        wide,
+        WriteMode::Ordered,
+    );
+    for to in [Format::R16Uint, Format::R16Unorm] {
+        if !has(&b, to, FormatUse::COPY_OUT) {
+            continue;
+        }
+        let dst = texture(&mut b, to, (wide, wide), 1, 1, usage);
+        b.copy_texture(
+            &region(&src, 0, 0, 0, 0),
+            &region(&dst, 0, 0, 0, 0),
+            extent(wide, wide, 1),
+        );
+        let got = read_texture(&mut b, region(&dst, 0, 0, 0, 0), extent(wide, wide, 1), 2);
+        let wrong: Vec<String> = got
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(0..=u16::MAX)
+            .filter(|(g, w)| u16::from_le_bytes(**g) != *w)
+            .take(16)
+            .map(|(g, w)| format!("{w:#06x} became {:#06x}", u16::from_le_bytes(*g)))
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "every depth16unorm word into {to:?}: {wrong:?}"
         );
     }
     ok(&mut b);
@@ -8182,6 +8524,16 @@ macro_rules! tests {
         #[test]
         fn every_face_of_a_cube_reads_and_copies_texel_for_texel() {
             $crate::every_face_of_a_cube_reads_and_copies_texel_for_texel($value);
+        }
+
+        #[test]
+        fn float_targets_drawn_with_every_kind_of_value_read_back_its_bits() {
+            $crate::float_targets_drawn_with_every_kind_of_value_read_back_its_bits($value);
+        }
+
+        #[test]
+        fn typeless_group_copies_keep_every_bit() {
+            $crate::typeless_group_copies_keep_every_bit($value);
         }
 
         #[test]
