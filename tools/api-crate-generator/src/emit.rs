@@ -1947,3 +1947,31 @@ fn returned_structures_through_pointers(read: &mut metadata::Namespaces) {
         }
     }
 }
+
+#[cfg(test)]
+mod returned_structure_tests {
+    /// The parameter `CountParamIndex` names for `param` of `interface::method` in `read`.
+    fn count_of(read: &crate::metadata::Namespaces, interface: &str, method: &str, param: &str) -> Option<i128> {
+        let interface = read.interfaces.get(&("Windows.Win32.Graphics.Direct3D12".to_string(), interface.to_string()))?;
+        let method = interface.methods.iter().find(|m| m.name == method)?;
+        let param = method.params.iter().find(|p| p.name == param)?;
+        param.attributes.iter().flat_map(|attribute| attribute.arguments.iter()).find_map(|(argument, value)| match (argument.as_str(), value) {
+            ("CountParamIndex", crate::metadata::Literal::Integer(index)) => Some(*index),
+            _ => None,
+        })
+    }
+
+    /// ID3D12Device::GetResourceAllocationInfo returns D3D12_RESOURCE_ALLOCATION_INFO by value and counts
+    /// pResourceDescs by its parameter 1 (numResourceDescs): once the returned structure's pointer is the first
+    /// parameter, the count is parameter 2.
+    #[test]
+    fn a_returned_structure_moves_each_count_index_by_one() {
+        let Some(winmd) = std::env::var_os("GAC_WINMD") else { return };
+        let index = windows_metadata::reader::TypeIndex::read(winmd.to_str().unwrap_or_default()).expect("the pinned metadata");
+        let mut read = crate::metadata::read(&index, &["Windows.Win32.Graphics.Direct3D12"]);
+        let before = count_of(&read, "ID3D12Device", "GetResourceAllocationInfo", "pResourceDescs");
+        super::returned_structures_through_pointers(&mut read);
+        let after = count_of(&read, "ID3D12Device", "GetResourceAllocationInfo", "pResourceDescs");
+        assert_eq!((before, after), (Some(1), Some(2)));
+    }
+}

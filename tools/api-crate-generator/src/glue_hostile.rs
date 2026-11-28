@@ -755,7 +755,7 @@ impl Writer<'_, '_> {
         }
         let bare = t.trim_start_matches('&').trim();
         let reference = if t.starts_with('&') { "&" } else { "" };
-        if let Some(value) = codecs.shapes.known(bare, salt, true).filter(|_| !bare.contains("Foreign") && !bare.contains('<')) {
+        if let Some(value) = codecs.shapes.known(bare, salt, true).filter(|_| !bare.contains("Foreign")) {
             return Some(format!("{reference}{value}"));
         }
         if bare.contains("::structures::") {
@@ -1992,6 +1992,10 @@ fn answer_summary(ty: &str, expr: &str, depth: usize) -> (String, &'static str) 
         let shown: Vec<String> = parts.iter().zip(&names).map(|(part, name)| answer_summary(part, name, depth + 1).0).collect();
         let holes = vec!["{}"; parts.len()].join(", ");
         return (format!("{{ let ({}) = {expr}; format!(\"({holes})\", {}) }}", names.join(", "), shown.join(", ")), holding);
+    }
+    // A mapping: its pitches are values; its memory is the lent bytes, compared by what the caller reads and writes.
+    if ty.contains("::MappedSubresource<") {
+        return (format!("format!(\"MappedSubresource {{{{ row_pitch: {{}}, depth_pitch: {{}} }}}}\", {expr}.row_pitch, {expr}.depth_pitch)"), holding);
     }
     ("\"an object\".to_string()".to_string(), "an object only: its identity is no value to compare")
 }

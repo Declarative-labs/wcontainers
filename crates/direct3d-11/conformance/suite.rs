@@ -20361,7 +20361,13 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             answers.push(format!(
                 "ID3D11DeviceContext::Map -> {}",
                 match &answer {
-                    Ok(v0) => format!("Ok({})", "an object".to_string()),
+                    Ok(v0) => format!(
+                        "Ok({})",
+                        format!(
+                            "MappedSubresource {{ row_pitch: {}, depth_pitch: {} }}",
+                            v0.row_pitch, v0.depth_pitch
+                        )
+                    ),
                     Err(v0) => format!("Err({:#x})", v0.0),
                 }
             ));
@@ -32750,7 +32756,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Factory5::check_feature_support(
                 this,
-                directx_graphics_infrastructure::enumerations::DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                directx_graphics_infrastructure::enumerations::Feature(1),
                 &lying,
             );
             answers.push(format!(

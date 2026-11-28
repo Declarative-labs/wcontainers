@@ -1031,6 +1031,9 @@ pub const SUITE_ARGUMENTS: &[(&str, &str, &str)] = &[
     // 60 Hz, one sample, for render target output (DXGI_USAGE_RENDER_TARGET_OUTPUT, 0x20), flipped in sequence
     // (DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, 3), allowed to switch mode (DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH, 0x2).
     ("D3D11CreateDeviceAndSwapChain", "swap_chain_desc", "Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 64_u32, height: 32_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 60_u32, denominator: 1_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R8G8B8A8_UNORM, scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(1), scaling: directx_graphics_infrastructure::enumerations::ModeScaling(1) }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 1_u32, quality: 2_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::Usage(32), buffer_count: 2_u32, output_window: component_object_model::structures::Hwnd(29), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::SwapEffect(3), flags: 2_u32 })"),
+    // A feature value past DXGI_FEATURE_PRESENT_ALLOW_TEARING (0, the only one declared), which the glue passes on (no
+    // row judges it): what reaches the implementation is then the value given.
+    ("IDXGIFactory5::CheckFeatureSupport", "feature", "directx_graphics_infrastructure::enumerations::Feature(1)"),
     // The swap chain's first buffer: within the two its description made.
     ("IDXGISwapChain::GetBuffer", "buffer", "0_u32"),
     // A break is never turned on (its row refuses TRUE), an exception never raised (its row refuses any flag): the one

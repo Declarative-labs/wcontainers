@@ -1464,3 +1464,25 @@ fn the_reference_rasterizer_is_never_switched_to() {
     let _ = switch.set_use_ref(true);
     assert_eq!(reached("ID3D11SwitchToRef::SetUseRef"), 0);
 }
+
+/// What the serving glue answers from its record of a creation, read through the calling glue: a buffer is
+/// D3D11_RESOURCE_DIMENSION_BUFFER (1) and describes itself as it was made (the recorder is never asked, so this is the
+/// only comparison of these answers: the glue's record against the creation's arguments).
+#[test]
+fn a_buffer_answers_its_kind_and_description_as_made() {
+    let (device, _) = device();
+    let desc = BufferDesc {
+        byte_width: 4,
+        usage: Usage(2),
+        bind_flags: 1,
+        cpu_access_flags: 0x10000,
+        misc_flags: 0x40,
+        structure_byte_stride: 4,
+    };
+    let buffer = device.create_buffer(&desc, None).expect("a buffer");
+    assert_eq!(
+        d3d11::Resource::get_type(&buffer),
+        d3d11::enumerations::ResourceDimension(1)
+    );
+    assert_eq!(d3d11::Buffer::get_desc(&buffer), desc);
+}

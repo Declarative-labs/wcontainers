@@ -758,25 +758,7 @@ impl<'g, 'a> Writer<'g, 'a> {
     /// Every UINT64 `ty` reaches, as (method or structure, parameter or field): the type itself (a parameter of
     /// `owner` named `name`), what it points at, and the fields of each structure or union it holds, once per structure.
     fn uint64s(&self, owner: &str, name: &str, ty: &Type, seen: &mut BTreeSet<String>, found: &mut Vec<(String, String)>) {
-        match ty {
-            Type::U64 | Type::I64 | Type::USize | Type::ISize => found.push((owner.to_string(), name.to_string())),
-            Type::PtrConst(..) | Type::PtrMut(..) => {
-                if let Some((inner, _, _)) = pointee(ty) {
-                    self.uint64s(owner, name, inner, seen, found);
-                }
-            }
-            Type::ArrayFixed(inner, _) => self.uint64s(owner, name, inner, seen, found),
-            _ => {
-                let Some(record_key) = named(ty) else { return };
-                let Some(record) = self.g.read.records.get(&record_key) else { return };
-                if !matches!(record.kind, RecordKind::Struct | RecordKind::Union) || !seen.insert(record_key.1.clone()) {
-                    return;
-                }
-                for field in &record.fields {
-                    self.uint64s(&record.name, &field.name, &field.ty, seen, found);
-                }
-            }
-        }
+        uint64s(&self.g.read.records, owner, name, ty, seen, found);
     }
 
     fn glue_of(&self, method: &Method, place: &str) -> Result<Glued, String> {
@@ -1245,6 +1227,31 @@ fn uint64_refusals(found: Vec<(String, String)>, judged: &[(&str, &str, crate::a
         .collect()
 }
 
+/// Every UINT64 `ty` reaches among `records`, as (method or structure, parameter or field): the type itself (a parameter
+/// of `owner` named `name`), what it points at, each element of a fixed array, and the fields of each structure or union
+/// it holds, once per structure (`seen`).
+fn uint64s(records: &BTreeMap<Key, Record>, owner: &str, name: &str, ty: &Type, seen: &mut BTreeSet<String>, found: &mut Vec<(String, String)>) {
+    match ty {
+        Type::U64 | Type::I64 | Type::USize | Type::ISize => found.push((owner.to_string(), name.to_string())),
+        Type::PtrConst(..) | Type::PtrMut(..) => {
+            if let Some((inner, _, _)) = pointee(ty) {
+                uint64s(records, owner, name, inner, seen, found);
+            }
+        }
+        Type::ArrayFixed(inner, _) => uint64s(records, owner, name, inner, seen, found),
+        _ => {
+            let Some(record_key) = named(ty) else { return };
+            let Some(record) = records.get(&record_key) else { return };
+            if !matches!(record.kind, RecordKind::Struct | RecordKind::Union) || !seen.insert(record_key.1.clone()) {
+                return;
+            }
+            for field in &record.fields {
+                uint64s(records, &record.name, &field.name, &field.ty, seen, found);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod uint64_tests {
     use super::uint64_refusals;
@@ -1284,5 +1291,27 @@ mod uint64_tests {
                 "D3D12_CPU_DESCRIPTOR_HANDLE.ptr: an address of a descriptor heap's memory, carried only as (heap, index) checked against the heap's recorded description, a line not yet written".to_string(),
             ]
         );
+    }
+
+    /// A UINT64 in a fixed array is found (one place for the array), and a structure reached twice is walked once: the
+    /// fields of D3D12_RANGE (Begin and End, SIZE_T), through ID3D12Resource::Unmap's pWrittenRange in the pinned
+    /// metadata, the second walk adding nothing.
+    #[test]
+    fn uint64s_are_found_in_arrays_and_each_structure_once() {
+        use std::collections::{BTreeMap, BTreeSet};
+        use windows_metadata::Type;
+        let mut seen = BTreeSet::new();
+        let mut found = Vec::new();
+        super::uint64s(&BTreeMap::new(), "M", "p", &Type::ArrayFixed(Box::new(Type::U64), 4), &mut seen, &mut found);
+        assert_eq!(found, vec![("M".to_string(), "p".to_string())]);
+        let Some(winmd) = std::env::var_os("GAC_WINMD") else { return };
+        let index = windows_metadata::reader::TypeIndex::read(winmd.to_str().unwrap_or_default()).expect("the pinned metadata");
+        let read = crate::metadata::read(&index, &["Windows.Win32.Graphics.Direct3D12"]);
+        let unmap = read.interfaces[&("Windows.Win32.Graphics.Direct3D12".to_string(), "ID3D12Resource".to_string())].methods.iter().find(|m| m.name == "Unmap").expect("Unmap");
+        let range = &unmap.params.iter().find(|p| p.name == "pWrittenRange").expect("pWrittenRange").ty;
+        let mut found = Vec::new();
+        super::uint64s(&read.records, "M", "p", range, &mut seen, &mut found);
+        super::uint64s(&read.records, "M", "p", range, &mut seen, &mut found);
+        assert_eq!(found, vec![("D3D12_RANGE".to_string(), "Begin".to_string()), ("D3D12_RANGE".to_string(), "End".to_string())]);
     }
 }

@@ -22,6 +22,7 @@ more, and the plants the independent checks of 2026-11-27 named, each a branch o
 
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -106,7 +107,9 @@ def codec_plants(path, text):
                 field_name = field.strip().split(":", 1)[0].strip()
                 if not re.fullmatch(r"[a-z_0-9]+", field_name):
                     continue
-                replacement = f"\n            {field_name}: {name}(&[u8::MIN; {size.group(1)}]).{field_name}"
+                # A decoder of a structure with texts takes them too: none.
+                texts = ", Vec::new()" if name.endswith("_with") else ""
+                replacement = f"\n            {field_name}: {name}(&[u8::MIN; {size.group(1)}]{texts}).{field_name}"
                 plants.append((f"{name}.{field_name}", name, field, replacement))
         elif name.startswith("encode_"):
             open_brace = body.find("{", body.find(")"))
@@ -302,20 +305,29 @@ def run(list_path, only, command):
         try:
             with open(path, "w") as handle:
                 handle.write(planted)
-            result = subprocess.run(command, capture_output=True, text=True)
+            # Its own process group, so that a test the plant makes hang is killed whole after PLANT_TIMEOUT seconds
+            # (killing only the command would leave the test holding the output open).
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+            try:
+                output, _ = process.communicate(timeout=int(os.environ.get("PLANT_TIMEOUT", "900")))
+                returncode = process.returncode
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                output, _ = process.communicate()
+                output += "\nthe tests did not end: killed after PLANT_TIMEOUT seconds"
+                returncode = -signal.SIGKILL
         finally:
             with open(path, "w") as handle:
                 handle.write(original)
-        output = result.stdout + result.stderr
-        if result.returncode == 0:
+        if returncode == 0:
             verdict = "SURVIVED"
         elif re.search(r"^error(\[E\d+\])?: ", output, re.M) and "could not compile" in output:
             verdict = "INVALID"
         else:
             verdict = "CAUGHT"
         counts[verdict] += 1
-        deciding = next((line for line in output.splitlines() if "panicked at" in line or "ERROR: AddressSanitizer" in line or line.startswith("error")), "")
-        print(f"PLANT {number} {ident}: {verdict} status {result.returncode} {time.time() - started:.0f} s {deciding[:200]}", flush=True)
+        deciding = next((line for line in output.splitlines() if "panicked at" in line or "ERROR: AddressSanitizer" in line or line.startswith("error") or "did not end" in line), "")
+        print(f"PLANT {number} {ident}: {verdict} status {returncode} {time.time() - started:.0f} s {deciding[:200]}", flush=True)
     print("PLANTS: " + ", ".join(f"{key} {value}" for key, value in counts.items()), flush=True)
     return 0
 

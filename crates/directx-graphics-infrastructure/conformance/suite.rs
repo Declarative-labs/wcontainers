@@ -7728,7 +7728,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative({
             let answer = directx_graphics_infrastructure::Factory5::check_feature_support(
                 this,
-                directx_graphics_infrastructure::enumerations::DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                directx_graphics_infrastructure::enumerations::Feature(1),
                 &lying,
             );
             answers.push(format!(
