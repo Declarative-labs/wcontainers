@@ -1,0 +1,1 @@
+wcontainers_kernel_core_conformance::tests!(wcontainers_kernel_core_per_task_executor::PerTaskExecutorKernelCore);
