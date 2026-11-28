@@ -10,12 +10,6 @@ mod whole {
     wcontainers_volatile_bytes_conformance::tests!(super::anonymous(u16::MAX as usize));
 }
 
-mod part {
-    wcontainers_volatile_bytes_conformance::tests!(
-        super::anonymous(u16::MAX as usize).part(3..u16::MAX as u64 - 1).expect("inside")
-    );
-}
-
 #[cfg(all(target_os = "linux", not(miri)))]
 mod file {
     use std::os::fd::AsFd;

@@ -5,6 +5,7 @@ exclude = ["third_party"]
 
 [workspace.metadata.reviewable]
 prefix = "wcontainers"
+on = ["proofs"]
 
 [workspace.package]
 version = "0.1.0"

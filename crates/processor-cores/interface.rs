@@ -2,6 +2,7 @@ use std::panic;
 use std::thread;
 
 /// The cores of the machine's processors.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ProcessorCores: Sync {
     type Core: Sync;
     /// What a core says it is, read from the core itself.

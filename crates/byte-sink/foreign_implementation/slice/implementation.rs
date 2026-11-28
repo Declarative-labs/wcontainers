@@ -1,7 +1,11 @@
 use core::convert::Infallible;
 use core::mem;
 
+use vstd::prelude::*;
+
 use crate::ByteSink;
+
+verus! {
 
 /// Writes to the start of the slice, which then starts after the bytes written.
 impl ByteSink for &mut [u8] {
@@ -9,11 +13,15 @@ impl ByteSink for &mut [u8] {
 
     fn write(&mut self, bytes: &[u8]) -> Result<usize, Infallible> {
         let count = bytes.len().min(self.len());
-        let (written, rest) = mem::take(self).split_at_mut(count);
+        let mut whole: &mut [u8] = &mut [];
+        mem::swap(self, &mut whole);
+        let (written, rest) = whole.split_at_mut(count);
         written.copy_from_slice(&bytes[..count]);
         *self = rest;
         Ok(count)
     }
+}
+
 }
 
 #[cfg(test)]
