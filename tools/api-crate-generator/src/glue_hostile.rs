@@ -1189,6 +1189,38 @@ struct Maker {
     stores: Vec<(usize, String)>,
 }
 
+/// A drive's call with each object of a kind it names a second time or more (`o.k<n>.as_ref()`, the receiver first) the
+/// suite's second object of that kind where it has one: the same call made with two objects of one kind, so that a glue
+/// passing one for the other is seen.
+fn with_second_objects(prelude: &str, call: &str) -> (String, String) {
+    const SEPARATOR: char = '\u{0}';
+    let text = format!("{prelude}{SEPARATOR}{call}");
+    let mut out = String::new();
+    let mut met: Vec<String> = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("o.k") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 3..];
+        let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let kind = &after[..digits];
+        if digits == 0 || !after[digits..].starts_with(".as_ref()") {
+            out.push_str("o.k");
+            rest = after;
+            continue;
+        }
+        if met.iter().any(|seen| seen == kind) {
+            let _ = write!(out, "o.s{kind}.as_ref().or(o.k{kind}.as_ref())");
+        } else {
+            met.push(kind.to_string());
+            let _ = write!(out, "o.k{kind}.as_ref()");
+        }
+        rest = &after[digits + ".as_ref()".len()..];
+    }
+    out.push_str(rest);
+    let (prelude, call) = out.split_once(SEPARATOR).unwrap_or((&out, ""));
+    (prelude.to_string(), call.to_string())
+}
+
 /// Splits a tuple's types at their top-level commas.
 fn split_top(list: &str) -> Vec<String> {
     let mut parts = Vec::new();
@@ -1659,14 +1691,14 @@ fn answered<T>(answer: T) -> bool {
 /// every field (`Debug`), an object in it named only as one (its identity is no value); and the caller's bytes after a
 /// method that writes them. The same drive made on an implementation directly and through both glues must give the same.
 #[derive(Debug, Default)]
-struct Answers(std::sync::Mutex<Vec<String>>, Option<Received>, std::sync::atomic::AtomicUsize);
+struct Answers(std::sync::Mutex<Vec<String>>, Option<Received>, std::sync::atomic::AtomicUsize, std::sync::Mutex<Vec<(String, u64)>>);
 
 /// The implementation's own log of the arguments it received: how many so far, and those after the first n.
 type Received = (fn() -> usize, fn(usize) -> Vec<String>);
 
 impl Answers {
     fn with_received(received: Received) -> Answers {
-        Answers(std::sync::Mutex::default(), Some(received), std::sync::atomic::AtomicUsize::new(0))
+        Answers(std::sync::Mutex::default(), Some(received), std::sync::atomic::AtomicUsize::new(0), std::sync::Mutex::default())
     }
 
     /// Marks where the implementation's log of arguments stands before a compared call.
@@ -1698,10 +1730,38 @@ impl Answers {
         // What the implementation received during the call, every argument.
         if let Some((_, since)) = self.1 {
             // The same call asked again (a list's length, then the list) is one call received.
-            let mut received = since(self.2.load(std::sync::atomic::Ordering::SeqCst));
+            let mut received: Vec<String> = since(self.2.load(std::sync::atomic::Ordering::SeqCst)).iter().map(|line| self.numbered(line)).collect();
             received.dedup();
             self.push(format!("{place}: the implementation received {received:?}"));
         }
+    }
+
+    /// The line with each object the implementation logged (`#`, its kind, `@`, its identity) as its kind and the order in
+    /// which this drive first met it among the objects of that kind: the same drive passes the same objects in the same
+    /// order, directly and through both glues (an object one glue hands out by an interface id is the object it is of,
+    /// so that only the order within a kind is compared).
+    fn numbered(&self, line: &str) -> String {
+        let mut met = self.3.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut out = String::new();
+        let mut rest = line;
+        while let Some(at) = rest.find('#') {
+            out.push_str(&rest[..=at]);
+            rest = &rest[at + 1..];
+            let Some((kind, after)) = rest.split_once('@') else { continue };
+            let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            let Ok(identity) = after[..digits].parse::<u64>() else { continue };
+            let of_kind: Vec<u64> = met.iter().filter(|(seen, _)| seen == kind).map(|(_, id)| *id).collect();
+            let order = of_kind.iter().position(|seen| *seen == identity).unwrap_or_else(|| {
+                met.push((kind.to_string(), identity));
+                of_kind.len()
+            });
+            out.push_str(kind);
+            out.push('@');
+            out.push_str(&order.to_string());
+            rest = &after[digits..];
+        }
+        out.push_str(rest);
+        out
     }
 
     fn lines(self) -> Vec<String> {
@@ -1729,13 +1789,13 @@ impl Writer<'_, '_> {
         text.push_str("#![allow(unused_variables, unused_imports, dead_code, unreachable_code, clippy::let_unit_value, clippy::unit_arg, clippy::redundant_closure_call, clippy::too_many_lines, clippy::unnecessary_lazy_evaluations, clippy::option_map_unit_fn, clippy::bool_assert_comparison, clippy::eq_op, clippy::format_in_format_args, clippy::to_string_in_format_args, reason = \"generated: every call has the same shape\")]\n\n");
         text.push_str("@IMPORTS@\n");
         text.push_str(SUITE_BASE);
-        let _ = writeln!(text, "\n/// One object of each kind the suite made, by kind.\nstruct Objects<A: {top}> {{\n    api: A,");
+        let _ = writeln!(text, "\n/// One object of each kind the suite made, by kind (`k`), and a second of each kind a creation makes (`s`), so that a\n/// glue passing one object of a kind for another is seen.\nstruct Objects<A: {top}> {{\n    api: A,");
         for &k in &scope {
-            let _ = writeln!(text, "    k{k}: Option<{}>,", generic(k));
+            let _ = writeln!(text, "    k{k}: Option<{}>,\n    s{k}: Option<{}>,", generic(k), generic(k));
         }
         let _ = writeln!(text, "}}\n\nimpl<A: {top}> Objects<A> {{\n    fn new(api: A) -> Objects<A> {{\n        Objects {{\n            api,");
         for &k in &scope {
-            let _ = writeln!(text, "            k{k}: None,");
+            let _ = writeln!(text, "            k{k}: None,\n            s{k}: None,");
         }
         let held: Vec<String> = scope.iter().map(|k| format!("self.k{k}.is_some()")).collect();
         let _ = writeln!(text, "        }}\n    }}\n\n    fn kinds_held(&self) -> usize {{\n        [{}].iter().filter(|held| **held).count()\n    }}\n}}\n", if held.is_empty() { "false".to_string() } else { held.join(", ") });
@@ -1795,6 +1855,7 @@ impl Writer<'_, '_> {
                 let rust_name = Self::method_name(method);
                 let asked = glued.as_ref().and_then(|glued| self.asked_interface(glued, &result, &scope));
                 if let Some((prelude, call)) = self.driven_call(&place, Some(k), &generic(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", asked.as_ref().map(|(riid, iid)| (riid.as_str(), iid.as_str()))) {
+                    let (prelude, call) = with_second_objects(&prelude, &call);
                     let logged = compared(&place, glued.is_some(), &result, &prelude, &call);
                     calls.push((format!("{place} on {}", g.kinds[k].name), prelude, check(&result, &logged, &scope)));
                 }
@@ -1810,6 +1871,7 @@ impl Writer<'_, '_> {
             let (inputs, result) = self.trait_signature(&renamed, api, "Self", &function.name);
             let asked = self.glue_of(function, &function.name).ok().and_then(|glued| self.asked_interface(&glued, &result, &scope));
             if let Some((prelude, call)) = self.driven_call(&function.name, None, "A", &top, &rust_name, &inputs, &scope, codecs, "false", asked.as_ref().map(|(riid, iid)| (riid.as_str(), iid.as_str()))) {
+                let (prelude, call) = with_second_objects(&prelude, &call);
                 let logged = compared(&function.name, self.glue_of(function, &function.name).is_ok(), &result, &prelude, &call);
                 calls.push((function.name.clone(), prelude, check(&result, &logged, &scope)));
             }
@@ -1839,7 +1901,16 @@ impl Writer<'_, '_> {
                 let _ = writeln!(text, "            }}\n        }}");
             }
         }
-        let _ = writeln!(text, "        if o.kinds_held() == before {{\n            break;\n        }}\n    }}\n    }}\n    o.kinds_held()\n}}\n");
+        let _ = writeln!(text, "        if o.kinds_held() == before {{\n            break;\n        }}\n    }}\n    }}");
+        // A second object of each kind a creation both glues carry to the implementation makes, by the same creation (one a
+        // glue refuses would make a second object directly and none through both glues).
+        let carried = |place: &str| self.outcomes.borrow().get(place).is_some_and(|outcome| outcome.serving.iter().any(|what| what.starts_with("glued")) && outcome.calling.iter().any(|what| what.starts_with("glued")));
+        for maker in makers.iter().filter(|maker| maker.place.contains("::Create") && !maker.place.contains(" for ") && carried(&maker.place)) {
+            let [(kind, var)] = maker.stores.as_slice() else { continue };
+            let answer = if maker.fallible { "answer.ok()" } else { "Some(answer)" };
+            let _ = writeln!(text, "    // {}, a second time\n    if o.s{kind}.is_none() {{\n        let answer = {{\n            let o = &*o;\n            made(|| {{\n{}        let answer = {};\n        {answer}\n            }})\n        }};\n        if let Some({}) = answer {{\n            o.s{kind} = Some({var});\n        }}\n    }}", maker.place, maker.prelude, maker.call, maker.pattern);
+        }
+        let _ = writeln!(text, "    o.kinds_held()\n}}\n");
         let _ = writeln!(text, "/// Calls every method on every object held, and the exports, each answer checked, and notes in `answers` what each\n/// method both glues carry to the implementation answered.\nfn drive<A: {top}>(o: &Objects<A>, answers: &Answers) -> Driven {{\n    let mut driven = Driven::default();");
         for (place, prelude, call) in &calls {
             if call.contains("answers.") {

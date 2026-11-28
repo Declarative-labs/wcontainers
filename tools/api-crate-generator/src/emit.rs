@@ -43,7 +43,7 @@ const HARNESS: &[(&str, &str)] = &[
 
 /// The hostile tests of the whole APIs' rows and the safe-Rust probes, hand-written beside the generator, copied beside
 /// Direct3D 11's recorder (they reach it through both glues).
-const RECORDER_TESTS: &[(&str, &str)] = &[("hostile.rs", include_str!("../harness/whole/hostile.rs"))];
+const RECORDER_TESTS: &[(&str, &str)] = &[("hostile.rs", include_str!("../harness/whole/hostile.rs")), ("system.rs", include_str!("../harness/whole/system.rs"))];
 
 pub const HEADER: &str = "Written by tools/api-crate-generator from the Win32 metadata, version 63.0.31, and never by hand.";
 const UNKNOWN: (&str, &str) = ("Windows.Win32.System.Com", "IUnknown");

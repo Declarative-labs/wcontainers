@@ -1339,21 +1339,21 @@ fn the_serving_glue_passes_dxgis_calls_the_calling_glue_never_makes() {
     assert!(statuses.iter().all(|status| *status >= 0), "{statuses:x?}");
     assert_eq!(
         received_since(from, "IDXGIDevice2::OfferResources"),
-        ["IDXGIDevice2::OfferResources(resources=[false], priority=OfferResourcePriority(2))"]
+        ["IDXGIDevice2::OfferResources(resources=[\"none\"], priority=OfferResourcePriority(2))"]
     );
     assert_eq!(
         received_since(from, "IDXGIDevice2::ReclaimResources"),
-        ["IDXGIDevice2::ReclaimResources(resources=[false])"]
+        ["IDXGIDevice2::ReclaimResources(resources=[\"none\"])"]
     );
     assert_eq!(
         received_since(from, "IDXGIDevice4::OfferResources1"),
         [
-            "IDXGIDevice4::OfferResources1(resources=[false], priority=OfferResourcePriority(2), flags=1)"
+            "IDXGIDevice4::OfferResources1(resources=[\"none\"], priority=OfferResourcePriority(2), flags=1)"
         ]
     );
     assert_eq!(
         received_since(from, "IDXGIDevice4::ReclaimResources1"),
-        ["IDXGIDevice4::ReclaimResources1(resources=[false])"]
+        ["IDXGIDevice4::ReclaimResources1(resources=[\"none\"])"]
     );
     let factories = wcontainers_directx_graphics_infrastructure_direct::exports(Recorder);
     let iid =

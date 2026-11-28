@@ -48,6 +48,19 @@ fn record_arguments(call: String) {
         .push(call);
 }
 
+/// An object's kind and identity as the log of arguments shows them: `#`, the kind, `@`, the identity.
+#[allow(
+    dead_code,
+    reason = "a recorder whose methods take no object names none"
+)]
+fn named(kind: &str, identity: u64) -> String {
+    let mut name = String::from('#');
+    name.push_str(kind);
+    name.push('@');
+    name.push_str(&identity.to_string());
+    name
+}
+
 /// Returns how many calls' arguments were logged so far.
 pub fn arguments_logged() -> usize {
     ARGUMENTS
@@ -1274,7 +1287,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedAdapter<A>
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -1618,7 +1681,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
             "IDXGIDevice4::OfferResources1(resources={:?}, priority={:?}, flags={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named(
+                        "directx_graphics_infrastructure::Resource",
+                        object.identity()
+                    )
+                ))
                 .collect::<Vec<_>>(),
             priority,
             flags
@@ -1638,7 +1707,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
             "IDXGIDevice4::ReclaimResources1(resources={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named(
+                        "directx_graphics_infrastructure::Resource",
+                        object.identity()
+                    )
+                ))
                 .collect::<Vec<_>>()
         ));
         Ok((0..2_u32)
@@ -1670,7 +1745,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
             "IDXGIDevice2::OfferResources(resources={:?}, priority={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named(
+                        "directx_graphics_infrastructure::Resource",
+                        object.identity()
+                    )
+                ))
                 .collect::<Vec<_>>(),
             priority
         ));
@@ -1686,7 +1767,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
             "IDXGIDevice2::ReclaimResources(resources={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named(
+                        "directx_graphics_infrastructure::Resource",
+                        object.identity()
+                    )
+                ))
                 .collect::<Vec<_>>()
         ));
         Ok((0..2_u32).map(|_| true).collect())
@@ -1774,7 +1861,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
             "IDXGIDevice::QueryResourceResidency(resources={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| match &object {
+                        directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                            named("directx_graphics_infrastructure::Adapter", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                            named("directx_graphics_infrastructure::Debug", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                            "directx_graphics_infrastructure::DecodeSwapChain",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                            named("directx_graphics_infrastructure::Device", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                            "directx_graphics_infrastructure::DisplayControl",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                            named("directx_graphics_infrastructure::Factory", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                            "directx_graphics_infrastructure::FactoryMedia",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                            named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                            named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                            named("directx_graphics_infrastructure::Output", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                            "directx_graphics_infrastructure::OutputDuplication",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                            named("directx_graphics_infrastructure::Resource", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                            named("directx_graphics_infrastructure::Surface", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                            named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                            "directx_graphics_infrastructure::SwapChainMedia",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                            "directx_graphics_infrastructure::GraphicsAnalysis",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                            "foreign".to_string(),
+                    }
+                ))
                 .collect::<Vec<_>>()
         ));
         Err(E_NOTIMPL)
@@ -1829,7 +1966,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -2458,11 +2645,61 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             h_wnd
         ));
         record_arguments(format!(
-            "IDXGIFactory2::CreateSwapChainForHwnd(device=an object or the caller's bytes, h_wnd={:?}, desc={:?}, fullscreen_desc={:?}, restrict_to_output={:?})",
+            "IDXGIFactory2::CreateSwapChainForHwnd(device={:?}, h_wnd={:?}, desc={:?}, fullscreen_desc={:?}, restrict_to_output={:?})",
+            match &device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
             h_wnd,
             desc,
             fullscreen_desc,
-            restrict_to_output.is_some()
+            restrict_to_output.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("directx_graphics_infrastructure::Output", object.identity())
+            )
         ));
         Ok(RecordedSwapChain::new())
     }
@@ -2484,9 +2721,106 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
         let _ = &restrict_to_output;
         record("IDXGIFactory2::CreateSwapChainForCoreWindow()".to_string());
         record_arguments(format!(
-            "IDXGIFactory2::CreateSwapChainForCoreWindow(device=an object or the caller's bytes, window=an object or the caller's bytes, desc={:?}, restrict_to_output={:?})",
+            "IDXGIFactory2::CreateSwapChainForCoreWindow(device={:?}, window={:?}, desc={:?}, restrict_to_output={:?})",
+            match &device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
+            match &window {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
             desc,
-            restrict_to_output.is_some()
+            restrict_to_output.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("directx_graphics_infrastructure::Output", object.identity())
+            )
         ));
         Ok(RecordedSwapChain::new())
     }
@@ -2611,9 +2945,59 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
         let _ = &restrict_to_output;
         record("IDXGIFactory2::CreateSwapChainForComposition()".to_string());
         record_arguments(format!(
-            "IDXGIFactory2::CreateSwapChainForComposition(device=an object or the caller's bytes, desc={:?}, restrict_to_output={:?})",
+            "IDXGIFactory2::CreateSwapChainForComposition(device={:?}, desc={:?}, restrict_to_output={:?})",
+            match &device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
             desc,
-            restrict_to_output.is_some()
+            restrict_to_output.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("directx_graphics_infrastructure::Output", object.identity())
+            )
         ));
         Ok(RecordedSwapChain::new())
     }
@@ -2695,7 +3079,54 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory for RecordedFactory<A
         let _ = &desc;
         record("IDXGIFactory::CreateSwapChain()".to_string());
         record_arguments(format!(
-            "IDXGIFactory::CreateSwapChain(device=an object or the caller's bytes, desc={:?})",
+            "IDXGIFactory::CreateSwapChain(device={:?}, desc={:?})",
+            match &device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
             desc
         ));
         Ok(RecordedSwapChain::new())
@@ -2748,7 +3179,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedFactory<A>
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -2946,10 +3427,60 @@ impl<A: Recorded> directx_graphics_infrastructure::FactoryMedia for RecordedFact
             h_surface
         ));
         record_arguments(format!(
-            "IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle(device=an object or the caller's bytes, h_surface={:?}, desc={:?}, restrict_to_output={:?})",
+            "IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle(device={:?}, h_surface={:?}, desc={:?}, restrict_to_output={:?})",
+            match &device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
             h_surface,
             desc,
-            restrict_to_output.is_some()
+            restrict_to_output.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("directx_graphics_infrastructure::Output", object.identity())
+            )
         ));
         Ok(RecordedSwapChain::new())
     }
@@ -2964,10 +3495,64 @@ impl<A: Recorded> directx_graphics_infrastructure::FactoryMedia for RecordedFact
             h_surface
         ));
         record_arguments(format!(
-            "IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle(device=an object or the caller's bytes, h_surface={:?}, desc={:?}, yuv_decode_buffers=an object or the caller's bytes, restrict_to_output={:?})",
+            "IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle(device={:?}, h_surface={:?}, desc={:?}, yuv_decode_buffers={:?}, restrict_to_output={:?})",
+            match &device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
             h_surface,
             desc,
-            restrict_to_output.is_some()
+            named(
+                "directx_graphics_infrastructure::Resource",
+                yuv_decode_buffers.identity()
+            ),
+            restrict_to_output.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("directx_graphics_infrastructure::Output", object.identity())
+            )
         ));
         Ok(RecordedDecodeSwapChain::new())
     }
@@ -3735,7 +4320,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedKeyedMutex
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -3956,8 +4591,56 @@ impl<A: Recorded> directx_graphics_infrastructure::Output5 for RecordedOutput<A>
         let _ = &supported_formats;
         record(format!("IDXGIOutput5::DuplicateOutput1(flags={:?})", flags));
         record_arguments(format!(
-            "IDXGIOutput5::DuplicateOutput1(device=an object or the caller's bytes, flags={:?}, supported_formats={:?})",
-            flags, supported_formats
+            "IDXGIOutput5::DuplicateOutput1(device={:?}, flags={:?}, supported_formats={:?})",
+            match &device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
+            flags,
+            supported_formats
         ));
         Ok(RecordedOutputDuplication::new())
     }
@@ -3978,8 +4661,56 @@ impl<A: Recorded> directx_graphics_infrastructure::Output4 for RecordedOutput<A>
             format, color_space
         ));
         record_arguments(format!(
-            "IDXGIOutput4::CheckOverlayColorSpaceSupport(format={:?}, color_space={:?}, concerned_device=an object or the caller's bytes)",
-            format, color_space
+            "IDXGIOutput4::CheckOverlayColorSpaceSupport(format={:?}, color_space={:?}, concerned_device={:?})",
+            format,
+            color_space,
+            match &concerned_device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            }
         ));
         Ok(26_u32)
     }
@@ -3998,8 +4729,55 @@ impl<A: Recorded> directx_graphics_infrastructure::Output3 for RecordedOutput<A>
             enum_format
         ));
         record_arguments(format!(
-            "IDXGIOutput3::CheckOverlaySupport(enum_format={:?}, concerned_device=an object or the caller's bytes)",
-            enum_format
+            "IDXGIOutput3::CheckOverlaySupport(enum_format={:?}, concerned_device={:?})",
+            enum_format,
+            match &concerned_device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            }
         ));
         Ok(64_u32)
     }
@@ -4063,7 +4841,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Output1 for RecordedOutput<A>
         record_arguments(format!(
             "IDXGIOutput1::FindClosestMatchingMode1(mode_to_match={:?}, concerned_device={:?})",
             mode_to_match,
-            concerned_device.is_some()
+            concerned_device.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(directx_graphics_infrastructure::structures::ModeDesc1 {
             width: 9_u32,
@@ -4084,18 +4912,68 @@ impl<A: Recorded> directx_graphics_infrastructure::Output1 for RecordedOutput<A>
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &destination;
         record("IDXGIOutput1::GetDisplaySurfaceData1()".to_string());
-        record_arguments(
-            "IDXGIOutput1::GetDisplaySurfaceData1(destination=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIOutput1::GetDisplaySurfaceData1(destination={:?})",
+            named(
+                "directx_graphics_infrastructure::Resource",
+                destination.identity()
+            )
+        ));
         Ok(())
     }
     fn duplicate_output(&self, device: directx_graphics_infrastructure::UnknownRef<'_, Self::Api>) -> Result<<Self::Api as directx_graphics_infrastructure::DirectXGraphicsInfrastructure>::OutputDuplication, component_object_model::structures::HResult>{
         let _ = &device;
         record("IDXGIOutput1::DuplicateOutput()".to_string());
-        record_arguments(
-            "IDXGIOutput1::DuplicateOutput(device=an object or the caller's bytes)".to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIOutput1::DuplicateOutput(device={:?})",
+            match &device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            }
+        ));
         Ok(RecordedOutputDuplication::new())
     }
 }
@@ -4170,7 +5048,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         record_arguments(format!(
             "IDXGIOutput::FindClosestMatchingMode(mode_to_match={:?}, concerned_device={:?})",
             mode_to_match,
-            concerned_device.is_some()
+            concerned_device.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(directx_graphics_infrastructure::structures::ModeDesc {
             width: 121_u32,
@@ -4201,7 +5129,54 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
             exclusive
         ));
         record_arguments(format!(
-            "IDXGIOutput::TakeOwnership(device=an object or the caller's bytes, exclusive={:?})",
+            "IDXGIOutput::TakeOwnership(device={:?}, exclusive={:?})",
+            match &device {
+                directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                    named("directx_graphics_infrastructure::Adapter", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                    named("directx_graphics_infrastructure::Debug", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                    "directx_graphics_infrastructure::DecodeSwapChain",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                    named("directx_graphics_infrastructure::Device", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                    "directx_graphics_infrastructure::DisplayControl",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                    named("directx_graphics_infrastructure::Factory", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                    "directx_graphics_infrastructure::FactoryMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                    named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                    named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                    named("directx_graphics_infrastructure::Output", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                    "directx_graphics_infrastructure::OutputDuplication",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                    named("directx_graphics_infrastructure::Resource", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                    named("directx_graphics_infrastructure::Surface", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                    named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                    "directx_graphics_infrastructure::SwapChainMedia",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                    "directx_graphics_infrastructure::GraphicsAnalysis",
+                    x.identity()
+                ),
+                directx_graphics_infrastructure::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
             exclusive
         ));
         Ok(())
@@ -4271,10 +5246,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &scanout_surface;
         record("IDXGIOutput::SetDisplaySurface()".to_string());
-        record_arguments(
-            "IDXGIOutput::SetDisplaySurface(scanout_surface=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIOutput::SetDisplaySurface(scanout_surface={:?})",
+            named(
+                "directx_graphics_infrastructure::Surface",
+                scanout_surface.identity()
+            )
+        ));
         Ok(())
     }
     fn get_display_surface_data(
@@ -4283,10 +5261,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &destination;
         record("IDXGIOutput::GetDisplaySurfaceData()".to_string());
-        record_arguments(
-            "IDXGIOutput::GetDisplaySurfaceData(destination=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIOutput::GetDisplaySurfaceData(destination={:?})",
+            named(
+                "directx_graphics_infrastructure::Surface",
+                destination.identity()
+            )
+        ));
         Ok(())
     }
     fn get_frame_statistics(
@@ -4337,7 +5318,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutput<A> 
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -4673,7 +5704,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutputDupl
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -5120,7 +6201,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedResource<A
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -5703,7 +6834,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSurface<A>
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -5958,7 +7139,57 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain3 for RecordedSwapCh
             creation_node_mask,
             present_queue
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| match &object {
+                        directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                            named("directx_graphics_infrastructure::Adapter", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                            named("directx_graphics_infrastructure::Debug", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                            "directx_graphics_infrastructure::DecodeSwapChain",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                            named("directx_graphics_infrastructure::Device", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                            "directx_graphics_infrastructure::DisplayControl",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                            named("directx_graphics_infrastructure::Factory", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                            "directx_graphics_infrastructure::FactoryMedia",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                            named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                            named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                            named("directx_graphics_infrastructure::Output", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                            "directx_graphics_infrastructure::OutputDuplication",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                            named("directx_graphics_infrastructure::Resource", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                            named("directx_graphics_infrastructure::Surface", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                            named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                            "directx_graphics_infrastructure::SwapChainMedia",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                            "directx_graphics_infrastructure::GraphicsAnalysis",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                            "foreign".to_string(),
+                    }
+                ))
                 .collect::<Vec<_>>()
         ));
         Err(E_NOTIMPL)
@@ -6397,7 +7628,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
         record_arguments(format!(
             "IDXGISwapChain::SetFullscreenState(fullscreen={:?}, target={:?})",
             fullscreen,
-            target.is_some()
+            target.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("directx_graphics_infrastructure::Output", object.identity())
+            )
         ));
         Ok(())
     }
@@ -6703,7 +7937,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSwapChain<
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }

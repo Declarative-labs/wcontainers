@@ -91,6 +91,16 @@ fn record_arguments(call: String) {
     ARGUMENTS.lock().unwrap_or_else(PoisonError::into_inner).push(call);
 }
 
+/// An object's kind and identity as the log of arguments shows them: `#`, the kind, `@`, the identity.
+#[allow(dead_code, reason = "a recorder whose methods take no object names none")]
+fn named(kind: &str, identity: u64) -> String {
+    let mut name = String::from('#');
+    name.push_str(kind);
+    name.push('@');
+    name.push_str(&identity.to_string());
+    name
+}
+
 /// Returns how many calls' arguments were logged so far.
 pub fn arguments_logged() -> usize {
     ARGUMENTS.lock().unwrap_or_else(PoisonError::into_inner).len()
@@ -287,6 +297,49 @@ impl Writer<'_, '_> {
         }
     }
 
+    /// An expression naming the object or objects an argument `name` of Rust type `ty` holds by their identities (`#n`,
+    /// `none` for an object left out, `foreign` for an object of another implementation): one object, an optional one, a
+    /// reference of several kinds, or a list of optional objects; none for any other form.
+    fn identity_of(&self, name: &str, ty: &str) -> Option<String> {
+        let ty = ty.trim();
+        if let Some(inner) = ty.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
+            let one = self.identity_of("object", inner)?;
+            if inner.trim().starts_with("&[") || inner.trim().starts_with("&'_ [") {
+                return Some(format!("{name}.map(|object| {one})"));
+            }
+            return Some(format!("{name}.as_ref().map_or_else(|| \"none\".to_string(), |object| {one})"));
+        }
+        if let Some(element) = ty.strip_prefix("&[").or_else(|| ty.strip_prefix("&'_ [")).and_then(|rest| rest.strip_suffix(']')) {
+            let element = element.trim();
+            let inner = element.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>'))?;
+            let one = self.identity_of("object", inner)?;
+            return Some(format!("{name}.iter().map(|item| item.as_ref().map_or_else(|| \"none\".to_string(), |object| {one})).collect::<Vec<_>>()"));
+        }
+        if let Some((top, kind)) = ty.strip_prefix("&<Self::Api as ").or_else(|| ty.strip_prefix("&<Self as ")).and_then(|rest| rest.split_once(">::")) {
+            // The kind by its API's alias and name (two APIs may each have a kind of one name).
+            let api = top.split("::").next().unwrap_or(top);
+            return Some(format!("named(\"{api}::{kind}\", {name}.identity())"));
+        }
+        let (path, generics) = ty.split_once('<')?;
+        if !(generics.starts_with("'_, Self") && path.ends_with("Ref")) {
+            return None;
+        }
+        let mut arms: Vec<String> = if path.ends_with("::UnknownRef") {
+            let prefix = path.trim_end_matches("::UnknownRef");
+            let api = self.g.apis.iter().position(|spec| alias(spec) == prefix)?;
+            let mut arms: Vec<String> = (0..self.g.kinds.len()).filter(|&k| self.g.kinds[k].api == api).map(|k| format!("{path}::{}(x) => named(\"{prefix}::{}\", x.identity())", self.g.kinds[k].name, self.g.kinds[k].name)).collect();
+            arms.push(format!("{path}::Unknown(_) => \"foreign\".to_string()"));
+            arms
+        } else {
+            self.g.kinds_deriving(&self.enum_interface(path)).iter().map(|&k| format!("{path}::{}(x) => named(\"{}::{}\", x.identity())", self.g.kinds[k].name, alias(self.g.apis[self.g.kinds[k].api]), self.g.kinds[k].name)).collect()
+        };
+        if arms.is_empty() {
+            return None;
+        }
+        arms.dedup();
+        Some(format!("match &{name} {{ {} }}", arms.join(", ")))
+    }
+
     /// The recorder's type of a kind, named from the recorder crate of API `from`.
     fn recorded_type(&self, kind: usize, from: usize) -> String {
         let k = &self.g.kinds[kind];
@@ -320,7 +373,12 @@ impl Writer<'_, '_> {
             let mut shown: Vec<String> = Vec::new();
             let mut shown_values: Vec<String> = Vec::new();
             for (name, ty) in inputs {
-                if let Some(presence) = presence_of(name, ty) {
+                if let Some(identity) = self.identity_of(name, ty) {
+                    // An object by its identity (the suite numbers identities in the order they first come), so that
+                    // a glue passing another object of the same kind is seen.
+                    shown.push(format!("{name}={{:?}}"));
+                    shown_values.push(identity);
+                } else if let Some(presence) = presence_of(name, ty) {
                     // Objects are not compared by value: which are there is, so that a glue dropping one is seen.
                     shown.push(format!("{name}={{:?}}"));
                     shown_values.push(presence);

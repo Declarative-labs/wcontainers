@@ -48,6 +48,19 @@ fn record_arguments(call: String) {
         .push(call);
 }
 
+/// An object's kind and identity as the log of arguments shows them: `#`, the kind, `@`, the identity.
+#[allow(
+    dead_code,
+    reason = "a recorder whose methods take no object names none"
+)]
+fn named(kind: &str, identity: u64) -> String {
+    let mut name = String::from('#');
+    name.push_str(kind);
+    name.push('@');
+    name.push_str(&identity.to_string());
+    name
+}
+
 /// Returns how many calls' arguments were logged so far.
 pub fn arguments_logged() -> usize {
     ARGUMENTS

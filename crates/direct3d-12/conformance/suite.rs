@@ -162,6 +162,7 @@ struct Answers(
     std::sync::Mutex<Vec<String>>,
     Option<Received>,
     std::sync::atomic::AtomicUsize,
+    std::sync::Mutex<Vec<(String, u64)>>,
 );
 
 /// The implementation's own log of the arguments it received: how many so far, and those after the first n.
@@ -173,6 +174,7 @@ impl Answers {
             std::sync::Mutex::default(),
             Some(received),
             std::sync::atomic::AtomicUsize::new(0),
+            std::sync::Mutex::default(),
         )
     }
 
@@ -215,10 +217,55 @@ impl Answers {
         // What the implementation received during the call, every argument.
         if let Some((_, since)) = self.1 {
             // The same call asked again (a list's length, then the list) is one call received.
-            let mut received = since(self.2.load(std::sync::atomic::Ordering::SeqCst));
+            let mut received: Vec<String> = since(self.2.load(std::sync::atomic::Ordering::SeqCst))
+                .iter()
+                .map(|line| self.numbered(line))
+                .collect();
             received.dedup();
             self.push(format!("{place}: the implementation received {received:?}"));
         }
+    }
+
+    /// The line with each object the implementation logged (`#`, its kind, `@`, its identity) as its kind and the order in
+    /// which this drive first met it among the objects of that kind: the same drive passes the same objects in the same
+    /// order, directly and through both glues (an object one glue hands out by an interface id is the object it is of,
+    /// so that only the order within a kind is compared).
+    fn numbered(&self, line: &str) -> String {
+        let mut met = self
+            .3
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut out = String::new();
+        let mut rest = line;
+        while let Some(at) = rest.find('#') {
+            out.push_str(&rest[..=at]);
+            rest = &rest[at + 1..];
+            let Some((kind, after)) = rest.split_once('@') else {
+                continue;
+            };
+            let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            let Ok(identity) = after[..digits].parse::<u64>() else {
+                continue;
+            };
+            let of_kind: Vec<u64> = met
+                .iter()
+                .filter(|(seen, _)| seen == kind)
+                .map(|(_, id)| *id)
+                .collect();
+            let order = of_kind
+                .iter()
+                .position(|seen| *seen == identity)
+                .unwrap_or_else(|| {
+                    met.push((kind.to_string(), identity));
+                    of_kind.len()
+                });
+            out.push_str(kind);
+            out.push('@');
+            out.push_str(&order.to_string());
+            rest = &after[digits..];
+        }
+        out.push_str(rest);
+        out
     }
 
     fn lines(self) -> Vec<String> {
@@ -228,21 +275,34 @@ impl Answers {
     }
 }
 
-/// One object of each kind the suite made, by kind.
+/// One object of each kind the suite made, by kind (`k`), and a second of each kind a creation makes (`s`), so that a
+/// glue passing one object of a kind for another is seen.
 struct Objects<A: direct3d_12::Direct3D12> {
     api: A,
     k0: Option<<A as direct3d_common::Direct3DCommon>::Blob>,
+    s0: Option<<A as direct3d_common::Direct3DCommon>::Blob>,
     k1: Option<<A as direct3d_common::Direct3DCommon>::DestructionNotifier>,
+    s1: Option<<A as direct3d_common::Direct3DCommon>::DestructionNotifier>,
     k51: Option<<A as direct3d_12::Direct3D12>::CommandAllocator>,
+    s51: Option<<A as direct3d_12::Direct3D12>::CommandAllocator>,
     k52: Option<<A as direct3d_12::Direct3D12>::CommandQueue>,
+    s52: Option<<A as direct3d_12::Direct3D12>::CommandQueue>,
     k53: Option<<A as direct3d_12::Direct3D12>::DescriptorHeap>,
+    s53: Option<<A as direct3d_12::Direct3D12>::DescriptorHeap>,
     k54: Option<<A as direct3d_12::Direct3D12>::Device>,
+    s54: Option<<A as direct3d_12::Direct3D12>::Device>,
     k55: Option<<A as direct3d_12::Direct3D12>::Fence>,
+    s55: Option<<A as direct3d_12::Direct3D12>::Fence>,
     k56: Option<<A as direct3d_12::Direct3D12>::GraphicsCommandList>,
+    s56: Option<<A as direct3d_12::Direct3D12>::GraphicsCommandList>,
     k57: Option<<A as direct3d_12::Direct3D12>::PipelineState>,
+    s57: Option<<A as direct3d_12::Direct3D12>::PipelineState>,
     k58: Option<<A as direct3d_12::Direct3D12>::QueryHeap>,
+    s58: Option<<A as direct3d_12::Direct3D12>::QueryHeap>,
     k59: Option<<A as direct3d_12::Direct3D12>::Resource>,
+    s59: Option<<A as direct3d_12::Direct3D12>::Resource>,
     k60: Option<<A as direct3d_12::Direct3D12>::RootSignature>,
+    s60: Option<<A as direct3d_12::Direct3D12>::RootSignature>,
 }
 
 impl<A: direct3d_12::Direct3D12> Objects<A> {
@@ -250,17 +310,29 @@ impl<A: direct3d_12::Direct3D12> Objects<A> {
         Objects {
             api,
             k0: None,
+            s0: None,
             k1: None,
+            s1: None,
             k51: None,
+            s51: None,
             k52: None,
+            s52: None,
             k53: None,
+            s53: None,
             k54: None,
+            s54: None,
             k55: None,
+            s55: None,
             k56: None,
+            s56: None,
             k57: None,
+            s57: None,
             k58: None,
+            s58: None,
             k59: None,
+            s59: None,
             k60: None,
+            s60: None,
         }
     }
 
@@ -2833,7 +2905,7 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k59.as_ref() else {
             return false;
         };
-        let Some(v2) = o.k59.as_ref() else {
+        let Some(v2) = o.s59.as_ref().or(o.k59.as_ref()) else {
             return false;
         };
         answered({

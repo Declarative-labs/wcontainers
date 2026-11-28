@@ -54,6 +54,19 @@ fn record_arguments(call: String) {
         .push(call);
 }
 
+/// An object's kind and identity as the log of arguments shows them: `#`, the kind, `@`, the identity.
+#[allow(
+    dead_code,
+    reason = "a recorder whose methods take no object names none"
+)]
+fn named(kind: &str, identity: u64) -> String {
+    let mut name = String::from('#');
+    name.push_str(kind);
+    name.push('@');
+    name.push_str(&identity.to_string());
+    name
+}
+
 /// Returns how many calls' arguments were logged so far.
 pub fn arguments_logged() -> usize {
     ARGUMENTS
@@ -715,7 +728,13 @@ impl<A: Recorded> direct3d_12::CommandQueue for RecordedCommandQueue<A> {
             "ID3D12CommandQueue::ExecuteCommandLists(command_lists={:?})",
             command_lists
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| match &object {
+                        direct3d_12::CommandListRef::GraphicsCommandList(x) =>
+                            named("direct3d_12::GraphicsCommandList", x.identity()),
+                    }
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -728,7 +747,8 @@ impl<A: Recorded> direct3d_12::CommandQueue for RecordedCommandQueue<A> {
         let _ = &value;
         record(format!("ID3D12CommandQueue::Signal(value={:?})", value));
         record_arguments(format!(
-            "ID3D12CommandQueue::Signal(fence=an object or the caller's bytes, value={:?})",
+            "ID3D12CommandQueue::Signal(fence={:?}, value={:?})",
+            named("direct3d_12::Fence", fence.identity()),
             value
         ));
         Ok(())
@@ -1047,10 +1067,17 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
             node_mask, type_
         ));
         record_arguments(format!(
-            "ID3D12Device::CreateCommandList(node_mask={:?}, type_={:?}, command_allocator=an object or the caller's bytes, initial_state={:?}, riid={:?})",
+            "ID3D12Device::CreateCommandList(node_mask={:?}, type_={:?}, command_allocator={:?}, initial_state={:?}, riid={:?})",
             node_mask,
             type_,
-            initial_state.is_some(),
+            named(
+                "direct3d_12::CommandAllocator",
+                command_allocator.identity()
+            ),
+            initial_state.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_12::PipelineState", object.identity())
+            ),
             riid
         ));
         Ok(
@@ -1390,7 +1417,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         record("ID3D12Device::CreateShaderResourceView()".to_string());
         record_arguments(format!(
             "ID3D12Device::CreateShaderResourceView(resource={:?}, desc={:?}, dest_descriptor={:?})",
-            resource.is_some(),
+            resource.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_12::Resource", object.identity())
+            ),
             desc,
             dest_descriptor
         ));
@@ -1407,7 +1437,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         record("ID3D12Device::CreateRenderTargetView()".to_string());
         record_arguments(format!(
             "ID3D12Device::CreateRenderTargetView(resource={:?}, desc={:?}, dest_descriptor={:?})",
-            resource.is_some(),
+            resource.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_12::Resource", object.identity())
+            ),
             desc,
             dest_descriptor
         ));
@@ -1847,8 +1880,12 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &initial_state;
         record("ID3D12GraphicsCommandList::Reset()".to_string());
         record_arguments(format!(
-            "ID3D12GraphicsCommandList::Reset(allocator=an object or the caller's bytes, initial_state={:?})",
-            initial_state.is_some()
+            "ID3D12GraphicsCommandList::Reset(allocator={:?}, initial_state={:?})",
+            named("direct3d_12::CommandAllocator", allocator.identity()),
+            initial_state.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_12::PipelineState", object.identity())
+            )
         ));
         Ok(())
     }
@@ -1944,8 +1981,12 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
             dst_offset, src_offset, num_bytes
         ));
         record_arguments(format!(
-            "ID3D12GraphicsCommandList::CopyBufferRegion(dst_buffer=an object or the caller's bytes, dst_offset={:?}, src_buffer=an object or the caller's bytes, src_offset={:?}, num_bytes={:?})",
-            dst_offset, src_offset, num_bytes
+            "ID3D12GraphicsCommandList::CopyBufferRegion(dst_buffer={:?}, dst_offset={:?}, src_buffer={:?}, src_offset={:?}, num_bytes={:?})",
+            named("direct3d_12::Resource", dst_buffer.identity()),
+            dst_offset,
+            named("direct3d_12::Resource", src_buffer.identity()),
+            src_offset,
+            num_bytes
         ));
     }
     fn copy_texture_region(
@@ -1989,7 +2030,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &pipeline_state;
         record("ID3D12GraphicsCommandList::SetPipelineState()".to_string());
-        record_arguments("ID3D12GraphicsCommandList::SetPipelineState(pipeline_state=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::SetPipelineState(pipeline_state={:?})",
+            named("direct3d_12::PipelineState", pipeline_state.identity())
+        ));
     }
     fn resource_barrier(&self, barriers: &[direct3d_12::structures::ResourceBarrier<Self::Api>]) {
         let _ = &barriers;
@@ -2009,7 +2053,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
             "ID3D12GraphicsCommandList::SetDescriptorHeaps(descriptor_heaps={:?})",
             descriptor_heaps
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_12::DescriptorHeap", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -2021,7 +2068,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         record("ID3D12GraphicsCommandList::SetComputeRootSignature()".to_string());
         record_arguments(format!(
             "ID3D12GraphicsCommandList::SetComputeRootSignature(root_signature={:?})",
-            root_signature.is_some()
+            root_signature.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_12::RootSignature", object.identity())
+            )
         ));
     }
     fn set_graphics_root_signature(
@@ -2032,7 +2082,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         record("ID3D12GraphicsCommandList::SetGraphicsRootSignature()".to_string());
         record_arguments(format!(
             "ID3D12GraphicsCommandList::SetGraphicsRootSignature(root_signature={:?})",
-            root_signature.is_some()
+            root_signature.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_12::RootSignature", object.identity())
+            )
         ));
     }
     fn set_graphics_root_descriptor_table(
@@ -2170,8 +2223,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
             type_, index
         ));
         record_arguments(format!(
-            "ID3D12GraphicsCommandList::BeginQuery(query_heap=an object or the caller's bytes, type_={:?}, index={:?})",
-            type_, index
+            "ID3D12GraphicsCommandList::BeginQuery(query_heap={:?}, type_={:?}, index={:?})",
+            named("direct3d_12::QueryHeap", query_heap.identity()),
+            type_,
+            index
         ));
     }
     fn end_query(
@@ -2188,8 +2243,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
             type_, index
         ));
         record_arguments(format!(
-            "ID3D12GraphicsCommandList::EndQuery(query_heap=an object or the caller's bytes, type_={:?}, index={:?})",
-            type_, index
+            "ID3D12GraphicsCommandList::EndQuery(query_heap={:?}, type_={:?}, index={:?})",
+            named("direct3d_12::QueryHeap", query_heap.identity()),
+            type_,
+            index
         ));
     }
     fn resolve_query_data(
@@ -2212,8 +2269,13 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
             type_, start_index, num_queries, aligned_destination_buffer_offset
         ));
         record_arguments(format!(
-            "ID3D12GraphicsCommandList::ResolveQueryData(query_heap=an object or the caller's bytes, type_={:?}, start_index={:?}, num_queries={:?}, destination_buffer=an object or the caller's bytes, aligned_destination_buffer_offset={:?})",
-            type_, start_index, num_queries, aligned_destination_buffer_offset
+            "ID3D12GraphicsCommandList::ResolveQueryData(query_heap={:?}, type_={:?}, start_index={:?}, num_queries={:?}, destination_buffer={:?}, aligned_destination_buffer_offset={:?})",
+            named("direct3d_12::QueryHeap", query_heap.identity()),
+            type_,
+            start_index,
+            num_queries,
+            named("direct3d_12::Resource", destination_buffer.identity()),
+            aligned_destination_buffer_offset
         ));
     }
 }
@@ -2348,7 +2410,31 @@ impl direct3d_12::Direct3D12 for Recorder {
         ));
         record_arguments(format!(
             "D3D12CreateDevice(adapter={:?}, minimum_feature_level={:?}, riid={:?})",
-            adapter.is_some(),
+            adapter.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_12::UnknownRef::CommandAllocator(x) =>
+                        named("direct3d_12::CommandAllocator", x.identity()),
+                    direct3d_12::UnknownRef::CommandQueue(x) =>
+                        named("direct3d_12::CommandQueue", x.identity()),
+                    direct3d_12::UnknownRef::DescriptorHeap(x) =>
+                        named("direct3d_12::DescriptorHeap", x.identity()),
+                    direct3d_12::UnknownRef::Device(x) =>
+                        named("direct3d_12::Device", x.identity()),
+                    direct3d_12::UnknownRef::Fence(x) => named("direct3d_12::Fence", x.identity()),
+                    direct3d_12::UnknownRef::GraphicsCommandList(x) =>
+                        named("direct3d_12::GraphicsCommandList", x.identity()),
+                    direct3d_12::UnknownRef::PipelineState(x) =>
+                        named("direct3d_12::PipelineState", x.identity()),
+                    direct3d_12::UnknownRef::QueryHeap(x) =>
+                        named("direct3d_12::QueryHeap", x.identity()),
+                    direct3d_12::UnknownRef::Resource(x) =>
+                        named("direct3d_12::Resource", x.identity()),
+                    direct3d_12::UnknownRef::RootSignature(x) =>
+                        named("direct3d_12::RootSignature", x.identity()),
+                    direct3d_12::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            ),
             minimum_feature_level,
             riid
         ));

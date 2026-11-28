@@ -55,6 +55,19 @@ fn record_arguments(call: String) {
         .push(call);
 }
 
+/// An object's kind and identity as the log of arguments shows them: `#`, the kind, `@`, the identity.
+#[allow(
+    dead_code,
+    reason = "a recorder whose methods take no object names none"
+)]
+fn named(kind: &str, identity: u64) -> String {
+    let mut name = String::from('#');
+    name.push_str(kind);
+    name.push('@');
+    name.push_str(&identity.to_string());
+    name
+}
+
 /// Returns how many calls' arguments were logged so far.
 pub fn arguments_logged() -> usize {
     ARGUMENTS
@@ -2938,7 +2951,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedAuthenticatedChannel<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -3071,7 +3184,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedBlendState<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -3195,7 +3408,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedBuffer<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -3229,7 +3542,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedBuffer<A> 
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -3805,7 +4168,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedClassInstance<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -3943,7 +4406,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedClassLinkage<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -4036,7 +4599,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedCommandList<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -4123,7 +4786,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedComputeShader<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -4227,7 +4990,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedCounter<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -4358,7 +5221,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedCryptoSession<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -4441,7 +5404,13 @@ impl<A: Recorded> direct3d_11::Debug for RecordedDebug<A> {
         record("ID3D11Debug::SetSwapChain()".to_string());
         record_arguments(format!(
             "ID3D11Debug::SetSwapChain(swap_chain={:?})",
-            swap_chain.is_some()
+            swap_chain.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named(
+                    "directx_graphics_infrastructure::SwapChain",
+                    object.identity()
+                )
+            )
         ));
         Ok(())
     }
@@ -4458,9 +5427,10 @@ impl<A: Recorded> direct3d_11::Debug for RecordedDebug<A> {
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &context;
         record("ID3D11Debug::ValidateContext()".to_string());
-        record_arguments(
-            "ID3D11Debug::ValidateContext(context=an object or the caller's bytes)".to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11Debug::ValidateContext(context={:?})",
+            named("direct3d_11::DeviceContext", context.identity())
+        ));
         Ok(())
     }
     fn report_live_device_objects(
@@ -4484,10 +5454,10 @@ impl<A: Recorded> direct3d_11::Debug for RecordedDebug<A> {
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &context;
         record("ID3D11Debug::ValidateContextForDispatch()".to_string());
-        record_arguments(
-            "ID3D11Debug::ValidateContextForDispatch(context=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11Debug::ValidateContextForDispatch(context={:?})",
+            named("direct3d_11::DeviceContext", context.identity())
+        ));
         Ok(())
     }
 }
@@ -4598,7 +5568,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDepthStencilState<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -4728,7 +5798,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDepthStencilView<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -5618,7 +6788,16 @@ impl<A: Recorded> direct3d_11::Device3 for RecordedDevice<A> {
         let _ = &desc1;
         record("ID3D11Device3::CreateShaderResourceView1()".to_string());
         record_arguments(format!(
-            "ID3D11Device3::CreateShaderResourceView1(resource=an object or the caller's bytes, desc1={:?})",
+            "ID3D11Device3::CreateShaderResourceView1(resource={:?}, desc1={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             desc1
         ));
         Ok(RecordedShaderResourceView::new())
@@ -5635,7 +6814,16 @@ impl<A: Recorded> direct3d_11::Device3 for RecordedDevice<A> {
         let _ = &desc1;
         record("ID3D11Device3::CreateUnorderedAccessView1()".to_string());
         record_arguments(format!(
-            "ID3D11Device3::CreateUnorderedAccessView1(resource=an object or the caller's bytes, desc1={:?})",
+            "ID3D11Device3::CreateUnorderedAccessView1(resource={:?}, desc1={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             desc1
         ));
         Ok(RecordedUnorderedAccessView::new())
@@ -5652,7 +6840,16 @@ impl<A: Recorded> direct3d_11::Device3 for RecordedDevice<A> {
         let _ = &desc1;
         record("ID3D11Device3::CreateRenderTargetView1()".to_string());
         record_arguments(format!(
-            "ID3D11Device3::CreateRenderTargetView1(resource=an object or the caller's bytes, desc1={:?})",
+            "ID3D11Device3::CreateRenderTargetView1(resource={:?}, desc1={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             desc1
         ));
         Ok(RecordedRenderTargetView::new())
@@ -5714,8 +6911,20 @@ impl<A: Recorded> direct3d_11::Device3 for RecordedDevice<A> {
         let _ = &src_depth_pitch;
         record("ID3D11Device3::WriteToSubresource()".to_string());
         record_arguments(format!(
-            "ID3D11Device3::WriteToSubresource(dst_resource=an object or the caller's bytes, dst_subresource={:?}, dst_box={:?}, src_data=an object or the caller's bytes, src_row_pitch={:?}, src_depth_pitch={:?})",
-            dst_subresource, dst_box, src_row_pitch, src_depth_pitch
+            "ID3D11Device3::WriteToSubresource(dst_resource={:?}, dst_subresource={:?}, dst_box={:?}, src_data=an object or the caller's bytes, src_row_pitch={:?}, src_depth_pitch={:?})",
+            match &dst_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            dst_subresource,
+            dst_box,
+            src_row_pitch,
+            src_depth_pitch
         ));
     }
     fn read_from_subresource(
@@ -5735,8 +6944,20 @@ impl<A: Recorded> direct3d_11::Device3 for RecordedDevice<A> {
         let _ = &src_box;
         record("ID3D11Device3::ReadFromSubresource()".to_string());
         record_arguments(format!(
-            "ID3D11Device3::ReadFromSubresource(dst_data=an object or the caller's bytes, dst_row_pitch={:?}, dst_depth_pitch={:?}, src_resource=an object or the caller's bytes, src_subresource={:?}, src_box={:?})",
-            dst_row_pitch, dst_depth_pitch, src_subresource, src_box
+            "ID3D11Device3::ReadFromSubresource(dst_data=an object or the caller's bytes, dst_row_pitch={:?}, dst_depth_pitch={:?}, src_resource={:?}, src_subresource={:?}, src_box={:?})",
+            dst_row_pitch,
+            dst_depth_pitch,
+            match &src_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            src_subresource,
+            src_box
         ));
     }
 }
@@ -5781,7 +7002,16 @@ impl<A: Recorded> direct3d_11::Device2 for RecordedDevice<A> {
         let _ = &first_subresource_tiling_to_get;
         record("ID3D11Device2::GetResourceTiling()".to_string());
         record_arguments(format!(
-            "ID3D11Device2::GetResourceTiling(tiled_resource=an object or the caller's bytes, first_subresource_tiling_to_get={:?})",
+            "ID3D11Device2::GetResourceTiling(tiled_resource={:?}, first_subresource_tiling_to_get={:?})",
+            match &tiled_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             first_subresource_tiling_to_get
         ));
         (
@@ -6745,7 +7975,16 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &desc;
         record("ID3D11Device::CreateShaderResourceView()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreateShaderResourceView(resource=an object or the caller's bytes, desc={:?})",
+            "ID3D11Device::CreateShaderResourceView(resource={:?}, desc={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             desc
         ));
         Ok(RecordedShaderResourceView::new())
@@ -6762,7 +8001,16 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &desc;
         record("ID3D11Device::CreateUnorderedAccessView()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreateUnorderedAccessView(resource=an object or the caller's bytes, desc={:?})",
+            "ID3D11Device::CreateUnorderedAccessView(resource={:?}, desc={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             desc
         ));
         Ok(RecordedUnorderedAccessView::new())
@@ -6779,7 +8027,16 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &desc;
         record("ID3D11Device::CreateRenderTargetView()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreateRenderTargetView(resource=an object or the caller's bytes, desc={:?})",
+            "ID3D11Device::CreateRenderTargetView(resource={:?}, desc={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             desc
         ));
         Ok(RecordedRenderTargetView::new())
@@ -6796,7 +8053,16 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &desc;
         record("ID3D11Device::CreateDepthStencilView()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreateDepthStencilView(resource=an object or the caller's bytes, desc={:?})",
+            "ID3D11Device::CreateDepthStencilView(resource={:?}, desc={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             desc
         ));
         Ok(RecordedDepthStencilView::new())
@@ -6832,7 +8098,10 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         record_arguments(format!(
             "ID3D11Device::CreateVertexShader(shader_bytecode={:?}, class_linkage={:?})",
             shader_bytecode,
-            class_linkage.is_some()
+            class_linkage.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::ClassLinkage", object.identity())
+            )
         ));
         Ok(RecordedVertexShader::new())
     }
@@ -6850,7 +8119,10 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         record_arguments(format!(
             "ID3D11Device::CreateGeometryShader(shader_bytecode={:?}, class_linkage={:?})",
             shader_bytecode,
-            class_linkage.is_some()
+            class_linkage.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::ClassLinkage", object.identity())
+            )
         ));
         Ok(RecordedGeometryShader::new())
     }
@@ -6880,7 +8152,10 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
             so_declaration,
             buffer_strides,
             rasterized_stream,
-            class_linkage.is_some()
+            class_linkage.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::ClassLinkage", object.identity())
+            )
         ));
         Ok(RecordedGeometryShader::new())
     }
@@ -6898,7 +8173,10 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         record_arguments(format!(
             "ID3D11Device::CreatePixelShader(shader_bytecode={:?}, class_linkage={:?})",
             shader_bytecode,
-            class_linkage.is_some()
+            class_linkage.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::ClassLinkage", object.identity())
+            )
         ));
         Ok(RecordedPixelShader::new())
     }
@@ -6916,7 +8194,10 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         record_arguments(format!(
             "ID3D11Device::CreateHullShader(shader_bytecode={:?}, class_linkage={:?})",
             shader_bytecode,
-            class_linkage.is_some()
+            class_linkage.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::ClassLinkage", object.identity())
+            )
         ));
         Ok(RecordedHullShader::new())
     }
@@ -6934,7 +8215,10 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         record_arguments(format!(
             "ID3D11Device::CreateDomainShader(shader_bytecode={:?}, class_linkage={:?})",
             shader_bytecode,
-            class_linkage.is_some()
+            class_linkage.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::ClassLinkage", object.identity())
+            )
         ));
         Ok(RecordedDomainShader::new())
     }
@@ -6952,7 +8236,10 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         record_arguments(format!(
             "ID3D11Device::CreateComputeShader(shader_bytecode={:?}, class_linkage={:?})",
             shader_bytecode,
-            class_linkage.is_some()
+            class_linkage.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::ClassLinkage", object.identity())
+            )
         ));
         Ok(RecordedComputeShader::new())
     }
@@ -7584,7 +8871,107 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         record_arguments(format!(
             "ID3D11Device::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -7660,7 +9047,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -7895,7 +9332,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
             "IDXGIDevice::QueryResourceResidency(resources={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| match &object {
+                        directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                            named("directx_graphics_infrastructure::Adapter", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                            named("directx_graphics_infrastructure::Debug", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                            "directx_graphics_infrastructure::DecodeSwapChain",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                            named("directx_graphics_infrastructure::Device", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                            "directx_graphics_infrastructure::DisplayControl",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                            named("directx_graphics_infrastructure::Factory", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                            "directx_graphics_infrastructure::FactoryMedia",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                            named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                            named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                            named("directx_graphics_infrastructure::Output", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                            "directx_graphics_infrastructure::OutputDuplication",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                            named("directx_graphics_infrastructure::Resource", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                            named("directx_graphics_infrastructure::Surface", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                            named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                        directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                            "directx_graphics_infrastructure::SwapChainMedia",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                            "directx_graphics_infrastructure::GraphicsAnalysis",
+                            x.identity()
+                        ),
+                        directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                            "foreign".to_string(),
+                    }
+                ))
                 .collect::<Vec<_>>()
         ));
         Err(E_NOTIMPL)
@@ -7963,7 +9450,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
             "IDXGIDevice2::OfferResources(resources={:?}, priority={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named(
+                        "directx_graphics_infrastructure::Resource",
+                        object.identity()
+                    )
+                ))
                 .collect::<Vec<_>>(),
             priority
         ));
@@ -7979,7 +9472,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
             "IDXGIDevice2::ReclaimResources(resources={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named(
+                        "directx_graphics_infrastructure::Resource",
+                        object.identity()
+                    )
+                ))
                 .collect::<Vec<_>>()
         ));
         Ok((0..2_u32).map(|_| true).collect())
@@ -8026,7 +9525,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
             "IDXGIDevice4::OfferResources1(resources={:?}, priority={:?}, flags={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named(
+                        "directx_graphics_infrastructure::Resource",
+                        object.identity()
+                    )
+                ))
                 .collect::<Vec<_>>(),
             priority,
             flags
@@ -8046,7 +9551,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
             "IDXGIDevice4::ReclaimResources1(resources={:?})",
             resources
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named(
+                        "directx_graphics_infrastructure::Resource",
+                        object.identity()
+                    )
+                ))
                 .collect::<Vec<_>>()
         ));
         Ok((0..2_u32)
@@ -8125,7 +9636,8 @@ impl<A: Recorded> direct3d_11::DeviceContext4 for RecordedDeviceContext<A> {
         let _ = &value;
         record(format!("ID3D11DeviceContext4::Signal(value={:?})", value));
         record_arguments(format!(
-            "ID3D11DeviceContext4::Signal(fence=an object or the caller's bytes, value={:?})",
+            "ID3D11DeviceContext4::Signal(fence={:?}, value={:?})",
+            named("direct3d_11::Fence", fence.identity()),
             value
         ));
         Ok(())
@@ -8139,7 +9651,8 @@ impl<A: Recorded> direct3d_11::DeviceContext4 for RecordedDeviceContext<A> {
         let _ = &value;
         record(format!("ID3D11DeviceContext4::Wait(value={:?})", value));
         record_arguments(format!(
-            "ID3D11DeviceContext4::Wait(fence=an object or the caller's bytes, value={:?})",
+            "ID3D11DeviceContext4::Wait(fence={:?}, value={:?})",
+            named("direct3d_11::Fence", fence.identity()),
             value
         ));
         Ok(())
@@ -8206,10 +9719,22 @@ impl<A: Recorded> direct3d_11::DeviceContext2 for RecordedDeviceContext<A> {
             flags
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext2::UpdateTileMappings(tiled_resource=an object or the caller's bytes, tiled_resource_region_start_coordinates={:?}, tiled_resource_region_sizes={:?}, tile_pool={:?}, range_flags={:?}, tile_pool_start_offsets={:?}, range_tile_counts={:?}, flags={:?})",
+            "ID3D11DeviceContext2::UpdateTileMappings(tiled_resource={:?}, tiled_resource_region_start_coordinates={:?}, tiled_resource_region_sizes={:?}, tile_pool={:?}, range_flags={:?}, tile_pool_start_offsets={:?}, range_tile_counts={:?}, flags={:?})",
+            match &tiled_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             tiled_resource_region_start_coordinates,
             tiled_resource_region_sizes,
-            tile_pool.is_some(),
+            tile_pool.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::Buffer", object.identity())
+            ),
             range_flags,
             tile_pool_start_offsets,
             range_tile_counts,
@@ -8237,8 +9762,29 @@ impl<A: Recorded> direct3d_11::DeviceContext2 for RecordedDeviceContext<A> {
             flags
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext2::CopyTileMappings(dest_tiled_resource=an object or the caller's bytes, dest_region_start_coordinate={:?}, source_tiled_resource=an object or the caller's bytes, source_region_start_coordinate={:?}, tile_region_size={:?}, flags={:?})",
-            dest_region_start_coordinate, source_region_start_coordinate, tile_region_size, flags
+            "ID3D11DeviceContext2::CopyTileMappings(dest_tiled_resource={:?}, dest_region_start_coordinate={:?}, source_tiled_resource={:?}, source_region_start_coordinate={:?}, tile_region_size={:?}, flags={:?})",
+            match &dest_tiled_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            dest_region_start_coordinate,
+            match &source_tiled_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            source_region_start_coordinate,
+            tile_region_size,
+            flags
         ));
         Ok(())
     }
@@ -8262,8 +9808,21 @@ impl<A: Recorded> direct3d_11::DeviceContext2 for RecordedDeviceContext<A> {
             buffer_start_offset_in_bytes, flags
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext2::CopyTiles(tiled_resource=an object or the caller's bytes, tile_region_start_coordinate={:?}, tile_region_size={:?}, buffer=an object or the caller's bytes, buffer_start_offset_in_bytes={:?}, flags={:?})",
-            tile_region_start_coordinate, tile_region_size, buffer_start_offset_in_bytes, flags
+            "ID3D11DeviceContext2::CopyTiles(tiled_resource={:?}, tile_region_start_coordinate={:?}, tile_region_size={:?}, buffer={:?}, buffer_start_offset_in_bytes={:?}, flags={:?})",
+            match &tiled_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            tile_region_start_coordinate,
+            tile_region_size,
+            named("direct3d_11::Buffer", buffer.identity()),
+            buffer_start_offset_in_bytes,
+            flags
         ));
     }
     fn update_tiles(
@@ -8281,8 +9840,19 @@ impl<A: Recorded> direct3d_11::DeviceContext2 for RecordedDeviceContext<A> {
         let _ = &flags;
         record("ID3D11DeviceContext2::UpdateTiles()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceContext2::UpdateTiles(dest_tiled_resource=an object or the caller's bytes, dest_tile_region_start_coordinate={:?}, dest_tile_region_size={:?}, source_tile_data=an object or the caller's bytes, flags={:?})",
-            dest_tile_region_start_coordinate, dest_tile_region_size, flags
+            "ID3D11DeviceContext2::UpdateTiles(dest_tiled_resource={:?}, dest_tile_region_start_coordinate={:?}, dest_tile_region_size={:?}, source_tile_data=an object or the caller's bytes, flags={:?})",
+            match &dest_tiled_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            dest_tile_region_start_coordinate,
+            dest_tile_region_size,
+            flags
         ));
     }
     fn resize_tile_pool(
@@ -8297,7 +9867,8 @@ impl<A: Recorded> direct3d_11::DeviceContext2 for RecordedDeviceContext<A> {
             new_size_in_bytes
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext2::ResizeTilePool(tile_pool=an object or the caller's bytes, new_size_in_bytes={:?})",
+            "ID3D11DeviceContext2::ResizeTilePool(tile_pool={:?}, new_size_in_bytes={:?})",
+            named("direct3d_11::Buffer", tile_pool.identity()),
             new_size_in_bytes
         ));
         Ok(())
@@ -8316,8 +9887,168 @@ impl<A: Recorded> direct3d_11::DeviceContext2 for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext2::TiledResourceBarrier()".to_string());
         record_arguments(format!(
             "ID3D11DeviceContext2::TiledResourceBarrier(tiled_resource_or_view_access_before_barrier={:?}, tiled_resource_or_view_access_after_barrier={:?})",
-            tiled_resource_or_view_access_before_barrier.is_some(),
-            tiled_resource_or_view_access_after_barrier.is_some()
+            tiled_resource_or_view_access_before_barrier
+                .as_ref()
+                .map_or_else(
+                    || "none".to_string(),
+                    |object| match &object {
+                        direct3d_11::DeviceChildRef::AuthenticatedChannel(x) =>
+                            named("direct3d_11::AuthenticatedChannel", x.identity()),
+                        direct3d_11::DeviceChildRef::BlendState(x) =>
+                            named("direct3d_11::BlendState", x.identity()),
+                        direct3d_11::DeviceChildRef::Buffer(x) =>
+                            named("direct3d_11::Buffer", x.identity()),
+                        direct3d_11::DeviceChildRef::ClassInstance(x) =>
+                            named("direct3d_11::ClassInstance", x.identity()),
+                        direct3d_11::DeviceChildRef::ClassLinkage(x) =>
+                            named("direct3d_11::ClassLinkage", x.identity()),
+                        direct3d_11::DeviceChildRef::CommandList(x) =>
+                            named("direct3d_11::CommandList", x.identity()),
+                        direct3d_11::DeviceChildRef::ComputeShader(x) =>
+                            named("direct3d_11::ComputeShader", x.identity()),
+                        direct3d_11::DeviceChildRef::Counter(x) =>
+                            named("direct3d_11::Counter", x.identity()),
+                        direct3d_11::DeviceChildRef::CryptoSession(x) =>
+                            named("direct3d_11::CryptoSession", x.identity()),
+                        direct3d_11::DeviceChildRef::DepthStencilState(x) =>
+                            named("direct3d_11::DepthStencilState", x.identity()),
+                        direct3d_11::DeviceChildRef::DepthStencilView(x) =>
+                            named("direct3d_11::DepthStencilView", x.identity()),
+                        direct3d_11::DeviceChildRef::DeviceContext(x) =>
+                            named("direct3d_11::DeviceContext", x.identity()),
+                        direct3d_11::DeviceChildRef::DomainShader(x) =>
+                            named("direct3d_11::DomainShader", x.identity()),
+                        direct3d_11::DeviceChildRef::Fence(x) =>
+                            named("direct3d_11::Fence", x.identity()),
+                        direct3d_11::DeviceChildRef::GeometryShader(x) =>
+                            named("direct3d_11::GeometryShader", x.identity()),
+                        direct3d_11::DeviceChildRef::HullShader(x) =>
+                            named("direct3d_11::HullShader", x.identity()),
+                        direct3d_11::DeviceChildRef::InputLayout(x) =>
+                            named("direct3d_11::InputLayout", x.identity()),
+                        direct3d_11::DeviceChildRef::PixelShader(x) =>
+                            named("direct3d_11::PixelShader", x.identity()),
+                        direct3d_11::DeviceChildRef::Predicate(x) =>
+                            named("direct3d_11::Predicate", x.identity()),
+                        direct3d_11::DeviceChildRef::Query(x) =>
+                            named("direct3d_11::Query", x.identity()),
+                        direct3d_11::DeviceChildRef::RasterizerState(x) =>
+                            named("direct3d_11::RasterizerState", x.identity()),
+                        direct3d_11::DeviceChildRef::RenderTargetView(x) =>
+                            named("direct3d_11::RenderTargetView", x.identity()),
+                        direct3d_11::DeviceChildRef::SamplerState(x) =>
+                            named("direct3d_11::SamplerState", x.identity()),
+                        direct3d_11::DeviceChildRef::ShaderResourceView(x) =>
+                            named("direct3d_11::ShaderResourceView", x.identity()),
+                        direct3d_11::DeviceChildRef::Texture1D(x) =>
+                            named("direct3d_11::Texture1D", x.identity()),
+                        direct3d_11::DeviceChildRef::Texture2D(x) =>
+                            named("direct3d_11::Texture2D", x.identity()),
+                        direct3d_11::DeviceChildRef::Texture3D(x) =>
+                            named("direct3d_11::Texture3D", x.identity()),
+                        direct3d_11::DeviceChildRef::UnorderedAccessView(x) =>
+                            named("direct3d_11::UnorderedAccessView", x.identity()),
+                        direct3d_11::DeviceChildRef::VertexShader(x) =>
+                            named("direct3d_11::VertexShader", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoContext(x) =>
+                            named("direct3d_11::VideoContext", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoDecoder(x) =>
+                            named("direct3d_11::VideoDecoder", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoDecoderOutputView(x) =>
+                            named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoProcessor(x) =>
+                            named("direct3d_11::VideoProcessor", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoProcessorEnumerator(x) =>
+                            named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoProcessorInputView(x) =>
+                            named("direct3d_11::VideoProcessorInputView", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoProcessorOutputView(x) =>
+                            named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                        direct3d_11::DeviceChildRef::DeviceContextState(x) =>
+                            named("direct3d_11::DeviceContextState", x.identity()),
+                    }
+                ),
+            tiled_resource_or_view_access_after_barrier
+                .as_ref()
+                .map_or_else(
+                    || "none".to_string(),
+                    |object| match &object {
+                        direct3d_11::DeviceChildRef::AuthenticatedChannel(x) =>
+                            named("direct3d_11::AuthenticatedChannel", x.identity()),
+                        direct3d_11::DeviceChildRef::BlendState(x) =>
+                            named("direct3d_11::BlendState", x.identity()),
+                        direct3d_11::DeviceChildRef::Buffer(x) =>
+                            named("direct3d_11::Buffer", x.identity()),
+                        direct3d_11::DeviceChildRef::ClassInstance(x) =>
+                            named("direct3d_11::ClassInstance", x.identity()),
+                        direct3d_11::DeviceChildRef::ClassLinkage(x) =>
+                            named("direct3d_11::ClassLinkage", x.identity()),
+                        direct3d_11::DeviceChildRef::CommandList(x) =>
+                            named("direct3d_11::CommandList", x.identity()),
+                        direct3d_11::DeviceChildRef::ComputeShader(x) =>
+                            named("direct3d_11::ComputeShader", x.identity()),
+                        direct3d_11::DeviceChildRef::Counter(x) =>
+                            named("direct3d_11::Counter", x.identity()),
+                        direct3d_11::DeviceChildRef::CryptoSession(x) =>
+                            named("direct3d_11::CryptoSession", x.identity()),
+                        direct3d_11::DeviceChildRef::DepthStencilState(x) =>
+                            named("direct3d_11::DepthStencilState", x.identity()),
+                        direct3d_11::DeviceChildRef::DepthStencilView(x) =>
+                            named("direct3d_11::DepthStencilView", x.identity()),
+                        direct3d_11::DeviceChildRef::DeviceContext(x) =>
+                            named("direct3d_11::DeviceContext", x.identity()),
+                        direct3d_11::DeviceChildRef::DomainShader(x) =>
+                            named("direct3d_11::DomainShader", x.identity()),
+                        direct3d_11::DeviceChildRef::Fence(x) =>
+                            named("direct3d_11::Fence", x.identity()),
+                        direct3d_11::DeviceChildRef::GeometryShader(x) =>
+                            named("direct3d_11::GeometryShader", x.identity()),
+                        direct3d_11::DeviceChildRef::HullShader(x) =>
+                            named("direct3d_11::HullShader", x.identity()),
+                        direct3d_11::DeviceChildRef::InputLayout(x) =>
+                            named("direct3d_11::InputLayout", x.identity()),
+                        direct3d_11::DeviceChildRef::PixelShader(x) =>
+                            named("direct3d_11::PixelShader", x.identity()),
+                        direct3d_11::DeviceChildRef::Predicate(x) =>
+                            named("direct3d_11::Predicate", x.identity()),
+                        direct3d_11::DeviceChildRef::Query(x) =>
+                            named("direct3d_11::Query", x.identity()),
+                        direct3d_11::DeviceChildRef::RasterizerState(x) =>
+                            named("direct3d_11::RasterizerState", x.identity()),
+                        direct3d_11::DeviceChildRef::RenderTargetView(x) =>
+                            named("direct3d_11::RenderTargetView", x.identity()),
+                        direct3d_11::DeviceChildRef::SamplerState(x) =>
+                            named("direct3d_11::SamplerState", x.identity()),
+                        direct3d_11::DeviceChildRef::ShaderResourceView(x) =>
+                            named("direct3d_11::ShaderResourceView", x.identity()),
+                        direct3d_11::DeviceChildRef::Texture1D(x) =>
+                            named("direct3d_11::Texture1D", x.identity()),
+                        direct3d_11::DeviceChildRef::Texture2D(x) =>
+                            named("direct3d_11::Texture2D", x.identity()),
+                        direct3d_11::DeviceChildRef::Texture3D(x) =>
+                            named("direct3d_11::Texture3D", x.identity()),
+                        direct3d_11::DeviceChildRef::UnorderedAccessView(x) =>
+                            named("direct3d_11::UnorderedAccessView", x.identity()),
+                        direct3d_11::DeviceChildRef::VertexShader(x) =>
+                            named("direct3d_11::VertexShader", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoContext(x) =>
+                            named("direct3d_11::VideoContext", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoDecoder(x) =>
+                            named("direct3d_11::VideoDecoder", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoDecoderOutputView(x) =>
+                            named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoProcessor(x) =>
+                            named("direct3d_11::VideoProcessor", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoProcessorEnumerator(x) =>
+                            named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoProcessorInputView(x) =>
+                            named("direct3d_11::VideoProcessorInputView", x.identity()),
+                        direct3d_11::DeviceChildRef::VideoProcessorOutputView(x) =>
+                            named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                        direct3d_11::DeviceChildRef::DeviceContextState(x) =>
+                            named("direct3d_11::DeviceContextState", x.identity()),
+                    }
+                )
         ));
     }
     fn is_annotation_enabled(&self) -> bool {
@@ -8382,8 +10113,32 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             dst_subresource, dst_x, dst_y, dst_z, src_subresource, copy_flags
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext1::CopySubresourceRegion1(dst_resource=an object or the caller's bytes, dst_subresource={:?}, dst_x={:?}, dst_y={:?}, dst_z={:?}, src_resource=an object or the caller's bytes, src_subresource={:?}, src_box={:?}, copy_flags={:?})",
-            dst_subresource, dst_x, dst_y, dst_z, src_subresource, src_box, copy_flags
+            "ID3D11DeviceContext1::CopySubresourceRegion1(dst_resource={:?}, dst_subresource={:?}, dst_x={:?}, dst_y={:?}, dst_z={:?}, src_resource={:?}, src_subresource={:?}, src_box={:?}, copy_flags={:?})",
+            match &dst_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            dst_subresource,
+            dst_x,
+            dst_y,
+            dst_z,
+            match &src_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            src_subresource,
+            src_box,
+            copy_flags
         ));
     }
     fn update_subresource1(
@@ -8408,25 +10163,62 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             dst_subresource, src_row_pitch, src_depth_pitch, copy_flags
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext1::UpdateSubresource1(dst_resource=an object or the caller's bytes, dst_subresource={:?}, dst_box={:?}, src_data={:?}, src_row_pitch={:?}, src_depth_pitch={:?}, copy_flags={:?})",
-            dst_subresource, dst_box, src_data, src_row_pitch, src_depth_pitch, copy_flags
+            "ID3D11DeviceContext1::UpdateSubresource1(dst_resource={:?}, dst_subresource={:?}, dst_box={:?}, src_data={:?}, src_row_pitch={:?}, src_depth_pitch={:?}, copy_flags={:?})",
+            match &dst_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            dst_subresource,
+            dst_box,
+            src_data,
+            src_row_pitch,
+            src_depth_pitch,
+            copy_flags
         ));
     }
     fn discard_resource(&self, resource: direct3d_11::ResourceRef<'_, Self::Api>) {
         let _ = &resource;
         record("ID3D11DeviceContext1::DiscardResource()".to_string());
-        record_arguments(
-            "ID3D11DeviceContext1::DiscardResource(resource=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11DeviceContext1::DiscardResource(resource={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            }
+        ));
     }
     fn discard_view(&self, resource_view: direct3d_11::ViewRef<'_, Self::Api>) {
         let _ = &resource_view;
         record("ID3D11DeviceContext1::DiscardView()".to_string());
-        record_arguments(
-            "ID3D11DeviceContext1::DiscardView(resource_view=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11DeviceContext1::DiscardView(resource_view={:?})",
+            match &resource_view {
+                direct3d_11::ViewRef::DepthStencilView(x) =>
+                    named("direct3d_11::DepthStencilView", x.identity()),
+                direct3d_11::ViewRef::RenderTargetView(x) =>
+                    named("direct3d_11::RenderTargetView", x.identity()),
+                direct3d_11::ViewRef::ShaderResourceView(x) =>
+                    named("direct3d_11::ShaderResourceView", x.identity()),
+                direct3d_11::ViewRef::UnorderedAccessView(x) =>
+                    named("direct3d_11::UnorderedAccessView", x.identity()),
+                direct3d_11::ViewRef::VideoDecoderOutputView(x) =>
+                    named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                direct3d_11::ViewRef::VideoProcessorInputView(x) =>
+                    named("direct3d_11::VideoProcessorInputView", x.identity()),
+                direct3d_11::ViewRef::VideoProcessorOutputView(x) =>
+                    named("direct3d_11::VideoProcessorOutputView", x.identity()),
+            }
+        ));
     }
     fn vs_set_constant_buffers1(
         &self,
@@ -8448,7 +10240,10 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>(),
             first_constant,
             num_constants
@@ -8474,7 +10269,10 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>(),
             first_constant,
             num_constants
@@ -8500,7 +10298,10 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>(),
             first_constant,
             num_constants
@@ -8526,7 +10327,10 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>(),
             first_constant,
             num_constants
@@ -8552,7 +10356,10 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>(),
             first_constant,
             num_constants
@@ -8578,7 +10385,10 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>(),
             first_constant,
             num_constants
@@ -8752,10 +10562,10 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
     ) -> Option<<Self::Api as direct3d_11::Direct3D11>::DeviceContextState> {
         let _ = &state;
         record("ID3D11DeviceContext1::SwapDeviceContextState()".to_string());
-        record_arguments(
-            "ID3D11DeviceContext1::SwapDeviceContextState(state=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11DeviceContext1::SwapDeviceContextState(state={:?})",
+            named("direct3d_11::DeviceContextState", state.identity())
+        ));
         Some(RecordedDeviceContextState::new())
     }
     fn clear_view(
@@ -8769,8 +10579,25 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
         let _ = &rect;
         record("ID3D11DeviceContext1::ClearView()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceContext1::ClearView(view=an object or the caller's bytes, color={:?}, rect={:?})",
-            color, rect
+            "ID3D11DeviceContext1::ClearView(view={:?}, color={:?}, rect={:?})",
+            match &view {
+                direct3d_11::ViewRef::DepthStencilView(x) =>
+                    named("direct3d_11::DepthStencilView", x.identity()),
+                direct3d_11::ViewRef::RenderTargetView(x) =>
+                    named("direct3d_11::RenderTargetView", x.identity()),
+                direct3d_11::ViewRef::ShaderResourceView(x) =>
+                    named("direct3d_11::ShaderResourceView", x.identity()),
+                direct3d_11::ViewRef::UnorderedAccessView(x) =>
+                    named("direct3d_11::UnorderedAccessView", x.identity()),
+                direct3d_11::ViewRef::VideoDecoderOutputView(x) =>
+                    named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                direct3d_11::ViewRef::VideoProcessorInputView(x) =>
+                    named("direct3d_11::VideoProcessorInputView", x.identity()),
+                direct3d_11::ViewRef::VideoProcessorOutputView(x) =>
+                    named("direct3d_11::VideoProcessorOutputView", x.identity()),
+            },
+            color,
+            rect
         ));
     }
     fn discard_view1(
@@ -8782,7 +10609,23 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
         let _ = &rects;
         record("ID3D11DeviceContext1::DiscardView1()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceContext1::DiscardView1(resource_view=an object or the caller's bytes, rects={:?})",
+            "ID3D11DeviceContext1::DiscardView1(resource_view={:?}, rects={:?})",
+            match &resource_view {
+                direct3d_11::ViewRef::DepthStencilView(x) =>
+                    named("direct3d_11::DepthStencilView", x.identity()),
+                direct3d_11::ViewRef::RenderTargetView(x) =>
+                    named("direct3d_11::RenderTargetView", x.identity()),
+                direct3d_11::ViewRef::ShaderResourceView(x) =>
+                    named("direct3d_11::ShaderResourceView", x.identity()),
+                direct3d_11::ViewRef::UnorderedAccessView(x) =>
+                    named("direct3d_11::UnorderedAccessView", x.identity()),
+                direct3d_11::ViewRef::VideoDecoderOutputView(x) =>
+                    named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                direct3d_11::ViewRef::VideoProcessorInputView(x) =>
+                    named("direct3d_11::VideoProcessorInputView", x.identity()),
+                direct3d_11::ViewRef::VideoProcessorOutputView(x) =>
+                    named("direct3d_11::VideoProcessorOutputView", x.identity()),
+            },
             rects
         ));
     }
@@ -8805,7 +10648,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -8827,7 +10673,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             shader_resource_views
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ShaderResourceView", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -8841,10 +10690,16 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::PSSetShader()".to_string());
         record_arguments(format!(
             "ID3D11DeviceContext::PSSetShader(pixel_shader={:?}, class_instances={:?})",
-            pixel_shader.is_some(),
+            pixel_shader.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::PixelShader", object.identity())
+            ),
             class_instances
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ClassInstance", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -8864,7 +10719,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             samplers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::SamplerState", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -8878,10 +10736,16 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::VSSetShader()".to_string());
         record_arguments(format!(
             "ID3D11DeviceContext::VSSetShader(vertex_shader={:?}, class_instances={:?})",
-            vertex_shader.is_some(),
+            vertex_shader.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::VertexShader", object.identity())
+            ),
             class_instances
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ClassInstance", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -8929,8 +10793,19 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             subresource, map_type, map_flags
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::Map(resource=an object or the caller's bytes, subresource={:?}, map_type={:?}, map_flags={:?})",
-            subresource, map_type, map_flags
+            "ID3D11DeviceContext::Map(resource={:?}, subresource={:?}, map_type={:?}, map_flags={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            subresource,
+            map_type,
+            map_flags
         ));
         Ok(direct3d_11::structures::MappedSubresource {
             data: RecordedBytes::new(),
@@ -8946,7 +10821,16 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             subresource
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::Unmap(resource=an object or the caller's bytes, subresource={:?})",
+            "ID3D11DeviceContext::Unmap(resource={:?}, subresource={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             subresource
         ));
     }
@@ -8966,7 +10850,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -8978,7 +10865,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::IASetInputLayout()".to_string());
         record_arguments(format!(
             "ID3D11DeviceContext::IASetInputLayout(input_layout={:?})",
-            input_layout.is_some()
+            input_layout.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::InputLayout", object.identity())
+            )
         ));
     }
     fn ia_set_vertex_buffers(
@@ -9001,7 +10891,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             vertex_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>(),
             strides,
             offsets
@@ -9022,7 +10915,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         ));
         record_arguments(format!(
             "ID3D11DeviceContext::IASetIndexBuffer(index_buffer={:?}, format={:?}, offset={:?})",
-            index_buffer.is_some(),
+            index_buffer.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::Buffer", object.identity())
+            ),
             format,
             offset
         ));
@@ -9099,7 +10995,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9113,10 +11012,16 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::GSSetShader()".to_string());
         record_arguments(format!(
             "ID3D11DeviceContext::GSSetShader(shader={:?}, class_instances={:?})",
-            shader.is_some(),
+            shader.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::GeometryShader", object.identity())
+            ),
             class_instances
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ClassInstance", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9152,7 +11057,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             shader_resource_views
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ShaderResourceView", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9172,23 +11080,40 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             samplers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::SamplerState", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
     fn begin(&self, async_: direct3d_11::AsynchronousRef<'_, Self::Api>) {
         let _ = &async_;
         record("ID3D11DeviceContext::Begin()".to_string());
-        record_arguments(
-            "ID3D11DeviceContext::Begin(async_=an object or the caller's bytes)".to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11DeviceContext::Begin(async_={:?})",
+            match &async_ {
+                direct3d_11::AsynchronousRef::Counter(x) =>
+                    named("direct3d_11::Counter", x.identity()),
+                direct3d_11::AsynchronousRef::Predicate(x) =>
+                    named("direct3d_11::Predicate", x.identity()),
+                direct3d_11::AsynchronousRef::Query(x) => named("direct3d_11::Query", x.identity()),
+            }
+        ));
     }
     fn end(&self, async_: direct3d_11::AsynchronousRef<'_, Self::Api>) {
         let _ = &async_;
         record("ID3D11DeviceContext::End()".to_string());
-        record_arguments(
-            "ID3D11DeviceContext::End(async_=an object or the caller's bytes)".to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11DeviceContext::End(async_={:?})",
+            match &async_ {
+                direct3d_11::AsynchronousRef::Counter(x) =>
+                    named("direct3d_11::Counter", x.identity()),
+                direct3d_11::AsynchronousRef::Predicate(x) =>
+                    named("direct3d_11::Predicate", x.identity()),
+                direct3d_11::AsynchronousRef::Query(x) => named("direct3d_11::Query", x.identity()),
+            }
+        ));
     }
     fn get_data(
         &self,
@@ -9204,7 +11129,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             get_data_flags
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::GetData(async_=an object or the caller's bytes, data=an object or the caller's bytes, get_data_flags={:?})",
+            "ID3D11DeviceContext::GetData(async_={:?}, data=an object or the caller's bytes, get_data_flags={:?})",
+            match &async_ {
+                direct3d_11::AsynchronousRef::Counter(x) =>
+                    named("direct3d_11::Counter", x.identity()),
+                direct3d_11::AsynchronousRef::Predicate(x) =>
+                    named("direct3d_11::Predicate", x.identity()),
+                direct3d_11::AsynchronousRef::Query(x) => named("direct3d_11::Query", x.identity()),
+            },
             get_data_flags
         ));
         if let Some(bytes) = data {
@@ -9225,7 +11157,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         ));
         record_arguments(format!(
             "ID3D11DeviceContext::SetPredication(predicate={:?}, predicate_value={:?})",
-            predicate.is_some(),
+            predicate.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::Predicate", object.identity())
+            ),
             predicate_value
         ));
     }
@@ -9247,7 +11182,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             shader_resource_views
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ShaderResourceView", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9267,7 +11205,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             samplers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::SamplerState", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9283,9 +11224,15 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             "ID3D11DeviceContext::OMSetRenderTargets(render_target_views={:?}, depth_stencil_view={:?})",
             render_target_views
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::RenderTargetView", object.identity())
+                ))
                 .collect::<Vec<_>>(),
-            depth_stencil_view.is_some()
+            depth_stencil_view.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::DepthStencilView", object.identity())
+            )
         ));
     }
     fn om_set_render_targets_and_unordered_access_views(
@@ -9311,12 +11258,25 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         ));
         record_arguments(format!(
             "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews(render_target_views={:?}, depth_stencil_view={:?}, uav_start_slot={:?}, unordered_access_views={:?}, uav_initial_counts={:?})",
-            render_target_views
-                .map(|items| items.iter().map(|item| item.is_some()).collect::<Vec<_>>()),
-            depth_stencil_view.is_some(),
+            render_target_views.map(|object| object
+                .iter()
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::RenderTargetView", object.identity())
+                ))
+                .collect::<Vec<_>>()),
+            depth_stencil_view.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::DepthStencilView", object.identity())
+            ),
             uav_start_slot,
-            unordered_access_views
-                .map(|items| items.iter().map(|item| item.is_some()).collect::<Vec<_>>()),
+            unordered_access_views.map(|object| object
+                .iter()
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::UnorderedAccessView", object.identity())
+                ))
+                .collect::<Vec<_>>()),
             uav_initial_counts
         ));
     }
@@ -9337,7 +11297,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         ));
         record_arguments(format!(
             "ID3D11DeviceContext::OMSetBlendState(blend_state={:?}, blend_factor={:?}, sample_mask={:?})",
-            blend_state.is_some(),
+            blend_state.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::BlendState", object.identity())
+            ),
             blend_factor,
             sample_mask
         ));
@@ -9355,7 +11318,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         ));
         record_arguments(format!(
             "ID3D11DeviceContext::OMSetDepthStencilState(depth_stencil_state={:?}, stencil_ref={:?})",
-            depth_stencil_state.is_some(),
+            depth_stencil_state.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::DepthStencilState", object.identity())
+            ),
             stencil_ref
         ));
     }
@@ -9371,7 +11337,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             "ID3D11DeviceContext::SOSetTargets(so_targets={:?}, offsets={:?})",
             so_targets
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>(),
             offsets
         ));
@@ -9392,7 +11361,8 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             aligned_byte_offset_for_args
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::DrawIndexedInstancedIndirect(buffer_for_args=an object or the caller's bytes, aligned_byte_offset_for_args={:?})",
+            "ID3D11DeviceContext::DrawIndexedInstancedIndirect(buffer_for_args={:?}, aligned_byte_offset_for_args={:?})",
+            named("direct3d_11::Buffer", buffer_for_args.identity()),
             aligned_byte_offset_for_args
         ));
     }
@@ -9408,7 +11378,8 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             aligned_byte_offset_for_args
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::DrawInstancedIndirect(buffer_for_args=an object or the caller's bytes, aligned_byte_offset_for_args={:?})",
+            "ID3D11DeviceContext::DrawInstancedIndirect(buffer_for_args={:?}, aligned_byte_offset_for_args={:?})",
+            named("direct3d_11::Buffer", buffer_for_args.identity()),
             aligned_byte_offset_for_args
         ));
     }
@@ -9442,7 +11413,8 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             aligned_byte_offset_for_args
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::DispatchIndirect(buffer_for_args=an object or the caller's bytes, aligned_byte_offset_for_args={:?})",
+            "ID3D11DeviceContext::DispatchIndirect(buffer_for_args={:?}, aligned_byte_offset_for_args={:?})",
+            named("direct3d_11::Buffer", buffer_for_args.identity()),
             aligned_byte_offset_for_args
         ));
     }
@@ -9454,7 +11426,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::RSSetState()".to_string());
         record_arguments(format!(
             "ID3D11DeviceContext::RSSetState(rasterizer_state={:?})",
-            rasterizer_state.is_some()
+            rasterizer_state.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::RasterizerState", object.identity())
+            )
         ));
     }
     fn rs_set_viewports(&self, viewports: &[direct3d_11::structures::Viewport]) {
@@ -9497,8 +11472,31 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             dst_subresource, dst_x, dst_y, dst_z, src_subresource
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::CopySubresourceRegion(dst_resource=an object or the caller's bytes, dst_subresource={:?}, dst_x={:?}, dst_y={:?}, dst_z={:?}, src_resource=an object or the caller's bytes, src_subresource={:?}, src_box={:?})",
-            dst_subresource, dst_x, dst_y, dst_z, src_subresource, src_box
+            "ID3D11DeviceContext::CopySubresourceRegion(dst_resource={:?}, dst_subresource={:?}, dst_x={:?}, dst_y={:?}, dst_z={:?}, src_resource={:?}, src_subresource={:?}, src_box={:?})",
+            match &dst_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            dst_subresource,
+            dst_x,
+            dst_y,
+            dst_z,
+            match &src_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            src_subresource,
+            src_box
         ));
     }
     fn copy_resource(
@@ -9509,7 +11507,27 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &dst_resource;
         let _ = &src_resource;
         record("ID3D11DeviceContext::CopyResource()".to_string());
-        record_arguments("ID3D11DeviceContext::CopyResource(dst_resource=an object or the caller's bytes, src_resource=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext::CopyResource(dst_resource={:?}, src_resource={:?})",
+            match &dst_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            match &src_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            }
+        ));
     }
     fn update_subresource(
         &self,
@@ -9531,8 +11549,21 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             dst_subresource, src_row_pitch, src_depth_pitch
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::UpdateSubresource(dst_resource=an object or the caller's bytes, dst_subresource={:?}, dst_box={:?}, src_data={:?}, src_row_pitch={:?}, src_depth_pitch={:?})",
-            dst_subresource, dst_box, src_data, src_row_pitch, src_depth_pitch
+            "ID3D11DeviceContext::UpdateSubresource(dst_resource={:?}, dst_subresource={:?}, dst_box={:?}, src_data={:?}, src_row_pitch={:?}, src_depth_pitch={:?})",
+            match &dst_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            dst_subresource,
+            dst_box,
+            src_data,
+            src_row_pitch,
+            src_depth_pitch
         ));
     }
     fn copy_structure_count(
@@ -9549,8 +11580,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             dst_aligned_byte_offset
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::CopyStructureCount(dst_buffer=an object or the caller's bytes, dst_aligned_byte_offset={:?}, src_view=an object or the caller's bytes)",
-            dst_aligned_byte_offset
+            "ID3D11DeviceContext::CopyStructureCount(dst_buffer={:?}, dst_aligned_byte_offset={:?}, src_view={:?})",
+            named("direct3d_11::Buffer", dst_buffer.identity()),
+            dst_aligned_byte_offset,
+            named("direct3d_11::UnorderedAccessView", src_view.identity())
         ));
     }
     fn clear_render_target_view(
@@ -9562,7 +11595,11 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &color_rgba;
         record("ID3D11DeviceContext::ClearRenderTargetView()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceContext::ClearRenderTargetView(render_target_view=an object or the caller's bytes, color_rgba={:?})",
+            "ID3D11DeviceContext::ClearRenderTargetView(render_target_view={:?}, color_rgba={:?})",
+            named(
+                "direct3d_11::RenderTargetView",
+                render_target_view.identity()
+            ),
             color_rgba
         ));
     }
@@ -9575,7 +11612,11 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &values;
         record("ID3D11DeviceContext::ClearUnorderedAccessViewUint()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceContext::ClearUnorderedAccessViewUint(unordered_access_view=an object or the caller's bytes, values={:?})",
+            "ID3D11DeviceContext::ClearUnorderedAccessViewUint(unordered_access_view={:?}, values={:?})",
+            named(
+                "direct3d_11::UnorderedAccessView",
+                unordered_access_view.identity()
+            ),
             values
         ));
     }
@@ -9588,7 +11629,11 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &values;
         record("ID3D11DeviceContext::ClearUnorderedAccessViewFloat()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceContext::ClearUnorderedAccessViewFloat(unordered_access_view=an object or the caller's bytes, values={:?})",
+            "ID3D11DeviceContext::ClearUnorderedAccessViewFloat(unordered_access_view={:?}, values={:?})",
+            named(
+                "direct3d_11::UnorderedAccessView",
+                unordered_access_view.identity()
+            ),
             values
         ));
     }
@@ -9608,8 +11653,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             clear_flags, depth, stencil
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::ClearDepthStencilView(depth_stencil_view=an object or the caller's bytes, clear_flags={:?}, depth={:?}, stencil={:?})",
-            clear_flags, depth, stencil
+            "ID3D11DeviceContext::ClearDepthStencilView(depth_stencil_view={:?}, clear_flags={:?}, depth={:?}, stencil={:?})",
+            named(
+                "direct3d_11::DepthStencilView",
+                depth_stencil_view.identity()
+            ),
+            clear_flags,
+            depth,
+            stencil
         ));
     }
     fn generate_mips(
@@ -9618,7 +11669,13 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
     ) {
         let _ = &shader_resource_view;
         record("ID3D11DeviceContext::GenerateMips()".to_string());
-        record_arguments("ID3D11DeviceContext::GenerateMips(shader_resource_view=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext::GenerateMips(shader_resource_view={:?})",
+            named(
+                "direct3d_11::ShaderResourceView",
+                shader_resource_view.identity()
+            )
+        ));
     }
     fn set_resource_min_lod(
         &self,
@@ -9632,17 +11689,34 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             min_lod
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::SetResourceMinLOD(resource=an object or the caller's bytes, min_lod={:?})",
+            "ID3D11DeviceContext::SetResourceMinLOD(resource={:?}, min_lod={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             min_lod
         ));
     }
     fn get_resource_min_lod(&self, resource: direct3d_11::ResourceRef<'_, Self::Api>) -> f32 {
         let _ = &resource;
         record("ID3D11DeviceContext::GetResourceMinLOD()".to_string());
-        record_arguments(
-            "ID3D11DeviceContext::GetResourceMinLOD(resource=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11DeviceContext::GetResourceMinLOD(resource={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            }
+        ));
         126.5_f32
     }
     fn resolve_subresource(
@@ -9663,8 +11737,28 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             dst_subresource, src_subresource, format
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::ResolveSubresource(dst_resource=an object or the caller's bytes, dst_subresource={:?}, src_resource=an object or the caller's bytes, src_subresource={:?}, format={:?})",
-            dst_subresource, src_subresource, format
+            "ID3D11DeviceContext::ResolveSubresource(dst_resource={:?}, dst_subresource={:?}, src_resource={:?}, src_subresource={:?}, format={:?})",
+            match &dst_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            dst_subresource,
+            match &src_resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            src_subresource,
+            format
         ));
     }
     fn execute_command_list(
@@ -9679,7 +11773,8 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             restore_context_state
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::ExecuteCommandList(command_list=an object or the caller's bytes, restore_context_state={:?})",
+            "ID3D11DeviceContext::ExecuteCommandList(command_list={:?}, restore_context_state={:?})",
+            named("direct3d_11::CommandList", command_list.identity()),
             restore_context_state
         ));
     }
@@ -9701,7 +11796,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             shader_resource_views
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ShaderResourceView", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9715,10 +11813,16 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::HSSetShader()".to_string());
         record_arguments(format!(
             "ID3D11DeviceContext::HSSetShader(hull_shader={:?}, class_instances={:?})",
-            hull_shader.is_some(),
+            hull_shader.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::HullShader", object.identity())
+            ),
             class_instances
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ClassInstance", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9738,7 +11842,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             samplers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::SamplerState", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9758,7 +11865,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9780,7 +11890,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             shader_resource_views
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ShaderResourceView", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9794,10 +11907,16 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::DSSetShader()".to_string());
         record_arguments(format!(
             "ID3D11DeviceContext::DSSetShader(domain_shader={:?}, class_instances={:?})",
-            domain_shader.is_some(),
+            domain_shader.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::DomainShader", object.identity())
+            ),
             class_instances
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ClassInstance", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9817,7 +11936,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             samplers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::SamplerState", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9837,7 +11959,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9859,7 +11984,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             shader_resource_views
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ShaderResourceView", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9883,7 +12011,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             unordered_access_views
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::UnorderedAccessView", object.identity())
+                ))
                 .collect::<Vec<_>>(),
             uav_initial_counts
         ));
@@ -9898,10 +12029,16 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         record("ID3D11DeviceContext::CSSetShader()".to_string());
         record_arguments(format!(
             "ID3D11DeviceContext::CSSetShader(compute_shader={:?}, class_instances={:?})",
-            compute_shader.is_some(),
+            compute_shader.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named("direct3d_11::ComputeShader", object.identity())
+            ),
             class_instances
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::ClassInstance", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9921,7 +12058,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             samplers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::SamplerState", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -9941,7 +12081,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot,
             constant_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
     }
@@ -10640,7 +12783,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDeviceContext<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -10785,7 +13028,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDomainShader<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -10914,7 +13257,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedFence<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -11001,7 +13444,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedGeometryShader<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -11088,7 +13631,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedHullShader<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -11535,7 +14178,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedInputLayout<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -11682,7 +14425,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedPixelShader<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -11788,7 +14631,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedPredicate<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -11904,7 +14847,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedQuery<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -12049,7 +15092,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedRasterizerState<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -12348,7 +15491,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedRenderTargetView<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -12452,7 +15695,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedSamplerState<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -12685,7 +16028,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedShaderResourceView<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -12973,7 +16416,102 @@ impl<A: Recorded> direct3d_11::ShaderTraceFactory for RecordedShaderTraceFactory
         let _ = &trace_desc;
         record("ID3D11ShaderTraceFactory::CreateShaderTrace()".to_string());
         record_arguments(format!(
-            "ID3D11ShaderTraceFactory::CreateShaderTrace(shader=an object or the caller's bytes, trace_desc={:?})",
+            "ID3D11ShaderTraceFactory::CreateShaderTrace(shader={:?}, trace_desc={:?})",
+            match &shader {
+                direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                    named("direct3d_11::AuthenticatedChannel", x.identity()),
+                direct3d_11::UnknownRef::BlendState(x) =>
+                    named("direct3d_11::BlendState", x.identity()),
+                direct3d_11::UnknownRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::UnknownRef::ClassInstance(x) =>
+                    named("direct3d_11::ClassInstance", x.identity()),
+                direct3d_11::UnknownRef::ClassLinkage(x) =>
+                    named("direct3d_11::ClassLinkage", x.identity()),
+                direct3d_11::UnknownRef::CommandList(x) =>
+                    named("direct3d_11::CommandList", x.identity()),
+                direct3d_11::UnknownRef::ComputeShader(x) =>
+                    named("direct3d_11::ComputeShader", x.identity()),
+                direct3d_11::UnknownRef::Counter(x) => named("direct3d_11::Counter", x.identity()),
+                direct3d_11::UnknownRef::CryptoSession(x) =>
+                    named("direct3d_11::CryptoSession", x.identity()),
+                direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                direct3d_11::UnknownRef::DepthStencilState(x) =>
+                    named("direct3d_11::DepthStencilState", x.identity()),
+                direct3d_11::UnknownRef::DepthStencilView(x) =>
+                    named("direct3d_11::DepthStencilView", x.identity()),
+                direct3d_11::UnknownRef::Device(x) => named("direct3d_11::Device", x.identity()),
+                direct3d_11::UnknownRef::DeviceContext(x) =>
+                    named("direct3d_11::DeviceContext", x.identity()),
+                direct3d_11::UnknownRef::DomainShader(x) =>
+                    named("direct3d_11::DomainShader", x.identity()),
+                direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                direct3d_11::UnknownRef::GeometryShader(x) =>
+                    named("direct3d_11::GeometryShader", x.identity()),
+                direct3d_11::UnknownRef::HullShader(x) =>
+                    named("direct3d_11::HullShader", x.identity()),
+                direct3d_11::UnknownRef::InfoQueue(x) =>
+                    named("direct3d_11::InfoQueue", x.identity()),
+                direct3d_11::UnknownRef::InputLayout(x) =>
+                    named("direct3d_11::InputLayout", x.identity()),
+                direct3d_11::UnknownRef::Multithread(x) =>
+                    named("direct3d_11::Multithread", x.identity()),
+                direct3d_11::UnknownRef::PixelShader(x) =>
+                    named("direct3d_11::PixelShader", x.identity()),
+                direct3d_11::UnknownRef::Predicate(x) =>
+                    named("direct3d_11::Predicate", x.identity()),
+                direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                direct3d_11::UnknownRef::RasterizerState(x) =>
+                    named("direct3d_11::RasterizerState", x.identity()),
+                direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                    named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                    named("direct3d_11::RefTrackingOptions", x.identity()),
+                direct3d_11::UnknownRef::RenderTargetView(x) =>
+                    named("direct3d_11::RenderTargetView", x.identity()),
+                direct3d_11::UnknownRef::SamplerState(x) =>
+                    named("direct3d_11::SamplerState", x.identity()),
+                direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                    named("direct3d_11::ShaderResourceView", x.identity()),
+                direct3d_11::UnknownRef::ShaderTrace(x) =>
+                    named("direct3d_11::ShaderTrace", x.identity()),
+                direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                    named("direct3d_11::ShaderTraceFactory", x.identity()),
+                direct3d_11::UnknownRef::SwitchToRef(x) =>
+                    named("direct3d_11::SwitchToRef", x.identity()),
+                direct3d_11::UnknownRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::UnknownRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::UnknownRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+                direct3d_11::UnknownRef::TracingDevice(x) =>
+                    named("direct3d_11::TracingDevice", x.identity()),
+                direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                    named("direct3d_11::UnorderedAccessView", x.identity()),
+                direct3d_11::UnknownRef::VertexShader(x) =>
+                    named("direct3d_11::VertexShader", x.identity()),
+                direct3d_11::UnknownRef::VideoContext(x) =>
+                    named("direct3d_11::VideoContext", x.identity()),
+                direct3d_11::UnknownRef::VideoDecoder(x) =>
+                    named("direct3d_11::VideoDecoder", x.identity()),
+                direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                    named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                direct3d_11::UnknownRef::VideoDevice(x) =>
+                    named("direct3d_11::VideoDevice", x.identity()),
+                direct3d_11::UnknownRef::VideoProcessor(x) =>
+                    named("direct3d_11::VideoProcessor", x.identity()),
+                direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                    named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                    named("direct3d_11::VideoProcessorInputView", x.identity()),
+                direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                    named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                direct3d_11::UnknownRef::DeviceContextState(x) =>
+                    named("direct3d_11::DeviceContextState", x.identity()),
+                direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                    named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
             trace_desc
         ));
         Ok(RecordedShaderTrace::new())
@@ -13152,7 +16690,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedTexture1D<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -13186,7 +16824,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedTexture1D<
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -13793,7 +17481,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedTexture2D<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -13827,7 +17615,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedTexture2D<
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -14670,7 +18508,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedTexture3D<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -14704,7 +18642,57 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedTexture3D<
         record_arguments(format!(
             "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
             name,
-            unknown.is_some()
+            unknown.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    directx_graphics_infrastructure::UnknownRef::Adapter(x) =>
+                        named("directx_graphics_infrastructure::Adapter", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Debug(x) =>
+                        named("directx_graphics_infrastructure::Debug", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x) => named(
+                        "directx_graphics_infrastructure::DecodeSwapChain",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Device(x) =>
+                        named("directx_graphics_infrastructure::Device", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::DisplayControl(x) => named(
+                        "directx_graphics_infrastructure::DisplayControl",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Factory(x) =>
+                        named("directx_graphics_infrastructure::Factory", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::FactoryMedia(x) => named(
+                        "directx_graphics_infrastructure::FactoryMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::InfoQueue(x) =>
+                        named("directx_graphics_infrastructure::InfoQueue", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::KeyedMutex(x) =>
+                        named("directx_graphics_infrastructure::KeyedMutex", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Output(x) =>
+                        named("directx_graphics_infrastructure::Output", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::OutputDuplication(x) => named(
+                        "directx_graphics_infrastructure::OutputDuplication",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Resource(x) =>
+                        named("directx_graphics_infrastructure::Resource", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::Surface(x) =>
+                        named("directx_graphics_infrastructure::Surface", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChain(x) =>
+                        named("directx_graphics_infrastructure::SwapChain", x.identity()),
+                    directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x) => named(
+                        "directx_graphics_infrastructure::SwapChainMedia",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x) => named(
+                        "directx_graphics_infrastructure::GraphicsAnalysis",
+                        x.identity()
+                    ),
+                    directx_graphics_infrastructure::UnknownRef::Unknown(_) =>
+                        "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -15227,7 +19215,102 @@ impl<A: Recorded> direct3d_11::TracingDevice for RecordedTracingDevice<A> {
             options
         ));
         record_arguments(format!(
-            "ID3D11TracingDevice::SetShaderTrackingOptions(shader=an object or the caller's bytes, options={:?})",
+            "ID3D11TracingDevice::SetShaderTrackingOptions(shader={:?}, options={:?})",
+            match &shader {
+                direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                    named("direct3d_11::AuthenticatedChannel", x.identity()),
+                direct3d_11::UnknownRef::BlendState(x) =>
+                    named("direct3d_11::BlendState", x.identity()),
+                direct3d_11::UnknownRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::UnknownRef::ClassInstance(x) =>
+                    named("direct3d_11::ClassInstance", x.identity()),
+                direct3d_11::UnknownRef::ClassLinkage(x) =>
+                    named("direct3d_11::ClassLinkage", x.identity()),
+                direct3d_11::UnknownRef::CommandList(x) =>
+                    named("direct3d_11::CommandList", x.identity()),
+                direct3d_11::UnknownRef::ComputeShader(x) =>
+                    named("direct3d_11::ComputeShader", x.identity()),
+                direct3d_11::UnknownRef::Counter(x) => named("direct3d_11::Counter", x.identity()),
+                direct3d_11::UnknownRef::CryptoSession(x) =>
+                    named("direct3d_11::CryptoSession", x.identity()),
+                direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                direct3d_11::UnknownRef::DepthStencilState(x) =>
+                    named("direct3d_11::DepthStencilState", x.identity()),
+                direct3d_11::UnknownRef::DepthStencilView(x) =>
+                    named("direct3d_11::DepthStencilView", x.identity()),
+                direct3d_11::UnknownRef::Device(x) => named("direct3d_11::Device", x.identity()),
+                direct3d_11::UnknownRef::DeviceContext(x) =>
+                    named("direct3d_11::DeviceContext", x.identity()),
+                direct3d_11::UnknownRef::DomainShader(x) =>
+                    named("direct3d_11::DomainShader", x.identity()),
+                direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                direct3d_11::UnknownRef::GeometryShader(x) =>
+                    named("direct3d_11::GeometryShader", x.identity()),
+                direct3d_11::UnknownRef::HullShader(x) =>
+                    named("direct3d_11::HullShader", x.identity()),
+                direct3d_11::UnknownRef::InfoQueue(x) =>
+                    named("direct3d_11::InfoQueue", x.identity()),
+                direct3d_11::UnknownRef::InputLayout(x) =>
+                    named("direct3d_11::InputLayout", x.identity()),
+                direct3d_11::UnknownRef::Multithread(x) =>
+                    named("direct3d_11::Multithread", x.identity()),
+                direct3d_11::UnknownRef::PixelShader(x) =>
+                    named("direct3d_11::PixelShader", x.identity()),
+                direct3d_11::UnknownRef::Predicate(x) =>
+                    named("direct3d_11::Predicate", x.identity()),
+                direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                direct3d_11::UnknownRef::RasterizerState(x) =>
+                    named("direct3d_11::RasterizerState", x.identity()),
+                direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                    named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                    named("direct3d_11::RefTrackingOptions", x.identity()),
+                direct3d_11::UnknownRef::RenderTargetView(x) =>
+                    named("direct3d_11::RenderTargetView", x.identity()),
+                direct3d_11::UnknownRef::SamplerState(x) =>
+                    named("direct3d_11::SamplerState", x.identity()),
+                direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                    named("direct3d_11::ShaderResourceView", x.identity()),
+                direct3d_11::UnknownRef::ShaderTrace(x) =>
+                    named("direct3d_11::ShaderTrace", x.identity()),
+                direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                    named("direct3d_11::ShaderTraceFactory", x.identity()),
+                direct3d_11::UnknownRef::SwitchToRef(x) =>
+                    named("direct3d_11::SwitchToRef", x.identity()),
+                direct3d_11::UnknownRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::UnknownRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::UnknownRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+                direct3d_11::UnknownRef::TracingDevice(x) =>
+                    named("direct3d_11::TracingDevice", x.identity()),
+                direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                    named("direct3d_11::UnorderedAccessView", x.identity()),
+                direct3d_11::UnknownRef::VertexShader(x) =>
+                    named("direct3d_11::VertexShader", x.identity()),
+                direct3d_11::UnknownRef::VideoContext(x) =>
+                    named("direct3d_11::VideoContext", x.identity()),
+                direct3d_11::UnknownRef::VideoDecoder(x) =>
+                    named("direct3d_11::VideoDecoder", x.identity()),
+                direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                    named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                direct3d_11::UnknownRef::VideoDevice(x) =>
+                    named("direct3d_11::VideoDevice", x.identity()),
+                direct3d_11::UnknownRef::VideoProcessor(x) =>
+                    named("direct3d_11::VideoProcessor", x.identity()),
+                direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                    named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                    named("direct3d_11::VideoProcessorInputView", x.identity()),
+                direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                    named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                direct3d_11::UnknownRef::DeviceContextState(x) =>
+                    named("direct3d_11::DeviceContextState", x.identity()),
+                direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                    named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+            },
             options
         ));
         Ok(())
@@ -15401,7 +19484,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedUnorderedAccessView<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -15488,7 +19671,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVertexShader<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -15542,12 +19825,17 @@ impl<A: Recorded> direct3d_11::VideoContext3 for RecordedVideoContext<A> {
         let _ = &histogram_buffers;
         record("ID3D11VideoContext3::DecoderBeginFrame1()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext3::DecoderBeginFrame1(decoder=an object or the caller's bytes, view=an object or the caller's bytes, content_key={:?}, histogram_offsets={:?}, histogram_buffers={:?})",
+            "ID3D11VideoContext3::DecoderBeginFrame1(decoder={:?}, view={:?}, content_key={:?}, histogram_offsets={:?}, histogram_buffers={:?})",
+            named("direct3d_11::VideoDecoder", decoder.identity()),
+            named("direct3d_11::VideoDecoderOutputView", view.identity()),
             content_key,
             histogram_offsets,
             histogram_buffers
                 .iter()
-                .map(|item| item.is_some())
+                .map(|item| item.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |object| named("direct3d_11::Buffer", object.identity())
+                ))
                 .collect::<Vec<_>>()
         ));
         Ok(())
@@ -15561,7 +19849,8 @@ impl<A: Recorded> direct3d_11::VideoContext3 for RecordedVideoContext<A> {
         let _ = &buffer_desc;
         record("ID3D11VideoContext3::SubmitDecoderBuffers2()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext3::SubmitDecoderBuffers2(decoder=an object or the caller's bytes, buffer_desc={:?})",
+            "ID3D11VideoContext3::SubmitDecoderBuffers2(decoder={:?}, buffer_desc={:?})",
+            named("direct3d_11::VideoDecoder", decoder.identity()),
             buffer_desc
         ));
         Err(E_NOTIMPL)
@@ -15583,8 +19872,10 @@ impl<A: Recorded> direct3d_11::VideoContext2 for RecordedVideoContext<A> {
             type_
         ));
         record_arguments(format!(
-            "ID3D11VideoContext2::VideoProcessorSetOutputHDRMetaData(video_processor=an object or the caller's bytes, type_={:?}, hdr_meta_data={:?})",
-            type_, hdr_meta_data
+            "ID3D11VideoContext2::VideoProcessorSetOutputHDRMetaData(video_processor={:?}, type_={:?}, hdr_meta_data={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            type_,
+            hdr_meta_data
         ));
     }
     fn video_processor_get_output_hdr_meta_data(
@@ -15595,7 +19886,10 @@ impl<A: Recorded> direct3d_11::VideoContext2 for RecordedVideoContext<A> {
         let _ = &video_processor;
         let _ = &meta_data;
         record("ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData()".to_string());
-        record_arguments("ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData(video_processor=an object or the caller's bytes, meta_data=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData(video_processor={:?}, meta_data=an object or the caller's bytes)",
+            named("direct3d_11::VideoProcessor", video_processor.identity())
+        ));
         if let Some(bytes) = meta_data {
             known_fill(bytes, 15748);
         }
@@ -15617,8 +19911,11 @@ impl<A: Recorded> direct3d_11::VideoContext2 for RecordedVideoContext<A> {
             stream_index, type_
         ));
         record_arguments(format!(
-            "ID3D11VideoContext2::VideoProcessorSetStreamHDRMetaData(video_processor=an object or the caller's bytes, stream_index={:?}, type_={:?}, hdr_meta_data={:?})",
-            stream_index, type_, hdr_meta_data
+            "ID3D11VideoContext2::VideoProcessorSetStreamHDRMetaData(video_processor={:?}, stream_index={:?}, type_={:?}, hdr_meta_data={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            type_,
+            hdr_meta_data
         ));
     }
     fn video_processor_get_stream_hdr_meta_data(
@@ -15635,7 +19932,8 @@ impl<A: Recorded> direct3d_11::VideoContext2 for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext2::VideoProcessorGetStreamHDRMetaData(video_processor=an object or the caller's bytes, stream_index={:?}, meta_data=an object or the caller's bytes)",
+            "ID3D11VideoContext2::VideoProcessorGetStreamHDRMetaData(video_processor={:?}, stream_index={:?}, meta_data=an object or the caller's bytes)",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         if let Some(bytes) = meta_data {
@@ -15655,7 +19953,8 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
         let _ = &buffer_desc;
         record("ID3D11VideoContext1::SubmitDecoderBuffers1()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext1::SubmitDecoderBuffers1(decoder=an object or the caller's bytes, buffer_desc={:?})",
+            "ID3D11VideoContext1::SubmitDecoderBuffers1(decoder={:?}, buffer_desc={:?})",
+            named("direct3d_11::VideoDecoder", decoder.identity()),
             buffer_desc
         ));
         Err(E_NOTIMPL)
@@ -15669,7 +19968,8 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
         let _ = &privat_input_data;
         record("ID3D11VideoContext1::GetDataForNewHardwareKey()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext1::GetDataForNewHardwareKey(crypto_session=an object or the caller's bytes, privat_input_data={:?})",
+            "ID3D11VideoContext1::GetDataForNewHardwareKey(crypto_session={:?}, privat_input_data={:?})",
+            named("direct3d_11::CryptoSession", crypto_session.identity()),
             privat_input_data
         ));
         Ok(5_u64)
@@ -15683,7 +19983,10 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
     > {
         let _ = &crypto_session;
         record("ID3D11VideoContext1::CheckCryptoSessionStatus()".to_string());
-        record_arguments("ID3D11VideoContext1::CheckCryptoSessionStatus(crypto_session=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext1::CheckCryptoSessionStatus(crypto_session={:?})",
+            named("direct3d_11::CryptoSession", crypto_session.identity())
+        ));
         Ok(direct3d_11::enumerations::CryptoSessionStatus(69))
     }
     fn decoder_enable_downsampling(
@@ -15702,8 +20005,11 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             input_color_space, reference_frame_count
         ));
         record_arguments(format!(
-            "ID3D11VideoContext1::DecoderEnableDownsampling(decoder=an object or the caller's bytes, input_color_space={:?}, output_desc={:?}, reference_frame_count={:?})",
-            input_color_space, output_desc, reference_frame_count
+            "ID3D11VideoContext1::DecoderEnableDownsampling(decoder={:?}, input_color_space={:?}, output_desc={:?}, reference_frame_count={:?})",
+            named("direct3d_11::VideoDecoder", decoder.identity()),
+            input_color_space,
+            output_desc,
+            reference_frame_count
         ));
         Ok(())
     }
@@ -15716,7 +20022,8 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
         let _ = &output_desc;
         record("ID3D11VideoContext1::DecoderUpdateDownsampling()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext1::DecoderUpdateDownsampling(decoder=an object or the caller's bytes, output_desc={:?})",
+            "ID3D11VideoContext1::DecoderUpdateDownsampling(decoder={:?}, output_desc={:?})",
+            named("direct3d_11::VideoDecoder", decoder.identity()),
             output_desc
         ));
         Ok(())
@@ -15733,7 +20040,8 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             color_space
         ));
         record_arguments(format!(
-            "ID3D11VideoContext1::VideoProcessorSetOutputColorSpace1(video_processor=an object or the caller's bytes, color_space={:?})",
+            "ID3D11VideoContext1::VideoProcessorSetOutputColorSpace1(video_processor={:?}, color_space={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             color_space
         ));
     }
@@ -15749,7 +20057,8 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             shader_usage
         ));
         record_arguments(format!(
-            "ID3D11VideoContext1::VideoProcessorSetOutputShaderUsage(video_processor=an object or the caller's bytes, shader_usage={:?})",
+            "ID3D11VideoContext1::VideoProcessorSetOutputShaderUsage(video_processor={:?}, shader_usage={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             shader_usage
         ));
     }
@@ -15759,7 +20068,10 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
     ) -> directx_graphics_infrastructure::enumerations::ColorSpaceType {
         let _ = &video_processor;
         record("ID3D11VideoContext1::VideoProcessorGetOutputColorSpace1()".to_string());
-        record_arguments("ID3D11VideoContext1::VideoProcessorGetOutputColorSpace1(video_processor=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext1::VideoProcessorGetOutputColorSpace1(video_processor={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity())
+        ));
         directx_graphics_infrastructure::enumerations::ColorSpaceType(18)
     }
     fn video_processor_get_output_shader_usage(
@@ -15768,7 +20080,10 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
     ) -> bool {
         let _ = &video_processor;
         record("ID3D11VideoContext1::VideoProcessorGetOutputShaderUsage()".to_string());
-        record_arguments("ID3D11VideoContext1::VideoProcessorGetOutputShaderUsage(video_processor=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext1::VideoProcessorGetOutputShaderUsage(video_processor={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity())
+        ));
         true
     }
     fn video_processor_set_stream_color_space1(
@@ -15785,8 +20100,10 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             stream_index, color_space
         ));
         record_arguments(format!(
-            "ID3D11VideoContext1::VideoProcessorSetStreamColorSpace1(video_processor=an object or the caller's bytes, stream_index={:?}, color_space={:?})",
-            stream_index, color_space
+            "ID3D11VideoContext1::VideoProcessorSetStreamColorSpace1(video_processor={:?}, stream_index={:?}, color_space={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            color_space
         ));
     }
     fn video_processor_set_stream_mirror(
@@ -15807,8 +20124,12 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             stream_index, enable, flip_horizontal, flip_vertical
         ));
         record_arguments(format!(
-            "ID3D11VideoContext1::VideoProcessorSetStreamMirror(video_processor=an object or the caller's bytes, stream_index={:?}, enable={:?}, flip_horizontal={:?}, flip_vertical={:?})",
-            stream_index, enable, flip_horizontal, flip_vertical
+            "ID3D11VideoContext1::VideoProcessorSetStreamMirror(video_processor={:?}, stream_index={:?}, enable={:?}, flip_horizontal={:?}, flip_vertical={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            enable,
+            flip_horizontal,
+            flip_vertical
         ));
     }
     fn video_processor_get_stream_color_space1(
@@ -15823,7 +20144,8 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext1::VideoProcessorGetStreamColorSpace1(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext1::VideoProcessorGetStreamColorSpace1(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         directx_graphics_infrastructure::enumerations::ColorSpaceType(67)
@@ -15840,7 +20162,8 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext1::VideoProcessorGetStreamMirror(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext1::VideoProcessorGetStreamMirror(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         (true, true, true)
@@ -15863,8 +20186,12 @@ impl<A: Recorded> direct3d_11::VideoContext1 for RecordedVideoContext<A> {
             output_width, output_height, output_format
         ));
         record_arguments(format!(
-            "ID3D11VideoContext1::VideoProcessorGetBehaviorHints(video_processor=an object or the caller's bytes, output_width={:?}, output_height={:?}, output_format={:?}, streams={:?})",
-            output_width, output_height, output_format, streams
+            "ID3D11VideoContext1::VideoProcessorGetBehaviorHints(video_processor={:?}, output_width={:?}, output_height={:?}, output_format={:?}, streams={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            output_width,
+            output_height,
+            output_format,
+            streams
         ));
         Ok(5_u32)
     }
@@ -15882,7 +20209,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &buffer;
         record("ID3D11VideoContext::GetDecoderBuffer()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::GetDecoderBuffer(decoder=an object or the caller's bytes, type_={:?}, buffer=an object or the caller's bytes)",
+            "ID3D11VideoContext::GetDecoderBuffer(decoder={:?}, type_={:?}, buffer=an object or the caller's bytes)",
+            named("direct3d_11::VideoDecoder", decoder.identity()),
             type_
         ));
         Err(E_NOTIMPL)
@@ -15899,7 +20227,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             type_
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::ReleaseDecoderBuffer(decoder=an object or the caller's bytes, type_={:?})",
+            "ID3D11VideoContext::ReleaseDecoderBuffer(decoder={:?}, type_={:?})",
+            named("direct3d_11::VideoDecoder", decoder.identity()),
             type_
         ));
         Ok(())
@@ -15915,7 +20244,9 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &content_key;
         record("ID3D11VideoContext::DecoderBeginFrame()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::DecoderBeginFrame(decoder=an object or the caller's bytes, view=an object or the caller's bytes, content_key={:?})",
+            "ID3D11VideoContext::DecoderBeginFrame(decoder={:?}, view={:?}, content_key={:?})",
+            named("direct3d_11::VideoDecoder", decoder.identity()),
+            named("direct3d_11::VideoDecoderOutputView", view.identity()),
             content_key
         ));
         Ok(())
@@ -15926,10 +20257,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &decoder;
         record("ID3D11VideoContext::DecoderEndFrame()".to_string());
-        record_arguments(
-            "ID3D11VideoContext::DecoderEndFrame(decoder=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11VideoContext::DecoderEndFrame(decoder={:?})",
+            named("direct3d_11::VideoDecoder", decoder.identity())
+        ));
         Ok(())
     }
     fn submit_decoder_buffers(
@@ -15941,7 +20272,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &buffer_desc;
         record("ID3D11VideoContext::SubmitDecoderBuffers()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::SubmitDecoderBuffers(decoder=an object or the caller's bytes, buffer_desc={:?})",
+            "ID3D11VideoContext::SubmitDecoderBuffers(decoder={:?}, buffer_desc={:?})",
+            named("direct3d_11::VideoDecoder", decoder.identity()),
             buffer_desc
         ));
         Err(E_NOTIMPL)
@@ -15954,7 +20286,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &decoder;
         let _ = &extension_data;
         record("ID3D11VideoContext::DecoderExtension()".to_string());
-        record_arguments("ID3D11VideoContext::DecoderExtension(decoder=an object or the caller's bytes, extension_data=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::DecoderExtension(decoder={:?}, extension_data=an object or the caller's bytes)",
+            named("direct3d_11::VideoDecoder", decoder.identity())
+        ));
         Default::default()
     }
     fn video_processor_set_output_target_rect(
@@ -15971,8 +20306,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             enable
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetOutputTargetRect(video_processor=an object or the caller's bytes, enable={:?}, rect={:?})",
-            enable, rect
+            "ID3D11VideoContext::VideoProcessorSetOutputTargetRect(video_processor={:?}, enable={:?}, rect={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            enable,
+            rect
         ));
     }
     fn video_processor_set_output_background_color(
@@ -15989,8 +20326,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             y_cb_cr
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetOutputBackgroundColor(video_processor=an object or the caller's bytes, y_cb_cr={:?}, color={:?})",
-            y_cb_cr, color
+            "ID3D11VideoContext::VideoProcessorSetOutputBackgroundColor(video_processor={:?}, y_cb_cr={:?}, color={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            y_cb_cr,
+            color
         ));
     }
     fn video_processor_set_output_color_space(
@@ -16002,7 +20341,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &color_space;
         record("ID3D11VideoContext::VideoProcessorSetOutputColorSpace()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetOutputColorSpace(video_processor=an object or the caller's bytes, color_space={:?})",
+            "ID3D11VideoContext::VideoProcessorSetOutputColorSpace(video_processor={:?}, color_space={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             color_space
         ));
     }
@@ -16020,8 +20360,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             alpha_fill_mode, stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetOutputAlphaFillMode(video_processor=an object or the caller's bytes, alpha_fill_mode={:?}, stream_index={:?})",
-            alpha_fill_mode, stream_index
+            "ID3D11VideoContext::VideoProcessorSetOutputAlphaFillMode(video_processor={:?}, alpha_fill_mode={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            alpha_fill_mode,
+            stream_index
         ));
     }
     fn video_processor_set_output_constriction(
@@ -16035,8 +20377,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &size;
         record("ID3D11VideoContext::VideoProcessorSetOutputConstriction()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetOutputConstriction(video_processor=an object or the caller's bytes, enable={:?}, size={:?})",
-            enable, size
+            "ID3D11VideoContext::VideoProcessorSetOutputConstriction(video_processor={:?}, enable={:?}, size={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            enable,
+            size
         ));
     }
     fn video_processor_set_output_stereo_mode(
@@ -16051,7 +20395,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             enable
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetOutputStereoMode(video_processor=an object or the caller's bytes, enable={:?})",
+            "ID3D11VideoContext::VideoProcessorSetOutputStereoMode(video_processor={:?}, enable={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             enable
         ));
     }
@@ -16068,8 +20413,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &data;
         record("ID3D11VideoContext::VideoProcessorSetOutputExtension()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetOutputExtension(video_processor=an object or the caller's bytes, extension_guid={:?}, data_size={:?}, data=an object or the caller's bytes)",
-            extension_guid, data_size
+            "ID3D11VideoContext::VideoProcessorSetOutputExtension(video_processor={:?}, extension_guid={:?}, data_size={:?}, data=an object or the caller's bytes)",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            extension_guid,
+            data_size
         ));
         Default::default()
     }
@@ -16079,7 +20426,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> (bool, component_object_model::structures::Rect) {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputTargetRect()".to_string());
-        record_arguments("ID3D11VideoContext::VideoProcessorGetOutputTargetRect(video_processor=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::VideoProcessorGetOutputTargetRect(video_processor={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity())
+        ));
         (
             true,
             component_object_model::structures::Rect {
@@ -16096,7 +20446,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> (bool, direct3d_11::structures::VideoColor) {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputBackgroundColor()".to_string());
-        record_arguments("ID3D11VideoContext::VideoProcessorGetOutputBackgroundColor(video_processor=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::VideoProcessorGetOutputBackgroundColor(video_processor={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity())
+        ));
         (
             true,
             direct3d_11::structures::VideoColor {
@@ -16123,7 +20476,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> direct3d_11::structures::VideoProcessorColorSpace {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputColorSpace()".to_string());
-        record_arguments("ID3D11VideoContext::VideoProcessorGetOutputColorSpace(video_processor=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::VideoProcessorGetOutputColorSpace(video_processor={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity())
+        ));
         direct3d_11::structures::VideoProcessorColorSpace { _bitfield: 5_u32 }
     }
     fn video_processor_get_output_alpha_fill_mode(
@@ -16132,7 +20488,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> (direct3d_11::enumerations::VideoProcessorAlphaFillMode, u32) {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputAlphaFillMode()".to_string());
-        record_arguments("ID3D11VideoContext::VideoProcessorGetOutputAlphaFillMode(video_processor=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::VideoProcessorGetOutputAlphaFillMode(video_processor={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity())
+        ));
         (
             direct3d_11::enumerations::VideoProcessorAlphaFillMode(33),
             40_u32,
@@ -16144,7 +20503,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> (bool, component_object_model::structures::Size) {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputConstriction()".to_string());
-        record_arguments("ID3D11VideoContext::VideoProcessorGetOutputConstriction(video_processor=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::VideoProcessorGetOutputConstriction(video_processor={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity())
+        ));
         (
             true,
             component_object_model::structures::Size {
@@ -16159,7 +20521,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) -> bool {
         let _ = &video_processor;
         record("ID3D11VideoContext::VideoProcessorGetOutputStereoMode()".to_string());
-        record_arguments("ID3D11VideoContext::VideoProcessorGetOutputStereoMode(video_processor=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::VideoProcessorGetOutputStereoMode(video_processor={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity())
+        ));
         true
     }
     fn video_processor_get_output_extension(
@@ -16173,7 +20538,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &data;
         record("ID3D11VideoContext::VideoProcessorGetOutputExtension()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetOutputExtension(video_processor=an object or the caller's bytes, extension_guid={:?}, data=an object or the caller's bytes)",
+            "ID3D11VideoContext::VideoProcessorGetOutputExtension(video_processor={:?}, extension_guid={:?}, data=an object or the caller's bytes)",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             extension_guid
         ));
         known_fill(data, 527385);
@@ -16193,8 +20559,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, frame_format
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamFrameFormat(video_processor=an object or the caller's bytes, stream_index={:?}, frame_format={:?})",
-            stream_index, frame_format
+            "ID3D11VideoContext::VideoProcessorSetStreamFrameFormat(video_processor={:?}, stream_index={:?}, frame_format={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            frame_format
         ));
     }
     fn video_processor_set_stream_color_space(
@@ -16211,8 +20579,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamColorSpace(video_processor=an object or the caller's bytes, stream_index={:?}, color_space={:?})",
-            stream_index, color_space
+            "ID3D11VideoContext::VideoProcessorSetStreamColorSpace(video_processor={:?}, stream_index={:?}, color_space={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            color_space
         ));
     }
     fn video_processor_set_stream_output_rate(
@@ -16233,8 +20603,12 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, output_rate, repeat_frame
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamOutputRate(video_processor=an object or the caller's bytes, stream_index={:?}, output_rate={:?}, repeat_frame={:?}, custom_rate={:?})",
-            stream_index, output_rate, repeat_frame, custom_rate
+            "ID3D11VideoContext::VideoProcessorSetStreamOutputRate(video_processor={:?}, stream_index={:?}, output_rate={:?}, repeat_frame={:?}, custom_rate={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            output_rate,
+            repeat_frame,
+            custom_rate
         ));
     }
     fn video_processor_set_stream_source_rect(
@@ -16253,8 +20627,11 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, enable
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamSourceRect(video_processor=an object or the caller's bytes, stream_index={:?}, enable={:?}, rect={:?})",
-            stream_index, enable, rect
+            "ID3D11VideoContext::VideoProcessorSetStreamSourceRect(video_processor={:?}, stream_index={:?}, enable={:?}, rect={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            enable,
+            rect
         ));
     }
     fn video_processor_set_stream_dest_rect(
@@ -16273,8 +20650,11 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, enable
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamDestRect(video_processor=an object or the caller's bytes, stream_index={:?}, enable={:?}, rect={:?})",
-            stream_index, enable, rect
+            "ID3D11VideoContext::VideoProcessorSetStreamDestRect(video_processor={:?}, stream_index={:?}, enable={:?}, rect={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            enable,
+            rect
         ));
     }
     fn video_processor_set_stream_alpha(
@@ -16293,8 +20673,11 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, enable, alpha
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamAlpha(video_processor=an object or the caller's bytes, stream_index={:?}, enable={:?}, alpha={:?})",
-            stream_index, enable, alpha
+            "ID3D11VideoContext::VideoProcessorSetStreamAlpha(video_processor={:?}, stream_index={:?}, enable={:?}, alpha={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            enable,
+            alpha
         ));
     }
     fn video_processor_set_stream_palette(
@@ -16311,8 +20694,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamPalette(video_processor=an object or the caller's bytes, stream_index={:?}, entries={:?})",
-            stream_index, entries
+            "ID3D11VideoContext::VideoProcessorSetStreamPalette(video_processor={:?}, stream_index={:?}, entries={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            entries
         ));
     }
     fn video_processor_set_stream_pixel_aspect_ratio(
@@ -16333,8 +20718,12 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, enable
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamPixelAspectRatio(video_processor=an object or the caller's bytes, stream_index={:?}, enable={:?}, source_aspect_ratio={:?}, destination_aspect_ratio={:?})",
-            stream_index, enable, source_aspect_ratio, destination_aspect_ratio
+            "ID3D11VideoContext::VideoProcessorSetStreamPixelAspectRatio(video_processor={:?}, stream_index={:?}, enable={:?}, source_aspect_ratio={:?}, destination_aspect_ratio={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            enable,
+            source_aspect_ratio,
+            destination_aspect_ratio
         ));
     }
     fn video_processor_set_stream_luma_key(
@@ -16355,8 +20744,12 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, enable, lower, upper
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamLumaKey(video_processor=an object or the caller's bytes, stream_index={:?}, enable={:?}, lower={:?}, upper={:?})",
-            stream_index, enable, lower, upper
+            "ID3D11VideoContext::VideoProcessorSetStreamLumaKey(video_processor={:?}, stream_index={:?}, enable={:?}, lower={:?}, upper={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            enable,
+            lower,
+            upper
         ));
     }
     fn video_processor_set_stream_stereo_format(
@@ -16389,7 +20782,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             mono_offset
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamStereoFormat(video_processor=an object or the caller's bytes, stream_index={:?}, enable={:?}, format={:?}, left_view_frame0={:?}, base_view_frame0={:?}, flip_mode={:?}, mono_offset={:?})",
+            "ID3D11VideoContext::VideoProcessorSetStreamStereoFormat(video_processor={:?}, stream_index={:?}, enable={:?}, format={:?}, left_view_frame0={:?}, base_view_frame0={:?}, flip_mode={:?}, mono_offset={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index,
             enable,
             format,
@@ -16413,8 +20807,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, enable
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamAutoProcessingMode(video_processor=an object or the caller's bytes, stream_index={:?}, enable={:?})",
-            stream_index, enable
+            "ID3D11VideoContext::VideoProcessorSetStreamAutoProcessingMode(video_processor={:?}, stream_index={:?}, enable={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            enable
         ));
     }
     fn video_processor_set_stream_filter(
@@ -16435,8 +20831,12 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, filter, enable, level
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamFilter(video_processor=an object or the caller's bytes, stream_index={:?}, filter={:?}, enable={:?}, level={:?})",
-            stream_index, filter, enable, level
+            "ID3D11VideoContext::VideoProcessorSetStreamFilter(video_processor={:?}, stream_index={:?}, filter={:?}, enable={:?}, level={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            filter,
+            enable,
+            level
         ));
     }
     fn video_processor_set_stream_extension(
@@ -16454,8 +20854,11 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &data;
         record("ID3D11VideoContext::VideoProcessorSetStreamExtension()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamExtension(video_processor=an object or the caller's bytes, stream_index={:?}, extension_guid={:?}, data_size={:?}, data=an object or the caller's bytes)",
-            stream_index, extension_guid, data_size
+            "ID3D11VideoContext::VideoProcessorSetStreamExtension(video_processor={:?}, stream_index={:?}, extension_guid={:?}, data_size={:?}, data=an object or the caller's bytes)",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            extension_guid,
+            data_size
         ));
         Default::default()
     }
@@ -16471,7 +20874,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamFrameFormat(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamFrameFormat(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         direct3d_11::enumerations::VideoFrameFormat(8)
@@ -16488,7 +20892,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamColorSpace(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamColorSpace(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         direct3d_11::structures::VideoProcessorColorSpace { _bitfield: 33_u32 }
@@ -16509,7 +20914,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamOutputRate(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamOutputRate(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         (
@@ -16533,7 +20939,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamSourceRect(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamSourceRect(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         (
@@ -16558,7 +20965,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamDestRect(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamDestRect(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         (
@@ -16583,7 +20991,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamAlpha(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamAlpha(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         (true, 39.5_f32)
@@ -16602,8 +21011,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, count
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamPalette(video_processor=an object or the caller's bytes, stream_index={:?}, count={:?})",
-            stream_index, count
+            "ID3D11VideoContext::VideoProcessorGetStreamPalette(video_processor={:?}, stream_index={:?}, count={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            count
         ));
         (0..count).map(|_| 10_u32).collect()
     }
@@ -16623,7 +21034,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamPixelAspectRatio(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamPixelAspectRatio(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         (
@@ -16650,7 +21062,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamLumaKey(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamLumaKey(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         (true, 82.5_f32, 89.5_f32)
@@ -16674,7 +21087,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamStereoFormat(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamStereoFormat(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         (
@@ -16698,7 +21112,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamAutoProcessingMode(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamAutoProcessingMode(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         true
@@ -16717,8 +21132,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, filter
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamFilter(video_processor=an object or the caller's bytes, stream_index={:?}, filter={:?})",
-            stream_index, filter
+            "ID3D11VideoContext::VideoProcessorGetStreamFilter(video_processor={:?}, stream_index={:?}, filter={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            filter
         ));
         (true, 78_i32)
     }
@@ -16738,8 +21155,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamExtension(video_processor=an object or the caller's bytes, stream_index={:?}, extension_guid={:?}, data=an object or the caller's bytes)",
-            stream_index, extension_guid
+            "ID3D11VideoContext::VideoProcessorGetStreamExtension(video_processor={:?}, stream_index={:?}, extension_guid={:?}, data=an object or the caller's bytes)",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            extension_guid
         ));
         known_fill(data, 392571);
         82_i32
@@ -16757,7 +21176,9 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &streams;
         record("ID3D11VideoContext::VideoProcessorBlt()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorBlt(video_processor=an object or the caller's bytes, view=an object or the caller's bytes, output_frame={:?}, streams={:?})",
+            "ID3D11VideoContext::VideoProcessorBlt(video_processor={:?}, view={:?}, output_frame={:?}, streams={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            named("direct3d_11::VideoProcessorOutputView", view.identity()),
             output_frame,
             streams.len()
         ));
@@ -16771,7 +21192,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &crypto_session;
         let _ = &data;
         record("ID3D11VideoContext::NegotiateCryptoSessionKeyExchange()".to_string());
-        record_arguments("ID3D11VideoContext::NegotiateCryptoSessionKeyExchange(crypto_session=an object or the caller's bytes, data=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::NegotiateCryptoSessionKeyExchange(crypto_session={:?}, data=an object or the caller's bytes)",
+            named("direct3d_11::CryptoSession", crypto_session.identity())
+        ));
         known_fill(data, 628687);
         Ok(())
     }
@@ -16787,7 +21211,12 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &dst_surface;
         let _ = &iv;
         record("ID3D11VideoContext::EncryptionBlt()".to_string());
-        record_arguments("ID3D11VideoContext::EncryptionBlt(crypto_session=an object or the caller's bytes, src_surface=an object or the caller's bytes, dst_surface=an object or the caller's bytes, iv=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::EncryptionBlt(crypto_session={:?}, src_surface={:?}, dst_surface={:?}, iv=an object or the caller's bytes)",
+            named("direct3d_11::CryptoSession", crypto_session.identity()),
+            named("direct3d_11::Texture2D", src_surface.identity()),
+            named("direct3d_11::Texture2D", dst_surface.identity())
+        ));
         if let Some(bytes) = iv {
             known_fill(bytes, 727463);
         }
@@ -16809,8 +21238,12 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &iv;
         record("ID3D11VideoContext::DecryptionBlt()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::DecryptionBlt(crypto_session=an object or the caller's bytes, src_surface=an object or the caller's bytes, dst_surface=an object or the caller's bytes, encrypted_block_info={:?}, content_key={:?}, iv=an object or the caller's bytes)",
-            encrypted_block_info, content_key
+            "ID3D11VideoContext::DecryptionBlt(crypto_session={:?}, src_surface={:?}, dst_surface={:?}, encrypted_block_info={:?}, content_key={:?}, iv=an object or the caller's bytes)",
+            named("direct3d_11::CryptoSession", crypto_session.identity()),
+            named("direct3d_11::Texture2D", src_surface.identity()),
+            named("direct3d_11::Texture2D", dst_surface.identity()),
+            encrypted_block_info,
+            content_key
         ));
         if let Some(bytes) = iv {
             known_fill(bytes, 239887);
@@ -16824,7 +21257,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &crypto_session;
         let _ = &random_number;
         record("ID3D11VideoContext::StartSessionKeyRefresh()".to_string());
-        record_arguments("ID3D11VideoContext::StartSessionKeyRefresh(crypto_session=an object or the caller's bytes, random_number=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::StartSessionKeyRefresh(crypto_session={:?}, random_number=an object or the caller's bytes)",
+            named("direct3d_11::CryptoSession", crypto_session.identity())
+        ));
         known_fill(random_number, 167566);
     }
     fn finish_session_key_refresh(
@@ -16833,7 +21269,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
     ) {
         let _ = &crypto_session;
         record("ID3D11VideoContext::FinishSessionKeyRefresh()".to_string());
-        record_arguments("ID3D11VideoContext::FinishSessionKeyRefresh(crypto_session=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::FinishSessionKeyRefresh(crypto_session={:?})",
+            named("direct3d_11::CryptoSession", crypto_session.identity())
+        ));
     }
     fn get_encryption_blt_key(
         &self,
@@ -16843,7 +21282,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &crypto_session;
         let _ = &readback_key;
         record("ID3D11VideoContext::GetEncryptionBltKey()".to_string());
-        record_arguments("ID3D11VideoContext::GetEncryptionBltKey(crypto_session=an object or the caller's bytes, readback_key=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::GetEncryptionBltKey(crypto_session={:?}, readback_key=an object or the caller's bytes)",
+            named("direct3d_11::CryptoSession", crypto_session.identity())
+        ));
         known_fill(readback_key, 294862);
         Ok(())
     }
@@ -16855,7 +21297,10 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &channel;
         let _ = &data;
         record("ID3D11VideoContext::NegotiateAuthenticatedChannelKeyExchange()".to_string());
-        record_arguments("ID3D11VideoContext::NegotiateAuthenticatedChannelKeyExchange(channel=an object or the caller's bytes, data=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11VideoContext::NegotiateAuthenticatedChannelKeyExchange(channel={:?}, data=an object or the caller's bytes)",
+            named("direct3d_11::AuthenticatedChannel", channel.identity())
+        ));
         known_fill(data, 717297);
         Ok(())
     }
@@ -16870,7 +21315,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &output;
         record("ID3D11VideoContext::QueryAuthenticatedChannel()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::QueryAuthenticatedChannel(channel=an object or the caller's bytes, input={:?}, output=an object or the caller's bytes)",
+            "ID3D11VideoContext::QueryAuthenticatedChannel(channel={:?}, input={:?}, output=an object or the caller's bytes)",
+            named("direct3d_11::AuthenticatedChannel", channel.identity()),
             input
         ));
         known_fill(output, 365753);
@@ -16888,7 +21334,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &input;
         record("ID3D11VideoContext::ConfigureAuthenticatedChannel()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::ConfigureAuthenticatedChannel(channel=an object or the caller's bytes, input={:?})",
+            "ID3D11VideoContext::ConfigureAuthenticatedChannel(channel={:?}, input={:?})",
+            named("direct3d_11::AuthenticatedChannel", channel.identity()),
             input
         ));
         Ok(direct3d_11::structures::AuthenticatedConfigureOutput {
@@ -16922,8 +21369,11 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index, enable, rotation
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorSetStreamRotation(video_processor=an object or the caller's bytes, stream_index={:?}, enable={:?}, rotation={:?})",
-            stream_index, enable, rotation
+            "ID3D11VideoContext::VideoProcessorSetStreamRotation(video_processor={:?}, stream_index={:?}, enable={:?}, rotation={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
+            stream_index,
+            enable,
+            rotation
         ));
     }
     fn video_processor_get_stream_rotation(
@@ -16938,7 +21388,8 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             stream_index
         ));
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorGetStreamRotation(video_processor=an object or the caller's bytes, stream_index={:?})",
+            "ID3D11VideoContext::VideoProcessorGetStreamRotation(video_processor={:?}, stream_index={:?})",
+            named("direct3d_11::VideoProcessor", video_processor.identity()),
             stream_index
         ));
         (true, direct3d_11::enumerations::VideoProcessorRotation(66))
@@ -16992,7 +21443,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoContext<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -17149,7 +21700,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoDecoder<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -17263,7 +21914,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoDecoderOutputView<A>
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -17334,7 +22085,8 @@ impl<A: Recorded> direct3d_11::VideoDevice2 for RecordedVideoDevice<A> {
             flags
         ));
         record_arguments(format!(
-            "ID3D11VideoDevice2::NegotiateCryptoSessionKeyExchangeMT(crypto_session=an object or the caller's bytes, flags={:?}, data=an object or the caller's bytes)",
+            "ID3D11VideoDevice2::NegotiateCryptoSessionKeyExchangeMT(crypto_session={:?}, flags={:?}, data=an object or the caller's bytes)",
+            named("direct3d_11::CryptoSession", crypto_session.identity()),
             flags
         ));
         known_fill(data, 959368);
@@ -17471,7 +22223,8 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
             rate_conversion_index
         ));
         record_arguments(format!(
-            "ID3D11VideoDevice::CreateVideoProcessor(enum_=an object or the caller's bytes, rate_conversion_index={:?})",
+            "ID3D11VideoDevice::CreateVideoProcessor(enum_={:?}, rate_conversion_index={:?})",
+            named("direct3d_11::VideoProcessorEnumerator", enum_.identity()),
             rate_conversion_index
         ));
         Ok(RecordedVideoProcessor::new())
@@ -17525,7 +22278,16 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
         let _ = &desc;
         record("ID3D11VideoDevice::CreateVideoDecoderOutputView()".to_string());
         record_arguments(format!(
-            "ID3D11VideoDevice::CreateVideoDecoderOutputView(resource=an object or the caller's bytes, desc={:?})",
+            "ID3D11VideoDevice::CreateVideoDecoderOutputView(resource={:?}, desc={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
             desc
         ));
         Ok(RecordedVideoDecoderOutputView::new())
@@ -17544,7 +22306,17 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
         let _ = &desc;
         record("ID3D11VideoDevice::CreateVideoProcessorInputView()".to_string());
         record_arguments(format!(
-            "ID3D11VideoDevice::CreateVideoProcessorInputView(resource=an object or the caller's bytes, enum_=an object or the caller's bytes, desc={:?})",
+            "ID3D11VideoDevice::CreateVideoProcessorInputView(resource={:?}, enum_={:?}, desc={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            named("direct3d_11::VideoProcessorEnumerator", enum_.identity()),
             desc
         ));
         Ok(RecordedVideoProcessorInputView::new())
@@ -17563,7 +22335,17 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
         let _ = &desc;
         record("ID3D11VideoDevice::CreateVideoProcessorOutputView()".to_string());
         record_arguments(format!(
-            "ID3D11VideoDevice::CreateVideoProcessorOutputView(resource=an object or the caller's bytes, enum_=an object or the caller's bytes, desc={:?})",
+            "ID3D11VideoDevice::CreateVideoProcessorOutputView(resource={:?}, enum_={:?}, desc={:?})",
+            match &resource {
+                direct3d_11::ResourceRef::Buffer(x) => named("direct3d_11::Buffer", x.identity()),
+                direct3d_11::ResourceRef::Texture1D(x) =>
+                    named("direct3d_11::Texture1D", x.identity()),
+                direct3d_11::ResourceRef::Texture2D(x) =>
+                    named("direct3d_11::Texture2D", x.identity()),
+                direct3d_11::ResourceRef::Texture3D(x) =>
+                    named("direct3d_11::Texture3D", x.identity()),
+            },
+            named("direct3d_11::VideoProcessorEnumerator", enum_.identity()),
             desc
         ));
         Ok(RecordedVideoProcessorOutputView::new())
@@ -17763,7 +22545,107 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
         record_arguments(format!(
             "ID3D11VideoDevice::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -17884,7 +22766,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoProcessor<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -18133,7 +23115,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoProcessorEnumerator<
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -18243,7 +23325,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoProcessorInputView<A
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -18356,7 +23538,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoProcessorOutputView<
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -18443,7 +23725,107 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDeviceContextState<A> {
         record_arguments(format!(
             "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
             guid,
-            data.is_some()
+            data.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| match &object {
+                    direct3d_11::UnknownRef::AuthenticatedChannel(x) =>
+                        named("direct3d_11::AuthenticatedChannel", x.identity()),
+                    direct3d_11::UnknownRef::BlendState(x) =>
+                        named("direct3d_11::BlendState", x.identity()),
+                    direct3d_11::UnknownRef::Buffer(x) =>
+                        named("direct3d_11::Buffer", x.identity()),
+                    direct3d_11::UnknownRef::ClassInstance(x) =>
+                        named("direct3d_11::ClassInstance", x.identity()),
+                    direct3d_11::UnknownRef::ClassLinkage(x) =>
+                        named("direct3d_11::ClassLinkage", x.identity()),
+                    direct3d_11::UnknownRef::CommandList(x) =>
+                        named("direct3d_11::CommandList", x.identity()),
+                    direct3d_11::UnknownRef::ComputeShader(x) =>
+                        named("direct3d_11::ComputeShader", x.identity()),
+                    direct3d_11::UnknownRef::Counter(x) =>
+                        named("direct3d_11::Counter", x.identity()),
+                    direct3d_11::UnknownRef::CryptoSession(x) =>
+                        named("direct3d_11::CryptoSession", x.identity()),
+                    direct3d_11::UnknownRef::Debug(x) => named("direct3d_11::Debug", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilState(x) =>
+                        named("direct3d_11::DepthStencilState", x.identity()),
+                    direct3d_11::UnknownRef::DepthStencilView(x) =>
+                        named("direct3d_11::DepthStencilView", x.identity()),
+                    direct3d_11::UnknownRef::Device(x) =>
+                        named("direct3d_11::Device", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContext(x) =>
+                        named("direct3d_11::DeviceContext", x.identity()),
+                    direct3d_11::UnknownRef::DomainShader(x) =>
+                        named("direct3d_11::DomainShader", x.identity()),
+                    direct3d_11::UnknownRef::Fence(x) => named("direct3d_11::Fence", x.identity()),
+                    direct3d_11::UnknownRef::GeometryShader(x) =>
+                        named("direct3d_11::GeometryShader", x.identity()),
+                    direct3d_11::UnknownRef::HullShader(x) =>
+                        named("direct3d_11::HullShader", x.identity()),
+                    direct3d_11::UnknownRef::InfoQueue(x) =>
+                        named("direct3d_11::InfoQueue", x.identity()),
+                    direct3d_11::UnknownRef::InputLayout(x) =>
+                        named("direct3d_11::InputLayout", x.identity()),
+                    direct3d_11::UnknownRef::Multithread(x) =>
+                        named("direct3d_11::Multithread", x.identity()),
+                    direct3d_11::UnknownRef::PixelShader(x) =>
+                        named("direct3d_11::PixelShader", x.identity()),
+                    direct3d_11::UnknownRef::Predicate(x) =>
+                        named("direct3d_11::Predicate", x.identity()),
+                    direct3d_11::UnknownRef::Query(x) => named("direct3d_11::Query", x.identity()),
+                    direct3d_11::UnknownRef::RasterizerState(x) =>
+                        named("direct3d_11::RasterizerState", x.identity()),
+                    direct3d_11::UnknownRef::RefDefaultTrackingOptions(x) =>
+                        named("direct3d_11::RefDefaultTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RefTrackingOptions(x) =>
+                        named("direct3d_11::RefTrackingOptions", x.identity()),
+                    direct3d_11::UnknownRef::RenderTargetView(x) =>
+                        named("direct3d_11::RenderTargetView", x.identity()),
+                    direct3d_11::UnknownRef::SamplerState(x) =>
+                        named("direct3d_11::SamplerState", x.identity()),
+                    direct3d_11::UnknownRef::ShaderResourceView(x) =>
+                        named("direct3d_11::ShaderResourceView", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTrace(x) =>
+                        named("direct3d_11::ShaderTrace", x.identity()),
+                    direct3d_11::UnknownRef::ShaderTraceFactory(x) =>
+                        named("direct3d_11::ShaderTraceFactory", x.identity()),
+                    direct3d_11::UnknownRef::SwitchToRef(x) =>
+                        named("direct3d_11::SwitchToRef", x.identity()),
+                    direct3d_11::UnknownRef::Texture1D(x) =>
+                        named("direct3d_11::Texture1D", x.identity()),
+                    direct3d_11::UnknownRef::Texture2D(x) =>
+                        named("direct3d_11::Texture2D", x.identity()),
+                    direct3d_11::UnknownRef::Texture3D(x) =>
+                        named("direct3d_11::Texture3D", x.identity()),
+                    direct3d_11::UnknownRef::TracingDevice(x) =>
+                        named("direct3d_11::TracingDevice", x.identity()),
+                    direct3d_11::UnknownRef::UnorderedAccessView(x) =>
+                        named("direct3d_11::UnorderedAccessView", x.identity()),
+                    direct3d_11::UnknownRef::VertexShader(x) =>
+                        named("direct3d_11::VertexShader", x.identity()),
+                    direct3d_11::UnknownRef::VideoContext(x) =>
+                        named("direct3d_11::VideoContext", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoder(x) =>
+                        named("direct3d_11::VideoDecoder", x.identity()),
+                    direct3d_11::UnknownRef::VideoDecoderOutputView(x) =>
+                        named("direct3d_11::VideoDecoderOutputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoDevice(x) =>
+                        named("direct3d_11::VideoDevice", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessor(x) =>
+                        named("direct3d_11::VideoProcessor", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorEnumerator(x) =>
+                        named("direct3d_11::VideoProcessorEnumerator", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorInputView(x) =>
+                        named("direct3d_11::VideoProcessorInputView", x.identity()),
+                    direct3d_11::UnknownRef::VideoProcessorOutputView(x) =>
+                        named("direct3d_11::VideoProcessorOutputView", x.identity()),
+                    direct3d_11::UnknownRef::DeviceContextState(x) =>
+                        named("direct3d_11::DeviceContextState", x.identity()),
+                    direct3d_11::UnknownRef::UserDefinedAnnotation(x) =>
+                        named("direct3d_11::UserDefinedAnnotation", x.identity()),
+                    direct3d_11::UnknownRef::Unknown(_) => "foreign".to_string(),
+                }
+            )
         ));
         Ok(())
     }
@@ -18629,7 +24011,13 @@ impl direct3d_11::Direct3D11 for Recorder {
         ));
         record_arguments(format!(
             "D3D11CreateDevice(adapter={:?}, driver_type={:?}, software={:?}, flags={:?}, feature_levels={:?}, sdk_version={:?})",
-            adapter.is_some(),
+            adapter.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named(
+                    "directx_graphics_infrastructure::Adapter",
+                    object.identity()
+                )
+            ),
             driver_type,
             software,
             flags,
@@ -18678,7 +24066,13 @@ impl direct3d_11::Direct3D11 for Recorder {
         ));
         record_arguments(format!(
             "D3D11CreateDeviceAndSwapChain(adapter={:?}, driver_type={:?}, software={:?}, flags={:?}, feature_levels={:?}, sdk_version={:?}, swap_chain_desc={:?})",
-            adapter.is_some(),
+            adapter.as_ref().map_or_else(
+                || "none".to_string(),
+                |object| named(
+                    "directx_graphics_infrastructure::Adapter",
+                    object.identity()
+                )
+            ),
             driver_type,
             software,
             flags,
