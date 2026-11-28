@@ -244,3 +244,23 @@ fn identification_registers_and_capabilities_match_reference() {
     differences.extend(capability_differences("theirs", &theirs_seen, EVENT_STREAM));
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
+
+/// On a machine of several processors /proc/cpuinfo has one block for each processor online, each
+/// with the first's Features line, which the test above checks: the guest's exit code 0.
+#[test]
+fn every_processor_shows_the_same_features() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    for parallelism in [2, 5] {
+        let parallelism = std::num::NonZeroUsize::new(parallelism).expect("some parallelism");
+        assert_eq!(
+            wcontainers_executor_unicorn::driver::program_exit_code(
+                "cpuinfosame",
+                &[],
+                &out,
+                parallelism
+            ),
+            0,
+            "parallelism {parallelism}"
+        );
+    }
+}
