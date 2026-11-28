@@ -24,8 +24,8 @@ pub fn prepare_on_executor<'execution, E: Executor>(
 }
 
 /// Runs the executor's execution to its first trap, and returns why it stopped and the processor state it stopped at.
-pub fn run_on_executor<E: Executor>(
-    execution: E::Execution<'_>,
+pub fn run_on_executor<'execution, E: Executor>(
+    execution: E::Execution<'execution>,
 ) -> (Stop, ProcessorStateOf<E>) {
     let mut handler = FirstTrap { stop: None };
     let processor = match execution.run(&mut handler) {

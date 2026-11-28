@@ -22,6 +22,25 @@ use crate::executor_boundary::{prepare_on_executor, run_on_executor};
 
 verus! {
 
+// The executor boundary: the executor's interface states no contract, so these calls into it are assumed to return,
+// promising nothing more than their types say.
+assume_specification<E: Executor>[ executor_boundary::create_guest_memory_on ](executor: &E) -> Result<
+    (E::GuestMemory, PageTableOf<E>),
+    E::CreateGuestMemoryError,
+>;
+
+assume_specification<'execution, E: Executor>[ executor_boundary::prepare_on_executor ](
+    executor: &'execution mut E,
+    processor: ProcessorStateOf<E>,
+    memory: &'execution E::GuestMemory,
+) -> (E::Execution<'execution>, E::Interrupter);
+
+assume_specification<'execution, E: Executor>[ executor_boundary::run_on_executor ](
+    execution: E::Execution<'execution>,
+) -> (Stop, ProcessorStateOf<E>);
+
+assume_specification<E: Executor>[ executor_boundary::interrupt_on_executor ](interrupter: &E::Interrupter);
+
 /// A kernel core that gives each new task a copy of its executor, starting from its processor state.
 pub struct ExecutorKernelCore<E: Executor> {
     executor: E,
@@ -87,6 +106,10 @@ impl<E: Executor> Interrupter for ExecutorInterrupter<E> {
 }
 
 impl<'task, E: Executor + Clone> Execution<'task, ExecutorTask<E>, ExecutorKernelCore<E>> for ExecutorExecution<'task, E> {
+    closed spec fn task(self) -> &'task mut ExecutorTask<E> {
+        self.task
+    }
+
     fn run(self) -> (stop: Stop) {
         let ExecutorExecution { task, progress } = self;
         let (before, handle) = progress.acquire_write();
@@ -109,6 +132,14 @@ impl<E: Executor + Clone> TaskMemory<ExecutorTask<E>> for ExecutorKernelCore<E> 
 
     type MemoryCapabilities = ListMemoryCapabilityTable;
 
+    proof fn lemma_shards_are_disjoint(task: ExecutorTask<E>) {
+        wcontainers_memory_capability_table_list::lemma_shards_are_disjoint(task.memory);
+    }
+
+    closed spec fn memory_capabilities_of(task: ExecutorTask<E>) -> ListMemoryCapabilityTable {
+        task.memory
+    }
+
     fn memory_capabilities(task: &ExecutorTask<E>) -> (memory_capabilities: &ListMemoryCapabilityTable) {
         &task.memory
     }
@@ -120,6 +151,10 @@ impl<E: Executor + Clone> TaskMemory<ExecutorTask<E>> for ExecutorKernelCore<E> 
 
 impl<E: Executor + Clone> TaskProcessorState<ExecutorTask<E>> for ExecutorKernelCore<E> {
     type SavedProcessorState = ProcessorStateOf<E>;
+
+    closed spec fn saved_processor_state_of(task: ExecutorTask<E>) -> ProcessorStateOf<E> {
+        task.processor
+    }
 
     fn saved_processor_state(task: &ExecutorTask<E>) -> (saved_processor_state: &ProcessorStateOf<E>) {
         &task.processor
@@ -136,7 +171,10 @@ impl<E: Executor + Clone + 'static> KernelCore for ExecutorKernelCore<E> {
     type CreateTaskError = E::CreateGuestMemoryError;
 
     fn create_task(&mut self) -> (created: Result<ExecutorTask<E>, E::CreateGuestMemoryError>) {
-        let (guest_memory, page_table) = executor_boundary::create_guest_memory_on(&self.executor)?;
+        let (guest_memory, page_table) = match executor_boundary::create_guest_memory_on(&self.executor) {
+            Ok(made) => made,
+            Err(error) => return Err(error),
+        };
         Ok(ExecutorTask {
             memory: ListMemoryCapabilityTable::new(),
             processor: self.processor.clone(),
