@@ -4230,8 +4230,8 @@ dependencies = [
 name = "wcontainers-capability-table"
 version = "0.1.0"
 dependencies = [
+ "thiserror",
  "vstd",
- "wcontainers-kernel",
 ]
 
 [[package]]
@@ -4815,6 +4815,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-kernel-core"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "vstd",
+ "wcontainers-capability-table",
+ "wcontainers-memory-shard",
+]
+
+[[package]]
 name = "wcontainers-kernel-linux"
 version = "0.1.0"
 dependencies = [
@@ -4843,6 +4853,16 @@ dependencies = [
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-memory-shard"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "vstd",
+ "wcontainers-capability-table",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
