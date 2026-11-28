@@ -1,5 +1,4 @@
-//! A read or a write through the bytes while `read_to` or `write_from` has lent the slice: it counts what the contract
-//! says and moves no byte.
+//! Reads and writes through the bytes while `read_to` or `write_from` has lent the slice, which count and move nothing.
 
 use core::convert::Infallible;
 
@@ -23,7 +22,7 @@ struct Seen {
     lent: Vec<Option<usize>>,
 }
 
-/// The offsets the tests read and write at: the start, the middle, the last byte, the length and past it.
+/// Returns the offsets the tests read and write at: the start, the middle, the last byte, the length and past it.
 fn offsets() -> [u64; 5] {
     let length = u64::try_from(LENGTH).expect("the length fits an offset");
     [u64::MIN, length / 2, length - 1, length, u64::MAX]
