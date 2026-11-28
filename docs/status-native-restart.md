@@ -1392,3 +1392,57 @@ those copies' test binaries was still spinning more than three hours later, foun
 caught; the driver now kills a timed-out copy's whole process group), 6 missed: the saves and restores of the thread's d8 to d15 (5 lines; a
 caller's values in those registers are seen only by code built with optimization, and the tests are built without),
 and the exit's save of FPSR (the every-register test now sets every FPSR flag, after the plant run).
+
+### Two stop-storm defects in this run's own test (MEASURED, fixed in a4185d5b8 and fe315a8f8)
+
+The first form of `keeps_every_register_through_stops_that_land_anywhere` ran a stopped run on from its frame. It hung
+in the bar for 36 minutes: a stop between `add x23` and `blr x23` resumed with x23 the first address again (the run
+sets x23 at every start), so `blr x23` branched to itself. The executor never does that (a stopped piece starts again
+at its first instruction); the test now does the same and checks the registers at each stop. A stop sender with no
+pause also starved the runner on a loaded host; it now pauses between stops. The L3 plant is caught 3 of 3.
+
+### The bar at the pushed fe315a8f8 (MEASURED, Graviton4, job nr-bar 20261128-033952, load 105 to 160, 12 jobs)
+
+Crates: linux-process (interface, direct, conformance), in-process, host-process, its zygote, arm64-stop. Skips:
+`behavior_source`, `agrees_with_precise_instruction_set`, `interrupt_after_the_end` (the check's run showed
+`interrupts_answered_continue_change_nothing` passes; its skip is gone).
+- `cargo fmt --check` 0; clippy `--all-targets -D warnings` 0.
+- All tests: 46 binaries, 224 passed, 1 failed, 6 ignored. The failure is form P's `recorded_instructions_on_form_p_when_moved`
+  (StpSignedOffset64: 1 of 31,280 moved states meets no known behavior), host-process code this run did not change: the
+  load-dependent flake the check found.
+- in-process and linux-process five rounds in a row: 89 passed, 0 failed each round.
+- Xeon at 0132e8f2c (job nr-bar-x86 20261127-211010): fmt 0, clippy 0, 46 binaries, 77 passed, 0 failed, 2 ignored.
+  The commits after it change only ARM64-only code and docs (INFERRED); the machine could not be reached afterwards.
+
+### Linter
+
+Not measured this run: the Xeon, where it was building, went away mid-build, and the ARM64 machine stayed above a load of
+150 for hours. 875 findings at 1c22d1349 (last run); not cleaned.
+
+### Security (MEASURED: the root manifest's command; `#[expect(unsafe_code` marks)
+
+| Crate | unsafe lines 21d82e37e | fe315a8f8 |
+|---|---|---|
+| linux-process (all in `direct`) | 25 | 30 |
+| in-process | 0 | 0 |
+| host-process | 0 | 0 |
+| host-process-zygote | 0 | 0 |
+| arm64-stop | 0 | 0 |
+
+Each of the 30 is one operation under its own `#[expect(unsafe_code, reason = ...)]` whose reason is its obligation
+(31 marks: those and the `entering` module's, over the naked run's attribute, the one UNSOUND mark). The 5 more: the
+blocks that did two or more things are split (stack and mask set, their put-back, the handler's two arguments), the
+handler install is now one raw `rt_sigaction` (no `zeroed`, `sigemptyset`, `sigaddset`), and the chain to an earlier
+handler takes two `transmute`s (one per handler form). New dependencies: none from outside (signal-hook 0.3.18, already
+in the lock for host-process, now a dev-dependency of `direct`). No lint table lowered, no exclusion; the two
+`cfg_attr(not(aarch64), expect(dead_code))` are on fields only ARM64 reads. Hostile-guest tests: in_process_attacks
+passed in the bar; on form I the outside-window test (18 forms x 4 targets) and the hostile-stack signal test pass.
+Security fixed this run: a guest's x30 no longer comes back as this process's instruction address after a float status
+access; 64 KiB below every window are held (the confinement track's measured reach below a base); a foreign fault no
+longer turns form I's handler off for good; atomics and `dc zva` outside the window are writes.
+
+### Next
+
+Waiting on no other track: `Entry::Start | Resume(Stopped)` in linux-process (refusal by construction; a resume keeps
+x15, x23, x30 and the piece's kept registers, FOR-THE-NATIVE-TRACK.md section 1), carried through the executor's
+resumes; then RI's slot table pages (linked pieces), look-ahead, the window-edge exactness test; the linter clean-up.
