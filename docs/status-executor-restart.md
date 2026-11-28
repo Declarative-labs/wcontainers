@@ -660,3 +660,39 @@ and this one added except the unanswered ones and these, which need a decision: 
 trait with pub fields (`implementation_folder`, 3 `public_outside_interface`; a named generator implementation would
 have to pass the generator suite); `conformance_not_run` for the new suite function and for the suite's arm 3 (the
 fixed `tests!` shape wants every suite function to take one value; its other functions already do not).
+
+## X3 run 33: the unicorn API crate, the three slow LTP tests (2026-11-27/28)
+
+His ruling (an outside-API crate for unicorn inside the stand-in's folder, host memory owned by the direct crate, our
+side only through `VolatileBytes`) is built:
+
+- `crates/executor/implementation/unicorn/unicorn`: `interface.rs` (the trait `Unicorn<Data>` and THE MAPPING RULE at
+  the top), `implementation/direct` (2 marked `unsafe` uses: the pointer promise of each host memory, and
+  `mem_map_ptr`; `[lints.rust] unsafe_code = "deny"`), `implementation/recording`, `implementation/hostile` (its guest
+  writes every byte a writable mapping shows before each run), `conformance/suite.rs` (21 tests, the mapping rule's
+  hostile-guest test `a_guest_writes_only_bytes_a_writable_mapping_shows` among them). The engine's handle never
+  leaves `direct`, hooks included (they get the data and a `Requests` value), so no copy of it outlives the memory.
+- The stand-in (memory.rs) maps each host memory once with every permission and translates every guest address
+  through unicorn's TLB hook from the page table (THE SPACE'S RULE at the top of memory.rs; its own hostile-guest test
+  `a_hostile_guest_writes_only_what_the_page_table_lets_it`). No copy between turns, no map or unmap at a permission
+  change, a TLB flush instead.
+
+MEASURED on the Graviton4 (all at pushed commits; details in the run's report):
+- mtest05 alone: 1,604 s before, 26.6 s at 74b80ae01. shm_test01 alone: over 3,600 s before, 1,252 s. hackbench01
+  alone: still over 1,800 s.
+- Harness memory tests pass as before (sharedmap 1.3 s, memory 7.7 s, faults 7.4 s, processes 8/8).
+- Executor suite on the stand-in: 28 of 30; `agrees_with_precise_instruction_set` and
+  `measured_behavior_agrees_with_the_source` fail on 13 branch instructions (Br, Blr, Ret and their PAC forms), 1 to
+  16 states each: a branch to the top of the address space (0xffff_ffff_ffff_ffff) stops with the program counter at
+  0xffff_ffff_ffff_fffb under the TLB hook, where QEMU's own translation gave the target. Open (see next).
+- Simulation suite 30 of 30 (x86), with the new suite test `copy_from_over_written_pages_leaves_the_source_bytes`.
+- Fix after the suite run (2b9b1a819, 0de965246): a faulting fetch leaves the program counter at the address
+  fetched; an upper-half branch target faults there (unit test). The top-of-space case stays open.
+- Full LTP at pushed 0de965246 (LTP_JOBS 8, LTP_LIMIT 900, load 47 to 226, 9,321 s): 60 of 4,226 differ from the
+  reference, as in run 28. Against ours-20260930-a9f8631e.tsv: gained ADSP037, 038, 073, 074 and mtest05 now matches
+  again; lost shm_test01 and hackbench01 (900 s timeouts), DOR003 (900 s timeout) and eight timer tests that fail under
+  load (epoll_pwait03, epoll_wait02, futex_wait05, nanosleep01, poll02, prctl09, pselect01, select02).
+- X3 is NOT reached. Next: hackbench01 and shm_test01 (the stand-in's share of their profiles is now small: the
+  engine thread's channel round trips and the kernel's own paths), the branch at the top of the address space, the
+  cargo-mutants run over memory.rs (started twice on the x86 machine, which was taken away both times), and the full
+  LTP at load under about 60.
