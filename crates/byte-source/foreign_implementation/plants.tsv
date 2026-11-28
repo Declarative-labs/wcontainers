@@ -1,0 +1,12 @@
+# package	file	text replaced	text put in its place	what is wrong
+# Each line is a wrong implementation Verus must refuse; refuse_plants.sh beside the sink's list checks them.
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        let (read, rest) = self.split_at(into.len().min(self.len()));	        let (read, rest) = self.split_at(into.len().min(self.len()) + 1);	a split one past the shorter of the two, past the slice
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        let (read, rest) = self.split_at(into.len().min(self.len()));	        let (read, rest) = self.split_at(into.len());	the buffer's length, a split past the slice
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        let (read, rest) = self.split_at(into.len().min(self.len()));	        let (read, rest) = self.split_at(self.len());	the slice's length, a copy past the buffer
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        Ok(read.len())	        Ok(read.len() + 1)	a count one above the bytes read
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        Ok(read.len())	        Ok(rest.len())	the bytes left, a count above the buffer
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        into[..read.len()].copy_from_slice(read);	        into[..read.len() + 1].copy_from_slice(read);	a copy into one byte more than read
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        Ok(read.len())	        Ok(into.len() + 1)	a count one above the buffer
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        into[..read.len()].copy_from_slice(read);	        into[1..read.len() + 1].copy_from_slice(read);	off by one at the start, past the end of a full buffer
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        Ok(read.len())	        Ok(read.len().max(1))	off by one for an empty buffer
+wcontainers-byte-source	crates/byte-source/foreign_implementation/slice/implementation.rs	        into[..read.len()].copy_from_slice(read);	        into[..read.len()].copy_from_slice(&rest[..read.len()]);	a read past the bytes left

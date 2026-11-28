@@ -1,0 +1,22 @@
+# package	file	text replaced	text put in its place	what is wrong
+# Each line is a wrong implementation Verus must refuse; refuse_plants.sh beside the sink's list checks them.
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        Ok(count)	        Ok(count + 1)	a count one above the bytes written
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        let count = bytes.len().min(self.len());	        let count = bytes.len().max(self.len());	the longer of the two, so a write past the slice
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        let count = bytes.len().min(self.len());	        let count = self.len();	the slice's length, so a count above the buffer
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        let count = bytes.len().min(self.len());	        let count = bytes.len();	the buffer's length, so a write past the slice
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        let (written, rest) = whole.split_at_mut(count);	        let (written, rest) = whole.split_at_mut(count + 1);	a split one past the bytes, past the slice when it is full
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        Ok(count)	        Ok(count.max(1))	off by one for an empty buffer
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        Ok(count)	        Ok(bytes.len() + 1)	a count one above the buffer
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        written.copy_from_slice(&bytes[..count]);	        written.copy_from_slice(&bytes[..count + 1]);	a copy one past the bytes counted
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        let count = bytes.len().min(self.len());	        let count = bytes.len().min(self.len() + 1);	off by one: one more than the slice holds
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/slice/implementation.rs	        let count = bytes.len().min(self.len());	        let count = bytes.len().min(self.len()) + 1;	off by one: one more than the shorter of the two
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        Ok(bytes.len())	        Ok(bytes.len() + 1)	a count one above the buffer
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        Ok(bytes.len())	        Ok(self.len())	the vector's length, a count above the buffer
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        Ok(bytes.len())	        Ok(bytes.len() * 2)	twice the buffer
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        Ok(bytes.len())	        Ok(usize::MAX)	the largest count
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        self.extend_from_slice(bytes);	        self.extend_from_slice(&bytes[..bytes.len() + 1]);	a read one past the buffer
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        self.extend_from_slice(bytes);	        self.extend_from_slice(&bytes[1..]);	off by one at the start, past the end of an empty buffer
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        Ok(bytes.len())	        Ok(bytes.len() + self.len())	the bytes held added to the count
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        self.try_reserve(bytes.len())?;	        self.try_reserve(bytes[bytes.len()] as usize)?;	a read of the byte past the buffer
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        Ok(bytes.len())	        Ok(bytes.len() | 1)	off by one for a buffer of even length
+wcontainers-byte-sink	crates/byte-sink/foreign_implementation/vector/implementation.rs	        Ok(bytes.len())	        Ok(bytes.len().max(1))	off by one for an empty buffer
