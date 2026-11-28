@@ -17,9 +17,13 @@ use vstd::predicate::Predicate;
 use vstd::prelude::*;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
-use wcontainers_capability_table::{CapabilityConfig, CapabilityTable, CreateError, DuplicateError};
-use wcontainers_kernel_core::memory::MemoryError;
-use wcontainers_memory_shard::{BorrowError, MemoryPermissions, MemoryShard, MemoryShardConfig};
+use wcontainers_capability_table::{
+    CapabilityConfig, CapabilityTable, CreateError, DuplicateError,
+};
+use wcontainers_memory_capability_table::MemoryError;
+use wcontainers_memory_shard::{
+    BorrowError, MemoryAllocationIdentity, MemoryPermissions, MemoryShard, MemoryShardConfig,
+};
 use wcontainers_volatile_bytes::VolatileBytes;
 
 verus! {
@@ -360,6 +364,16 @@ impl MemoryShard for Shard {
 
     fn len(&self) -> (length: u64) {
         self.cells.len() as u64
+    }
+
+    // One identity for every allocation, since nothing in Verus tells two apart without an assumption.
+    closed spec fn spec_viewed_allocation(&self) -> MemoryAllocationIdentity {
+        MemoryAllocationIdentity(0)
+    }
+
+    // Every shard views its bytes from the first one, since this table neither splits nor offsets them.
+    closed spec fn spec_view_start(&self) -> nat {
+        0
     }
 
     closed spec fn spec_permissions(&self) -> MemoryPermissions {

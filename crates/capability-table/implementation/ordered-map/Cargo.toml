@@ -15,7 +15,7 @@ vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features 
 wcontainers-byte-sink = { path = "../../../byte-sink" }
 wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-capability-table = { path = "../.." }
-wcontainers-kernel-core = { path = "../../../kernel-core" }
+wcontainers-memory-capability-table = { path = "../../../memory-capability-table" }
 wcontainers-memory-shard = { path = "../../../memory-shard" }
 wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 
