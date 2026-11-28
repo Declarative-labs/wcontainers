@@ -1,0 +1,31 @@
+[package]
+name = "wcontainers-volatile-bytes-exclusive-slice"
+description = "A slice borrowed exclusively, kept in vstd's InvCell so that Verus knows its length never changes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-volatile-bytes = { path = "../.." }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+wcontainers-volatile-bytes-conformance = { path = "../../conformance" }
+
+[package.metadata.verus]
+verify = true
+
+[lints]
+workspace = true
