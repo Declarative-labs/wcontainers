@@ -142,8 +142,7 @@ pub fn refuses_a_taken_address<S: MemoryShard, T: MemoryCapabilityTable<S>>(mut 
     assert_eq!(read_whole(shard), bytes);
 }
 
-/// Checks that a create sharing even one byte with a held shard is refused as an overlap and holds nothing, while one
-/// beside it succeeds.
+/// Checks that a create sharing a byte with a held shard is refused as an overlap and holds nothing, and one beside it is not.
 pub fn refuses_a_create_that_overlaps<S: MemoryShard, T: MemoryCapabilityTable<S>>(mut table: T) {
     hold(&mut table, SECOND_PAGE, PAGE, READ_WRITE);
     let overlapping = [
