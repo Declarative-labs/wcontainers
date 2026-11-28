@@ -1,4 +1,3 @@
-use thiserror::Error;
 use vstd::prelude::*;
 
 use crate::{AddressType, Limits};
@@ -98,16 +97,37 @@ pub enum Sharing {
     Shared,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-#[error("the memory could not be grown by the given number of pages")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrowMemoryError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-#[error("the bytes to read do not all lie inside the memory")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadMemoryError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-#[error("the bytes to write do not all fit inside the memory")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WriteMemoryError;
 
 } // verus!
+
+impl core::fmt::Display for GrowMemoryError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("the memory could not be grown by the given number of pages")
+    }
+}
+
+impl core::error::Error for GrowMemoryError {}
+
+impl core::fmt::Display for ReadMemoryError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("the bytes to read do not all lie inside the memory")
+    }
+}
+
+impl core::error::Error for ReadMemoryError {}
+
+impl core::fmt::Display for WriteMemoryError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("the bytes to write do not all fit inside the memory")
+    }
+}
+
+impl core::error::Error for WriteMemoryError {}

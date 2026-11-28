@@ -29,20 +29,30 @@ pub trait StandaloneClock: Clock {
     ;
 }
 
-/// TRIAL: the contract of a method whose contract is not written yet, which nothing can prove.
-pub uninterp spec fn contract_not_written() -> bool;
-
-/// TRIAL: a clock that always reads zero, to see what Verus says of each method.
-pub struct ZeroClock;
-
-impl Clock for ZeroClock {
-    fn monotonic_nanoseconds(&self) -> u64 {
-        0
-    }
-
-    fn realtime_nanoseconds(&self) -> u64 {
-        0
-    }
+/// TRIAL: the contract of a method whose contract is not written yet, which no code outside this module can prove.
+pub closed spec fn contract_not_written() -> bool {
+    true
 }
 
 } // verus!
+
+mod trial {
+    use super::*;
+
+    verus! {
+
+    /// TRIAL: a clock that always reads zero, to see what Verus says of each method.
+    pub struct ZeroClock;
+
+    impl Clock for ZeroClock {
+        fn monotonic_nanoseconds(&self) -> u64 {
+            0
+        }
+
+        fn realtime_nanoseconds(&self) -> u64 {
+            0
+        }
+    }
+
+    } // verus!
+}

@@ -1,6 +1,5 @@
 use core::ops::Range;
 
-use thiserror::Error;
 use vstd::prelude::*;
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_volatile_bytes::VolatileBytes;
@@ -95,24 +94,49 @@ pub trait PageTable: Sized {
     ;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-#[error("the addresses do not all lie inside the space")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvalidAddressError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapMemoryError {
-    #[error(transparent)]
     InvalidAddress(InvalidAddressError),
-    #[error("the host has no memory left for the mapping")]
     OutOfMemory,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyMemoryError {
-    #[error(transparent)]
     InvalidAddress(InvalidAddressError),
-    #[error("the host has no memory left for the copy")]
     OutOfMemory,
 }
 
 } // verus!
+
+impl core::fmt::Display for InvalidAddressError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("the addresses do not all lie inside the space")
+    }
+}
+
+impl core::error::Error for InvalidAddressError {}
+
+impl core::fmt::Display for MapMemoryError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidAddress(inner) => core::fmt::Display::fmt(inner, formatter),
+            Self::OutOfMemory => formatter.write_str("the host has no memory left for the mapping"),
+        }
+    }
+}
+
+impl core::error::Error for MapMemoryError {}
+
+impl core::fmt::Display for CopyMemoryError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidAddress(inner) => core::fmt::Display::fmt(inner, formatter),
+            Self::OutOfMemory => formatter.write_str("the host has no memory left for the copy"),
+        }
+    }
+}
+
+impl core::error::Error for CopyMemoryError {}

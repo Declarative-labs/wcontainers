@@ -1,4 +1,3 @@
-use thiserror::Error;
 use vstd::prelude::*;
 
 use crate::WebAssemblyEngine;
@@ -51,17 +50,33 @@ pub trait BoundFunction<Engine: WebAssemblyEngine, Parameters, Results> {
     ;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-#[error("the function does not match the function type it is being bound to")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BindFunctionError;
 
 /// A [result](https://webassembly.github.io/spec/core/exec/runtime.html#results) of an invocation that holds no values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InvokeError<Trap> {
-    #[error("the function trapped: {0}")]
     Trap(Trap),
-    #[error("an exception left the function uncaught")]
     Exception,
 }
 
 } // verus!
+
+impl core::fmt::Display for BindFunctionError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("the function does not match the function type it is being bound to")
+    }
+}
+
+impl core::error::Error for BindFunctionError {}
+
+impl<Trap: core::fmt::Debug + core::fmt::Display> core::fmt::Display for InvokeError<Trap> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Trap(inner) => write!(formatter, "the function trapped: {inner}"),
+            Self::Exception => formatter.write_str("an exception left the function uncaught"),
+        }
+    }
+}
+
+impl<Trap: core::fmt::Debug + core::fmt::Display> core::error::Error for InvokeError<Trap> {}

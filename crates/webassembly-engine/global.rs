@@ -1,4 +1,3 @@
-use thiserror::Error;
 use vstd::prelude::*;
 
 use crate::function::FunctionStore;
@@ -63,16 +62,32 @@ pub enum Value<FunctionAddress> {
     FunctionReference(Option<FunctionAddress>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-#[error("the global holds a reference to something other than a function")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadGlobalError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteGlobalError {
-    #[error("the global is constant")]
     Constant,
-    #[error("the value is not of the global's value type")]
     ValueTypeMismatch,
 }
 
 } // verus!
+
+impl core::fmt::Display for ReadGlobalError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("the global holds a reference to something other than a function")
+    }
+}
+
+impl core::error::Error for ReadGlobalError {}
+
+impl core::fmt::Display for WriteGlobalError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Constant => formatter.write_str("the global is constant"),
+            Self::ValueTypeMismatch => formatter.write_str("the value is not of the global's value type"),
+        }
+    }
+}
+
+impl core::error::Error for WriteGlobalError {}

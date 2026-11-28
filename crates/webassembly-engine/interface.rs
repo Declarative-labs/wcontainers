@@ -12,7 +12,6 @@ use core::future::poll_fn;
 use core::pin::pin;
 
 use futures_core::Stream;
-use thiserror::Error;
 use vstd::prelude::*;
 
 use crate::function::FunctionStore;
@@ -96,11 +95,9 @@ pub enum ExternalAddress<Engine: WebAssemblyEngine> {
     Tag(Engine::TagAddress),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompileStreamingError<StreamError, CompileError> {
-    #[error("the stream of the module's bytes failed: {0}")]
     Stream(StreamError),
-    #[error("the module could not compile: {0}")]
     Compile(CompileError),
 }
 
@@ -119,6 +116,17 @@ pub struct Limits {
 }
 
 } // verus!
+
+impl<StreamError: core::fmt::Debug + core::fmt::Display, CompileError: core::fmt::Debug + core::fmt::Display> core::fmt::Display for CompileStreamingError<StreamError, CompileError> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Stream(inner) => write!(formatter, "the stream of the module's bytes failed: {inner}"),
+            Self::Compile(inner) => write!(formatter, "the module could not compile: {inner}"),
+        }
+    }
+}
+
+impl<StreamError: core::fmt::Debug + core::fmt::Display, CompileError: core::fmt::Debug + core::fmt::Display> core::error::Error for CompileStreamingError<StreamError, CompileError> {}
 
 /// Compiles a module for the engine [while its bytes arrive](https://webassembly.github.io/spec/web-api/#dom-webassembly-compilestreaming).
 // VERUS: no proof of an `async` body, so this stays outside `verus!` as a function over any engine.

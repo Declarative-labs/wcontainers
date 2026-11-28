@@ -1,4 +1,3 @@
-use thiserror::Error;
 use vstd::prelude::*;
 
 use crate::function::FunctionStore;
@@ -72,24 +71,49 @@ pub struct TableType {
     pub limits: Limits,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-#[error("the table could not be grown by the given number of elements")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrowTableError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadTableError {
-    #[error("the index lies outside the table")]
     IndexOutsideTable,
-    #[error("the element does not refer to a function")]
     ElementNotFunction,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteTableError {
-    #[error("the index lies outside the table")]
     IndexOutsideTable,
-    #[error("the table's reference type does not take the function")]
     ReferenceTypeMismatch,
 }
 
 } // verus!
+
+impl core::fmt::Display for GrowTableError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("the table could not be grown by the given number of elements")
+    }
+}
+
+impl core::error::Error for GrowTableError {}
+
+impl core::fmt::Display for ReadTableError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::IndexOutsideTable => formatter.write_str("the index lies outside the table"),
+            Self::ElementNotFunction => formatter.write_str("the element does not refer to a function"),
+        }
+    }
+}
+
+impl core::error::Error for ReadTableError {}
+
+impl core::fmt::Display for WriteTableError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::IndexOutsideTable => formatter.write_str("the index lies outside the table"),
+            Self::ReferenceTypeMismatch => formatter.write_str("the table's reference type does not take the function"),
+        }
+    }
+}
+
+impl core::error::Error for WriteTableError {}

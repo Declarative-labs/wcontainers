@@ -3,6 +3,8 @@
 use crate::ThreadId;
 use vstd::prelude::*;
 
+verus! {
+
 /// How many argument registers a system call has on arm64 and x86-64: x0 to x5, and rdi, rsi,
 /// rdx, r10, r8, r9 (<https://man7.org/linux/man-pages/man2/syscall.2.html>).
 pub const SYSTEM_CALL_ARGUMENT_COUNT: usize = 6;
@@ -14,8 +16,6 @@ pub const SYSTEM_CALL_NUMBER_REGISTER: usize = 8;
 /// What a shell, and `docker run`, adds to a signal's number for the status of a process the
 /// signal ended (POSIX XCU 2.8.2).
 pub const SIGNALLED_EXIT_BASE: i32 = 128;
-
-verus! {
 
 /// A system call's number as the guest's number register holds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
